@@ -3092,7 +3092,7 @@ function Undo-WtUpdateFiles([string]$Upd) {
             try {
                 if ([bool]$f.Vorhanden) { [IO.File]::Copy([IO.Path]::Combine($bk, $rel), $dest, $true) }
                 elseif (Test-Path -LiteralPath $dest -PathType Leaf) { [IO.File]::Delete($dest) }
-                if (Test-Path -LiteralPath ($dest + '.wtnew')) { [IO.File]::Delete($dest + '.wtnew') }
+                foreach ($ext in '.wtnew', '.wtold') { if (Test-Path -LiteralPath ($dest + $ext)) { [IO.File]::Delete($dest + $ext) } }
             } catch { $ok = $false }
         }
     } catch { $ok = $false }
@@ -3230,7 +3230,12 @@ function Invoke-GuiUpdateApply {
         $swapStarted = $true
         foreach ($p in $order) {
             $t = $p.Dest + '.wtnew'
-            if ($p.Exists) { [IO.File]::Replace($t, $p.Dest, $null) } else { [IO.File]::Move($t, $p.Dest) }
+            if ($p.Exists) {
+                # Replace needs a backup name in Windows PowerShell 5.1 ($null becomes an empty string); the copy of the old file is in update\backup anyway
+                $old = $p.Dest + '.wtold'
+                [IO.File]::Replace($t, $p.Dest, $old)
+                try { [IO.File]::Delete($old) } catch { }
+            } else { [IO.File]::Move($t, $p.Dest) }
         }
         # Done. From here on nothing is rolled back any more, even if the cleanup fails.
         $swapStarted = $false

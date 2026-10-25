@@ -96,7 +96,7 @@ function Test-RootOld {
     (Read-Txt (Join-Path $AppDir 'WinTidy.ps1')) -eq $OldEngine -and (Read-Txt (Join-Path $AppDir 'WinTidy-App.ps1')) -eq $OldApp -and
     (Read-Txt (Join-Path $AppDir 'lang/de.psd1')) -eq "@{ 'old' = 'alt' }" -and
     -not (Test-Path -LiteralPath (Join-Path $AppDir 'README.md')) -and -not (Test-Path -LiteralPath (Join-Path $AppDir 'LICENSE')) -and
-    @(Get-ChildItem -LiteralPath $AppDir -Recurse -Force -Filter '*.wtnew').Count -eq 0
+    @(Get-ChildItem -LiteralPath $AppDir -Recurse -Force -Filter '*.wt*').Count -eq 0
 }
 $Staged = Join-Path $UpdDir 'staged'
 
@@ -182,7 +182,7 @@ Check 'Apply: new engine and app in place' ((Read-Txt (Join-Path $AppDir 'WinTid
 Check 'Apply: new files added, language file replaced' ((Test-Path -LiteralPath (Join-Path $AppDir 'README.md')) -and (Test-Path -LiteralPath (Join-Path $AppDir 'LICENSE')) -and (Read-Txt (Join-Path $AppDir 'lang/de.psd1')) -like "*'new'*")
 Check 'Apply: existing WinTidy.config.json is never overwritten' ((Read-Txt (Join-Path $AppDir 'WinTidy.config.json')) -eq $OwnConfig)
 Check 'Apply: backup of the old files' ((Read-Txt (Join-Path $UpdDir 'backup/1.0.0/WinTidy.ps1')) -eq $OldEngine -and (Read-Txt (Join-Path $UpdDir 'backup/1.0.0/lang/de.psd1')) -eq "@{ 'old' = 'alt' }" -and $a.Sicherung -like '*1.0.0')
-Check 'Apply: no temporary files, no journal, staging removed' (@(Get-ChildItem -LiteralPath $AppDir -Recurse -Force -Filter '*.wtnew').Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $UpdDir 'journal.json')) -and -not (Test-Path -LiteralPath $Staged))
+Check 'Apply: no temporary files, no journal, staging removed' (@(Get-ChildItem -LiteralPath $AppDir -Recurse -Force -Filter '*.wt*').Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $UpdDir 'journal.json')) -and -not (Test-Path -LiteralPath $Staged))
 Check 'Apply: update.log written' ((Test-Path -LiteralPath (Join-Path $UpdDir 'update.log')) -and (Read-Txt (Join-Path $UpdDir 'update.log')) -like '*Installed version 2.0.0*')
 Check 'Apply twice: second call has nothing to install' ((Invoke-GuiUpdateApply).Status -eq 'FEHLER')
 

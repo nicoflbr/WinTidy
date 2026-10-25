@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows PowerShell 5.1
+            os: windows-latest
+            exe: powershell
+          - name: PowerShell 7 (Windows)
+            os: windows-latest
+            exe: pwsh
+          - name: PowerShell 7 (Linux)
+            os: ubuntu-latest
+            exe: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $failed = 0
+          foreach ($t in 'Test-Parse', 'Test-Report', 'Test-Hardware', 'Test-GuiApi') {
+            Write-Host "::group::$t"
+            & ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File "tests/$t.ps1"
+            $code = $LASTEXITCODE
+            Write-Host '::endgroup::'
+            if ($code -ne 0) { $failed++; Write-Host "::error title=$t::$t failed (exit code $code)" }
+          }
+          exit $failed

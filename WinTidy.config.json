@@ -1,0 +1,10 @@
+{
+  "_hinweis": "Eigene Einstellungen fuer WinTidy. Nur Schluessel eintragen, die vom Standard abweichen sollen - alle Schluessel und Standardwerte stehen in WinTidy.config.beispiel.json. Schluessel mit _ werden ignoriert.",
+  "_beispiel": {
+    "TempAgeDays": 2,
+    "WingetExclude": [
+      "DaVinci",
+      "Blackmagic"
+    ]
+  }
+}

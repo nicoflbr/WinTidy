@@ -1,0 +1,53 @@
+name: Bug report / Fehler melden
+description: Something went wrong or a finding is wrong. English or German welcome.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Please remove personal data** (user names, computer names, file names) from logs and screenshots before posting.
+        Danke für die Meldung! **Bitte persönliche Daten entfernen** (Benutzer-, PC- und Dateinamen), bevor du Protokolle oder Screenshots anhängst.
+  - type: input
+    id: version
+    attributes:
+      label: WinTidy version
+      description: Shown at the bottom of the app sidebar.
+      placeholder: "1.3.4"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: "Run `winver` – e.g. Windows 11 24H2 (26100)"
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      options:
+        - App (WinTidy App.cmd)
+        - Command line (WinTidy.ps1 / WinTidy.cmd)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Click "Jetzt prüfen"
+        2. ...
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: |
+        The app's error dialog has a button that copies a ready-made report. App error log: `%ProgramData%\WinTidy\<PC>\WinTidy-App-Fehler.log` (or `%TEMP%\WinTidy-App-Fehler.log` if the app fails to start). Run logs: `%ProgramData%\WinTidy\<PC>\runs\<run>\konsole.txt`.
+      render: text

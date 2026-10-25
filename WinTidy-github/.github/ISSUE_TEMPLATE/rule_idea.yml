@@ -1,0 +1,32 @@
+name: Idea for a rule or check / Idee für eine Regel
+description: Suggest something WinTidy should detect or fix.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem should be detected?
+      description: What does the user notice (slow boot, full disk, noise, crashes …)?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How can it be measured or proven?
+      description: WinTidy only adds rules with a measurable effect or a clear, verifiable finding. Links to docs or measurements help.
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: Suggested fix and how to undo it
+      description: Leave empty if it should only be a hint.
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Suggested risk level
+      options:
+        - Info (hint only)
+        - Low (safe and reversible)
+        - Medium (sensible, but a matter of taste or not reversible)
+        - High (heuristic, possible false positives)

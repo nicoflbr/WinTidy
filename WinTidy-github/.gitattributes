@@ -1,0 +1,6 @@
+# Windows tool: check out every text file with CRLF (cmd.exe and PowerShell 5.1 expect it).
+# UTF-8 BOMs are kept as they are - PowerShell 5.1 needs them for umlauts.
+* text=auto eol=crlf
+*.png binary
+*.jpg binary
+*.ico binary

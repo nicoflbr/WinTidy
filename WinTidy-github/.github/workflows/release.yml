@@ -1,0 +1,56 @@
+name: Release
+
+# Push a tag like v1.3.4 to publish a release with a ready-to-use ZIP.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check version
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          $m = Select-String -Path WinTidy.ps1 -Pattern "^\`$Script:Version = '([^']+)'" | Select-Object -First 1
+          if (-not $m) { Write-Host '::error::$Script:Version not found in WinTidy.ps1'; exit 1 }
+          $ver = $m.Matches[0].Groups[1].Value
+          if ($ver -ne $tag) { Write-Host "::error::Tag v$tag does not match `$Script:Version $ver"; exit 1 }
+          if (-not (Select-String -Path CHANGELOG.md -Pattern "^## $([regex]::Escape($ver)) " -Quiet)) { Write-Host "::error::CHANGELOG.md has no entry for $ver"; exit 1 }
+
+      - name: Run tests (Windows PowerShell 5.1)
+        shell: pwsh
+        run: |
+          foreach ($t in 'Test-Parse', 'Test-Report', 'Test-Hardware', 'Test-GuiApi') {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File "tests/$t.ps1"
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error::$t failed"; exit 1 }
+          }
+
+      - name: Build ZIP
+        shell: pwsh
+        run: |
+          $name = "WinTidy-${{ github.ref_name }}"
+          $dir = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Path $dir | Out-Null
+          $files = 'WinTidy.ps1', 'WinTidy-App.ps1', 'WinTidy.cmd', 'WinTidy App.cmd', 'WinTidy.config.json', 'WinTidy.config.beispiel.json', 'README.md', 'ANLEITUNG.md', 'CHANGELOG.md', 'LICENSE'
+          foreach ($f in $files) { Copy-Item -LiteralPath $f -Destination $dir }
+          Compress-Archive -Path $dir -DestinationPath "$name.zip"
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = '${{ github.ref_name }}'.TrimStart('v')
+          $lines = Get-Content CHANGELOG.md -Encoding UTF8
+          $start = [array]::IndexOf($lines, ($lines | Where-Object { $_ -like "## $ver *" } | Select-Object -First 1))
+          $notes = New-Object System.Collections.Generic.List[string]
+          for ($i = $start + 1; $i -lt $lines.Count -and $lines[$i] -notlike '## *'; $i++) { $notes.Add($lines[$i]) }
+          $notes -join "`n" | Out-File notes.md -Encoding utf8
+          gh release create '${{ github.ref_name }}' "WinTidy-${{ github.ref_name }}.zip" --title "WinTidy $ver" --notes-file notes.md

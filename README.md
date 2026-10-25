@@ -29,6 +29,7 @@
 | **Startup** | Broken autostart entries, orphaned startup state, active autostarts ranked by their *measured* boot delay (Event 100/101) |
 | **Tasks & services** | Scheduled tasks and services pointing to missing files, harmful patterns in home-made "maintenance" scripts |
 | **Apps** | Side-by-side duplicate versions, preinstalled Store bloatware, outdated programs (via winget) |
+| **Debloat** (own page) | Ads and suggestions in Windows, tracking and personalisation, taskbar and Start clutter, advertising / Microsoft / PC-maker Store apps - per user, undoable settings, nothing machine-wide |
 | **System** | Ghost devices, restore-point storage, SSD TRIM, stuck maintenance, DISM/SFC health, Game Bar background recording |
 | **Hardware & cooling** | CPU/GPU temperatures, fan behavior, thermal/firmware throttling, drive health and wear (SMART), WHEA and memory errors, battery wear, refresh rate, single-channel RAM, XMP/EXPO, monitor plugged into the motherboard, PCIe link width, power plan limits, Intel 13th/14th gen microcode |
 | **Security & stability** | Windows support status and update age, Secure Boot, antivirus and firewall (including third-party), UAC, BIOS age, risky "tweaks" (pagefile off, SysMain off, Defender disabled by policy), event log warnings |
@@ -37,7 +38,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 
 ### What WinTidy deliberately does *not* do
 
-- No registry "cleaners" and no tweaks without measurable benefit.
+- No registry "cleaners" and no tweaks without measurable benefit. The optional **Debloat** page is the one exception: it only changes settings that Windows itself offers (per user, undoable), and only ads and suggestions are ticked.
 - It never turns off Defender, Windows Update, UAC or the firewall.
 - It never changes fan curves or BIOS settings. Windows has no safe, vendor-neutral way to do this, so WinTidy only measures the effect.
 - It never force-removes drivers, and it never touches Documents, Pictures or the Desktop.
@@ -100,4 +101,4 @@ WinTidy changes system settings and deletes files. It creates a restore point an
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The selection on the Debloat page was compiled with the help of [Win11Debloat](https://github.com/raphire/win11debloat) (MIT), see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

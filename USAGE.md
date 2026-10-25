@@ -25,8 +25,9 @@ Double-click `WinTidy App.cmd` → confirm the Windows prompt with **Yes** → t
 2. **Recommendations**: every improvement in plain words, with a traffic light ("Safe", "Check briefly", "Experts only"). The safe points are already ticked. Under "Details" you can deselect individual entries.
 3. **"Apply selected"**: creates a restore point, applies the changes and then shows before/after.
 4. **Hardware** (Overview, "For experts"): cooling, fans, temperatures of processor, graphics card and drives, throttling, battery wear and refresh rate. With **"Test cooling"** WinTidy puts the processor under load for about a minute and checks whether the cooling keeps up.
-5. **History**: boot time chart across all restarts, all checks and optimizations.
-6. **Settings**: appearance (same as Windows, light or dark), language, **updates**, undo, create desktop shortcut, thorough check, expert mode.
+5. **Debloat**: removes what Windows and PC makers put in your way - ads and suggestions, tracking and personalisation, unneeded taskbar buttons, preinstalled apps. It has its own check and its own "Apply selected" button. Only ads and suggestions are ticked, the rest is up to you. Settings can be undone under History; removed apps can be reinstalled from the Store. Not offered on managed PCs and Windows Server.
+6. **History**: boot time chart across all restarts, all checks and optimizations.
+7. **Settings**: appearance (same as Windows, light or dark), language, **updates**, undo, create desktop shortcut, thorough check, expert mode.
 
 The app uses the same logic and the same data as the command line – you can use both alternately.
 
@@ -88,6 +89,7 @@ At prompts: `y` yes · `n` no · `a` all of this rule · `s` skip rule. (`j`/`ja
 - **Startup:** entries with a missing file, orphaned state values, active autostarts sorted by **measured** boot delay
 - **Tasks/services:** tasks and services with a missing program file, harmful patterns in home-made maintenance scripts (deleting Prefetch, emptying the whole recycle bin, `winget --all` at every sign-in …)
 - **Programs:** versions installed side by side, bloatware Store apps, outdated programs (winget)
+- **Debloat** (own page, `-Rule DBL-ADS,DBL-PRIVACY,DBL-SHELL,DBL-COMFORT,DBL-APPS-PROMO,DBL-APPS-MS,DBL-APPS-OEM`): 24 per-user settings (ads, suggestions, tracking, taskbar, Explorer) and a catalog of 112 removable Store apps (advertising apps, Microsoft apps, PC maker apps). Nothing machine-wide, no services, no policies.
 - **System:** ghost devices, storage for restore points, SSD TRIM, stuck maintenance, system integrity (DISM/SFC), Game Bar background recording
 - **Hardware & cooling:** processor and graphics card temperature, fan speeds (stopped CPU fan, full speed on a cool PC, pump), throttling due to heat or firmware, several fan tools at once, drive health/temperature/wear, SMART warnings, memory diagnostic and WHEA errors, battery wear, cooling policy, refresh rate
 - **Hardware configuration:** only one RAM module, RAM speed (XMP/EXPO), monitor on the motherboard instead of the graphics card, graphics card with too narrow a PCIe link, missing graphics driver, devices with an error code, power plan limits the processor/turbo off, Intel 13th/14th gen with old microcode, LAN only 100 Mbit/s, system drive vs. free NVMe

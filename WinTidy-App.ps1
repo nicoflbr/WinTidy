@@ -329,6 +329,7 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
         <StackPanel>
           <RadioButton x:Name="NavHome" AutomationProperties.Name="Overview" Style="{StaticResource Nav}" IsChecked="True" ToolTip="Overview"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT1" Text="Overview"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavRecs" AutomationProperties.Name="Recommendations" Style="{StaticResource Nav}" ToolTip="Recommendations"><DockPanel LastChildFill="True"><TextBlock DockPanel.Dock="Left" Text="&#xE82F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><Border x:Name="RecsBadge" DockPanel.Dock="Right" Background="{DynamicResource Accent}" CornerRadius="9" Padding="7,0" Margin="6,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"><TextBlock x:Name="RecsBadgeText" Foreground="{DynamicResource OnAccent}" FontSize="12"/></Border><TextBlock x:Name="NavT2" Text="Recommendations" TextTrimming="CharacterEllipsis"/></DockPanel></RadioButton>
+          <RadioButton x:Name="NavDebloat" AutomationProperties.Name="Debloat" Style="{StaticResource Nav}" ToolTip="Debloat"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT6" Text="Debloat"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavHistory" AutomationProperties.Name="History" Style="{StaticResource Nav}" ToolTip="History"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT3" Text="History"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavSettings" AutomationProperties.Name="Settings" Style="{StaticResource Nav}" ToolTip="Settings"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT4" Text="Settings"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavHelp" AutomationProperties.Name="Help" Style="{StaticResource Nav}" ToolTip="Help"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE897;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT5" Text="Help"/></StackPanel></RadioButton>
@@ -439,6 +440,34 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
             <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
               <TextBlock x:Name="SelSummary" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource Ink}" TextWrapping="Wrap"/>
               <TextBlock x:Name="SelNote" FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Text="A restore point is created first. Every change is logged."/>
+            </StackPanel>
+          </DockPanel>
+        </Border>
+      </Grid>
+
+      <!-- Debloat: ads, suggestions, apps -->
+      <Grid x:Name="PageDebloat" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <StackPanel Margin="36,22,36,10">
+          <TextBlock Text="Debloat" Style="{StaticResource H1}"/>
+          <TextBlock x:Name="DebloatSub" Style="{StaticResource Sub}" Margin="0,4,0,10" Text="Not checked yet." TextWrapping="Wrap"/>
+          <StackPanel Orientation="Horizontal">
+            <Button x:Name="BtnDebloatScan" Style="{StaticResource LinkBtn}" Content="Check again"/>
+            <TextBlock Text="  ·  " Foreground="{DynamicResource Muted}"/>
+            <Button x:Name="BtnDebloatNone" Style="{StaticResource LinkBtn}" Content="Select nothing"/>
+          </StackPanel>
+        </StackPanel>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+          <StackPanel x:Name="DebloatPanel" Margin="36,6,36,20" MaxWidth="980" HorizontalAlignment="Left"/>
+        </ScrollViewer>
+        <Border Grid.Row="2" Background="{DynamicResource CardBg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="36,14">
+          <DockPanel>
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+              <Button x:Name="BtnDebloatApply" Style="{StaticResource Primary}" Content="_Apply selected"/>
+            </StackPanel>
+            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+              <TextBlock x:Name="DebloatSummary" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource Ink}" TextWrapping="Wrap"/>
+              <TextBlock x:Name="DebloatNote" FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap"/>
             </StackPanel>
           </DockPanel>
         </Border>
@@ -915,8 +944,8 @@ function Complete-Op($op) {
 # =============================================================================
 #  Navigation, pages, layout
 # =============================================================================
-$Pages = 'PageHome', 'PageRecs', 'PageBusy', 'PageResult', 'PageError', 'PageHistory', 'PageSettings', 'PageHelp'
-$NavItems = 'NavHome', 'NavRecs', 'NavHistory', 'NavSettings', 'NavHelp'
+$Pages = 'PageHome', 'PageRecs', 'PageDebloat', 'PageBusy', 'PageResult', 'PageError', 'PageHistory', 'PageSettings', 'PageHelp'
+$NavItems = 'NavHome', 'NavRecs', 'NavDebloat', 'NavHistory', 'NavSettings', 'NavHelp'
 # Is something running right now (also invisible, e.g. loading)? Then say so instead of silently doing nothing.
 # Open files (report) via Explorer so that the browser does not start with admin rights
 function Open-AsUser([string]$Path) { try { Start-Process -FilePath (Join-Path $env:windir 'explorer.exe') -ArgumentList ('"{0}"' -f $Path) } catch { try { Start-Process -FilePath $Path } catch { } } }
@@ -926,6 +955,7 @@ function Set-Nav([bool]$on) { foreach ($n in $NavItems) { $UI[$n].IsEnabled = $o
 function Clear-NavSelection { foreach ($n in $NavItems) { $UI[$n].IsChecked = $false } }
 $UI.NavHome.Add_Checked({ Show-Page 'PageHome' })
 $UI.NavRecs.Add_Checked({ Show-Page 'PageRecs' })
+$UI.NavDebloat.Add_Checked({ Show-Page 'PageDebloat'; if ((-not $State.DebloatScanned) -and -not $State.Busy) { Start-DebloatScan } })
 $UI.NavHistory.Add_Checked({ Show-Page 'PageHistory'; Load-History })
 $UI.NavSettings.Add_Checked({ Show-Page 'PageSettings' })
 $UI.NavHelp.Add_Checked({ Show-Page 'PageHelp' })
@@ -937,7 +967,7 @@ function Set-Narrow([bool]$narrow) {
     $vis = $(if ($narrow) { 'Collapsed' } else { 'Visible' })
     $UI.NavCol.Width = New-Object System.Windows.GridLength ($(if ($narrow) { 84 } else { 252 }))
     $UI.NavDock.Margin = $(if ($narrow) { '10,22,10,16' } else { '16,22,16,16' })
-    foreach ($n in 'BrandText', 'NavT1', 'NavT2', 'NavT3', 'NavT4', 'NavT5', 'VersionText') { $UI[$n].Visibility = $vis }
+    foreach ($n in 'BrandText', 'NavT1', 'NavT2', 'NavT3', 'NavT4', 'NavT5', 'NavT6', 'VersionText') { $UI[$n].Visibility = $vis }
 }
 # Window never larger than the work area (laptops with scaling)
 $Win.Add_SourceInitialized({
@@ -1215,6 +1245,7 @@ function Update-SelSummary {
     $total = [int](@($State.Findings | Where-Object Fixbar | ForEach-Object { @($_.Items).Count }) | Measure-Object -Sum).Sum
     if ($total) { $UI.RecsBadge.Visibility = 'Visible'; $UI.RecsBadgeText.Text = "$total" } else { $UI.RecsBadge.Visibility = 'Collapsed' }
     Set-A11y $UI.BtnApply ((T 'Apply selected: ') + $UI.SelSummary.Text)
+    Update-DebloatSummary
 }
 function New-Badge([string]$risk) {
     $m = $RiskUi[$risk]; if (-not $m) { return $null }
@@ -1262,7 +1293,7 @@ function New-RecCard($f) {
     }
     $exp = New-Object System.Windows.Controls.Expander; $exp.Margin = '28,8,0,0'
     $exp.Header = $(if ($einzeln) { (T 'Select entries ({0})' (@($f.Items).Count)) } elseif (@($f.Items).Count -eq 1) { 'Details' } else { (T 'Details ({0} entries)' (@($f.Items).Count)) })
-    $exp.IsExpanded = ($einzeln -or $f.Risiko -eq 'Mittel')
+    $exp.IsExpanded = ($einzeln -or $f.Risiko -eq 'Mittel' -or $f.Seite -eq 'Debloat')
     $list = New-Object System.Windows.Controls.StackPanel; $list.Margin = '4,8,0,0'
     $itemBoxes = New-Object System.Collections.ArrayList
     foreach ($it in @($f.Items)) {
@@ -1323,6 +1354,58 @@ $UI.BtnSelNone.Add_Click({ Set-AllSelection 'none' })
 $UI.BtnToRecs.Add_Click({ Go 'NavRecs' })
 
 # =============================================================================
+#  Debloat page (own tab): same cards as the recommendations, but its own check and its own apply button
+# =============================================================================
+$State.DebloatFindings = @(); $State.DebloatHint = ''; $State.DebloatScanned = $false; $State.DebloatScanTime = $null; $State.LastFixPage = ''
+$DebloatOrder = 'DBL-ADS', 'DBL-PRIVACY', 'DBL-SHELL', 'DBL-COMFORT', 'DBL-APPS-PROMO', 'DBL-APPS-MS', 'DBL-APPS-OEM'
+function Update-DebloatSummary {
+    $n = 0
+    foreach ($f in @($State.DebloatFindings)) { foreach ($it in @($f.Items)) { if ($it.Selected) { $n++ } } }
+    $UI.DebloatSummary.Text = if ($n) { (T '{0} selected') -f (Plural $n (T 'change') (T 'changes')) } else { (T 'Nothing selected') }
+    $UI.BtnDebloatApply.IsEnabled = ($n -gt 0 -and $IsAdmin -and -not $State.Locked)
+    $UI.DebloatNote.Text = if (-not $IsAdmin) { (T 'WinTidy needs administrator rights to apply changes.') } elseif ($State.Locked) { $State.Locked } elseif ($UI.OptRestorePoint.IsChecked) { (T 'A restore point is created first. Every change is logged.') } else { (T 'Caution: no restore point is created (see Settings).') }
+    Set-A11y $UI.BtnDebloatApply ((T 'Apply selected: ') + $UI.DebloatSummary.Text)
+}
+function Build-Debloat {
+    $UI.DebloatPanel.Children.Clear()
+    $fix = @($State.DebloatFindings | Where-Object Fixbar)
+    $cnt = [int](@($fix | ForEach-Object { @($_.Items).Count }) | Measure-Object -Sum).Sum
+    $UI.DebloatSub.Text = if ($State.DebloatHint) { $State.DebloatHint } elseif ($cnt) { (T 'WinTidy found {0}. Only ads and suggestions are preselected - everything else is up to you. Settings can be undone under History; removed apps can be reinstalled from the Store.' (Plural $cnt (T 'possible change') (T 'possible changes'))) } elseif ($State.DebloatScanned) { (T 'Nothing to tidy up here - your PC is already clean.') } else { (T 'Not checked yet.') }
+    $lastKind = ''
+    foreach ($id in $DebloatOrder) {
+        $f = $fix | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+        if (-not $f) { continue }
+        $kind = $(if ($id -like 'DBL-APPS-*') { 'apps' } else { 'settings' })
+        if ($kind -ne $lastKind) {
+            $h = New-Tb $(if ($kind -eq 'apps') { T 'Apps' } else { T 'Settings' }) 'Muted' 13 'SemiBold'; $h.Margin = '2,10,0,8'
+            [void]$UI.DebloatPanel.Children.Add($h); $lastKind = $kind
+        }
+        [void]$UI.DebloatPanel.Children.Add((New-RecCard $f))
+    }
+    Update-DebloatSummary
+}
+function Start-DebloatScan {
+    if (Test-Busy) { return }
+    [void](Start-Op 'scan' @'
+$r = Invoke-GuiDebloatScan { param($i, $n, $t) $Sync.Progress = @{ I = $i; N = $n; Text = $t } }
+$r
+'@ {
+        param($r, $err, $cancelled)
+        if ($cancelled) { Go 'NavHome'; return }
+        if (-not $r) {
+            Write-ErrLog "Debloat: $err"
+            Show-ErrorPage (T 'The check could not be completed') (T 'Nothing was changed on your PC. Please try again. If it happens again, copy the error report and send it to the person who gave you WinTidy.') $err { Start-DebloatScan }
+            return
+        }
+        $State.DebloatFindings = @($r.Findings); $State.DebloatHint = [string]$r.Hinweis; $State.DebloatScanned = $true; $State.DebloatScanTime = Get-Date
+        if ($r.Context) { $State.Context = $r.Context; Update-Banners }
+        Build-Debloat; Go 'NavDebloat'
+    } (T 'Looking for ads, suggestions and apps ...') (T 'Nothing is changed. This only takes a few seconds.'))
+}
+$UI.BtnDebloatScan.Add_Click({ Start-DebloatScan })
+$UI.BtnDebloatNone.Add_Click({ foreach ($f in @($State.DebloatFindings)) { foreach ($it in @($f.Items)) { $it.Selected = $false } }; Build-Debloat })
+
+# =============================================================================
 #  Error page (friendly, with "Try again" and "Copy error report")
 # =============================================================================
 function Show-ErrorPage([string]$title, [string]$text, [string]$detail, [scriptblock]$retry) {
@@ -1368,14 +1451,15 @@ $UI.BtnScan.Add_Click({ Start-Scan })
 # =============================================================================
 #  Apply
 # =============================================================================
-function Get-SelectedJobs {
+function Get-SelectedJobs([string]$Page = '') {
     $jobs = @()
-    foreach ($f in $State.Findings) { foreach ($it in @($f.Items)) { if ($it.Selected) { $jobs += [pscustomobject]@{ F = $f; It = $it } } } }
+    foreach ($f in $(if ($Page) { @($State.DebloatFindings) } else { @($State.Findings) })) { foreach ($it in @($f.Items)) { if ($it.Selected) { $jobs += [pscustomobject]@{ F = $f; It = $it } } } }
     $jobs
 }
-function Start-Fix([bool]$ohneRP) {
+function Start-Fix([bool]$ohneRP, [string]$Page = '') {
     $sel = @()
-    foreach ($f in $State.Findings) { $ix = @(@($f.Items) | Where-Object Selected | ForEach-Object { $_.Index }); if ($ix.Count) { $sel += @{ Id = $f.Id; Indexes = $ix } } }
+    $State.LastFixPage = $Page
+    foreach ($f in $(if ($Page) { @($State.DebloatFindings) } else { @($State.Findings) })) { $ix = @(@($f.Items) | Where-Object Selected | ForEach-Object { $_.Index }); if ($ix.Count) { $sel += @{ Id = $f.Id; Indexes = $ix } } }
     if (-not $sel.Count) { return }
     $Sync.Selection = $sel; $Sync.RestorePoint = [bool]$UI.OptRestorePoint.IsChecked; $Sync.OhneRP = $ohneRP
     [void](Start-Op 'fix' @'
@@ -1390,24 +1474,25 @@ $r
         }
         if ($r.Status -eq 'RP-FEHLT') {
             $q = (T "Windows could not create a restore point.`n") + $(if ($r.Meldung) { (T "(Reason: {0})`n" ($r.Meldung)) } else { '' }) + (T "`nNothing has been changed in your files and settings so far.") + $(if ($r.ComputerschutzEingeschaltet) { (T ' WinTidy only switched on Windows System Restore for drive {0} for this.' $env:SystemDrive) } else { '' }) + (T "`n`nWithout a restore point, changes to drivers and Windows are harder to undo. WinTidy can still reset startup, tasks and services itself.`n`nContinue anyway? (Recommended: No)")
-            if ([System.Windows.MessageBox]::Show($Win, $q, 'WinTidy', 'YesNo', 'Warning', 'No') -eq 'Yes') { Start-Fix $true } else { Go 'NavRecs' }
+            if ([System.Windows.MessageBox]::Show($Win, $q, 'WinTidy', 'YesNo', 'Warning', 'No') -eq 'Yes') { Start-Fix $true $State.LastFixPage } else { Go $(if ($State.LastFixPage) { 'NavDebloat' } else { 'NavRecs' }) }
             return
         }
-        if ($r.Status -eq 'GESPERRT') { Show-Msg ((T "Changes are blocked on this PC.`n`n") + [string]$r.Meldung) | Out-Null; Go 'NavRecs'; return }
+        if ($r.Status -eq 'GESPERRT') { Show-Msg ((T "Changes are blocked on this PC.`n`n") + [string]$r.Meldung) | Out-Null; Go $(if ($State.LastFixPage) { 'NavDebloat' } else { 'NavRecs' }); return }
         $State.LastResult = $r; if ($r.Nachher) { $State.Snapshot = $r.Nachher }
         Show-Result $r
     } (T 'Optimizing your PC …') (T 'Please keep the PC switched on. You can cancel at any time – WinTidy then stops after the current step.'))
 }
-$UI.BtnApply.Add_Click({
+function Confirm-Apply([string]$Page = '') {
     if (Test-Busy) { return }
-    $jobs = @(Get-SelectedJobs)
+    $jobs = @(Get-SelectedJobs $Page)
     $n = $jobs.Count
     if (-not $n) { return }
     # Outdated check?
-    if ($State.ScanTime -and ((Get-Date) - $State.ScanTime).TotalMinutes -gt 30) {
-        $min = [int]((Get-Date) - $State.ScanTime).TotalMinutes
+    $scanTime = $(if ($Page) { $State.DebloatScanTime } else { $State.ScanTime })
+    if ($scanTime -and ((Get-Date) - $scanTime).TotalMinutes -gt 30) {
+        $min = [int]((Get-Date) - $scanTime).TotalMinutes
         $a = Show-Msg ((T "The check is already {0} minutes old. Something may have changed since then.`n`nYes = check again first (recommended)`nNo = continue with the old check") -f $min) 'YesNoCancel' 'Question'
-        if ($a -eq 'Yes') { Start-Scan; return }
+        if ($a -eq 'Yes') { if ($Page) { Start-DebloatScan } else { Start-Scan }; return }
         if ($a -ne 'No') { return }
     }
     $nEnd = @($jobs | Where-Object { Test-Endgueltig $_.F }).Count
@@ -1426,8 +1511,10 @@ $UI.BtnApply.Add_Click({
     if ($jobs | Where-Object { $_.F.Id -eq 'APP-UPDATES' }) { $msg += (T "`nPlease save and close all programs beforehand – updates can close open programs.`n") }
     $msg += (T "`nStart now?")
     if ((Show-Msg $msg 'YesNo' 'Question') -ne 'Yes') { return }
-    Start-Fix $false
-})
+    Start-Fix $false $Page
+}
+$UI.BtnApply.Add_Click({ Confirm-Apply '' })
+$UI.BtnDebloatApply.Add_Click({ Confirm-Apply 'Debloat' })
 $UI.BtnCancel.Add_Click({
     $op = $State.Op; if (-not $op) { return }
     if ($op.Kind -eq 'scan') { $op.Cancelled = $true; $UI.BtnCancel.IsEnabled = $false; $UI.CancelNote.Text = (T 'Cancelling …'); try { [void]$op.PS.BeginStop($null, $null) } catch { } }
@@ -1516,10 +1603,15 @@ function Show-Result($r) {
         Add-ResultGroup (T 'Not carried out') 'Muted' 0xE711 @($det | Where-Object { $_.Status -notin 'OK', 'Fehler', 'Uebersprungen' })
     } else { [void]$UI.ResultDetails.Children.Add((New-Tb (T 'The details are in the detailed report.') 'Muted' 13)) }
     # Applied recommendations are done: keep only hints, check again for new recommendations
-    $State.Findings = @($State.Findings | Where-Object { -not $_.Fixbar }); $State.ScanTime = $null
-    Update-Home; Build-Recs
-    $UI.RecsSub.Text = (T 'The selected recommendations have been processed. Check again to see the current state.')
-    $UI.ScoreDetail.Text = (T 'Optimization complete. Please check again for new recommendations.')
+    if ($State.LastFixPage -eq 'Debloat') {
+        $State.DebloatFindings = @(); $State.DebloatScanned = $false; $State.DebloatScanTime = $null; $State.DebloatHint = ''
+        Build-Debloat
+    } else {
+        $State.Findings = @($State.Findings | Where-Object { -not $_.Fixbar }); $State.ScanTime = $null
+        Update-Home; Build-Recs
+        $UI.RecsSub.Text = (T 'The selected recommendations have been processed. Check again to see the current state.')
+        $UI.ScoreDetail.Text = (T 'Optimization complete. Please check again for new recommendations.')
+    }
     Clear-NavSelection; Show-Page 'PageResult'
 }
 $UI.BtnResultHome.Add_Click({ Go 'NavHome' })

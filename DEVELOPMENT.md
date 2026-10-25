@@ -37,7 +37,7 @@ WinTidy\
   USAGE.md               # user guide
   DEVELOPMENT.md         # this document
   CLAUDE.md              # short instructions for AI assistants (refers here)
-  CONTRIBUTING.md, SECURITY.md, CHANGELOG.md, LICENSE (MIT)
+  CONTRIBUTING.md, SECURITY.md, CHANGELOG.md, THIRD-PARTY-NOTICES.md, LICENSE (MIT)
   .github\workflows\tests.yml    # automatic tests (Windows PowerShell 5.1 and PowerShell 7)
   .github\workflows\release.yml  # tag v* -> ZIP + .sha256 + GitHub release with the CHANGELOG section
   tests\
@@ -46,6 +46,7 @@ WinTidy\
     Test-Hardware.ps1    # hardware rating, score, cooling test with synthetic values
     Test-GuiApi.ps1      # interface engine <-> app with test rules
     Test-Update.ps1      # updater offline: checksums, package checks, install, rollback (built ZIPs, mocked network)
+    Test-Debloat.ps1     # Debloat page: catalog, allow-list, detection per build, fix, app removal, contexts (registry and apps replaced)
     Probe-Hardware.ps1   # diagnosis on real PCs: which sensor sources deliver what (writes probe-hardware.json)
     Probe-Display.ps1    # diagnosis: refresh rates according to driver and EDID
   WinTidy-Daten\         # runtime data up to 1.2 (in .gitignore); since 1.3 see below
@@ -147,6 +148,18 @@ Security design (do not weaken):
 App flow: setting `AutoUpdate` and the time of the last check `UpdateGeprueft` in `app-einstellungen.json`; after the start a silent check (once per `UpdateIntervalHours`), then stage and apply as separate silent operations (`updatecheck`, `updatestage`, `updateapply`); closing the window is blocked while `updateapply` runs; a banner offers **Restart now** (`Restart-App`). The manual button asks before installing. The first update from 1.4.1 or older is manual - those versions have no updater.
 
 Tests: `tests/Test-Update.ps1` (offline, builds ZIP packages with `System.IO.Compression`, mocks the network and `Test-WtDataRootSafe`).
+
+### 3c. Debloat page (since 1.6)
+
+Own page in the app (nav item **Debloat**) with its own check and its own "Apply selected" button. Same rule contract, same cards, same undo - only the grouping differs.
+
+- **Rules:** `DBL-ADS`, `DBL-PRIVACY`, `DBL-SHELL`, `DBL-COMFORT` (settings, category System, Low, reversible, no admin rights needed) and `DBL-APPS-PROMO`, `DBL-APPS-MS`, `DBL-APPS-OEM` (Store apps, category Programme, Medium/Medium/High, permanent, admin rights, OEM only individually). All have `Standard = $false` and `Seite = 'Debloat'`.
+- **Rule fields `Seite` / `Vorwahl`:** a rule with `Seite` is not part of the normal check (`Get-AllFindings` without `-Page` skips it); `Get-AllFindings -Page 'Debloat'` returns only those rules. `Vorwahl = $false` switches off the preselection of a Low-risk rule (default: Low is preselected). The findings of both pages are merged in `$Script:LastFindings`, so `Invoke-FixSelection` finds the rule of either page. `Invoke-GuiDebloatScan` = `Get-AllFindings -Page` + hint for server / managed PC / other account.
+- **Catalog:** `$Script:DebloatTweaks` (Id, Gruppe = rule, Min = first Windows build, Titel, Werte = `Dv key name value [type]`) and `$Script:DebloatApps` (Gruppe PROMO|MS|OEM, Id = package name prefix, Name). A tweak counts as done only if all its values already have the target value. `$Script:DebloatNever` = apps that are never removed (prefix match in both directions); `Remove-DebloatApp` checks it again.
+- **Rules for new entries:** per-user only (HKCU), only settings that Windows Settings or Explorer options offer too, no policy keys for the whole PC, no services, no security features, no telemetry policies. Every key must match `$Script:RestoreKeyAllow` (`Test-Debloat` checks it), otherwise the undo refuses it. Apps: package name prefix (`Get-AppxPackage -Name 'Prefix*'`), never frameworks / `NonRemovable`, never on the never-remove list. A matter of taste is never preselected.
+- **Not offered** on managed PCs, Windows Server and when WinTidy runs under a different account (HKCU and the app list would be the wrong profile).
+- **Source:** the selection was compiled with the help of Win11Debloat (MIT) - see `THIRD-PARTY-NOTICES.md`. No code copied.
+- **App side:** `Start-DebloatScan` (kind `scan`, so it can be cancelled), `Build-Debloat`, `Update-DebloatSummary`, `Confirm-Apply <page>`, `Start-Fix <ohneRP> <page>`; `$State.DebloatFindings`, `$State.LastFixPage` tells `Show-Result` which page to refresh. Opening the page scans automatically once; after applying, the page must be checked again.
 
 ---
 
@@ -284,6 +297,7 @@ pwsh ./tests/Test-Report.ps1    # builds the report from test data in the temp f
 pwsh ./tests/Test-Hardware.ps1  # scenarios for cooling/fans/GPU/drives/battery, score, cooling test (English and German texts)
 pwsh ./tests/Test-GuiApi.ps1    # app interface: findings, RP-FEHLT, OhneRP, cancel, battery, server/company PC, restore preview
 pwsh ./tests/Test-Update.ps1    # updater: checksums, package checks, zip-slip, install, rollback, journal repair (offline)
+pwsh ./tests/Test-Debloat.ps1   # Debloat page: catalog, detection per Windows build, fix, app removal, never-remove list, contexts
 ```
 
 All of them also run on Linux/macOS with PowerShell 7. Functions are loaded via the AST so that Windows-specific startup code is not executed. `Test-Hardware.ps1` replaces the data sources (`Get-HwMonitorSensors`, `Get-NvidiaGpus`, `Get-ThermalZones`, `Get-DiskHealth`, `Get-CpuPerfSample` …) with functions returning synthetic values – so always build new hardware data sources as their own `Get-*` function.

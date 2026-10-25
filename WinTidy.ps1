@@ -67,7 +67,7 @@ if ($Rule) { $Rule = @($Rule | ForEach-Object { $_ -split ',' } | ForEach-Object
 if ($ExcludeRule) { $ExcludeRule = @($ExcludeRule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.5.0'
+$Script:Version = '1.6.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)
@@ -464,6 +464,248 @@ function ConvertTo-RegKeyText([string]$Key) {
 }
 # Only these keys may be touched by "Restore" (protection against tampered backups)
 $Script:RestoreKeyAllow = '(?i)^HK(CU|LM)\\Software\\(WOW6432Node\\)?Microsoft\\Windows\\CurrentVersion\\(Run|Explorer\\StartupApproved\\(Run|Run32|StartupFolder))$|^HKCU\\System\\GameConfigStore$|^HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR$|^HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\SystemAppData\\[^\\]+\\[^\\]+$|^HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem$'
+# =============================================================================
+#  Debloat catalog (page "Debloat" in the app, rules DBL-*)
+#  Only per-user preferences that Windows itself offers (Settings, Explorer options) and removable apps. No policies for the
+#  whole PC, no services, no security features, no telemetry policies. Selection of the settings and the app lists were
+#  compiled with the help of the open-source project Win11Debloat (MIT, https://github.com/raphire/win11debloat),
+#  see THIRD-PARTY-NOTICES.md.
+# =============================================================================
+$Script:RestoreKeyAllow += '|^HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\(ContentDeliveryManager|Explorer\\Advanced|Explorer\\Advanced\\TaskbarDeveloperSettings|SystemSettings\\AccountNotifications|UserProfileEngagement|Notifications\\Settings\\Windows\.SystemToast\.Suggested|Mobility|Search|AdvertisingInfo|Privacy)$|^HKCU\\Software\\Microsoft\\(Speech_OneCore\\Settings\\OnlineSpeechPrivacy|Input\\TIPC)$|^HKCU\\Software\\Policies\\Microsoft\\Windows\\Explorer$|^HKCU\\Control Panel\\Accessibility\\StickyKeys$'
+# One registry value of a setting; 'CV:' stands for HKCU:\Software\Microsoft\Windows\CurrentVersion
+function Dv([string]$Key, [string]$Name, $Value, [string]$Type = 'DWord') {
+    [pscustomobject]@{ Key = ($Key -replace '^CV:', 'HKCU:\Software\Microsoft\Windows\CurrentVersion'); Name = $Name; Wert = $Value; Typ = $Type }
+}
+# Id = internal name, Gruppe = rule, Min = first Windows build that has the setting (0 = all), Werte = values that are set
+$Script:DebloatTweaks = @(
+    @{ Id = 'welcome'; Gruppe = 'DBL-ADS'; Min = 0; Titel = (T 'Turn off welcome screens and "finish setting up your PC" reminders')
+        Werte = @((Dv 'CV:\ContentDeliveryManager' 'SubscribedContent-310093Enabled' 0), (Dv 'CV:\UserProfileEngagement' 'ScoobeSystemSettingEnabled' 0)) }
+    @{ Id = 'start-ads'; Gruppe = 'DBL-ADS'; Min = 0; Titel = (T 'Turn off suggested apps in the Start menu')
+        Werte = @((Dv 'CV:\ContentDeliveryManager' 'SubscribedContent-338388Enabled' 0), (Dv 'CV:\ContentDeliveryManager' 'SystemPaneSuggestionsEnabled' 0), (Dv 'CV:\Explorer\Advanced' 'Start_IrisRecommendations' 0), (Dv 'CV:\Explorer\Advanced' 'Start_AccountNotifications' 0)) }
+    @{ Id = 'tips'; Gruppe = 'DBL-ADS'; Min = 0; Titel = (T 'Turn off tips, tricks and suggestions while you work')
+        Werte = @((Dv 'CV:\ContentDeliveryManager' 'SubscribedContent-338389Enabled' 0), (Dv 'CV:\ContentDeliveryManager' 'SoftLandingEnabled' 0)) }
+    @{ Id = 'settings-ads'; Gruppe = 'DBL-ADS'; Min = 0; Titel = (T 'Turn off suggested content in the Settings app')
+        Werte = @((Dv 'CV:\ContentDeliveryManager' 'SubscribedContent-338393Enabled' 0), (Dv 'CV:\ContentDeliveryManager' 'SubscribedContent-353694Enabled' 0), (Dv 'CV:\ContentDeliveryManager' 'SubscribedContent-353696Enabled' 0), (Dv 'CV:\ContentDeliveryManager' 'SubscribedContent-353698Enabled' 0), (Dv 'CV:\SystemSettings\AccountNotifications' 'EnableAccountNotifications' 0)) }
+    @{ Id = 'lockscreen'; Gruppe = 'DBL-ADS'; Min = 0; Titel = (T 'Turn off tips and "fun facts" on the lock screen')
+        Werte = @((Dv 'CV:\ContentDeliveryManager' 'SubscribedContent-338387Enabled' 0), (Dv 'CV:\ContentDeliveryManager' 'RotatingLockScreenOverlayEnabled' 0)) }
+    @{ Id = 'autoinstall'; Gruppe = 'DBL-ADS'; Min = 0; Titel = (T 'Stop Windows from installing suggested apps by itself')
+        Werte = @((Dv 'CV:\ContentDeliveryManager' 'SilentInstalledAppsEnabled' 0)) }
+    @{ Id = 'sync-ads'; Gruppe = 'DBL-ADS'; Min = 0; Titel = (T 'Turn off cloud service ads in File Explorer')
+        Werte = @((Dv 'CV:\Explorer\Advanced' 'ShowSyncProviderNotifications' 0)) }
+    @{ Id = 'phone-suggest'; Gruppe = 'DBL-ADS'; Min = 0; Titel = (T 'Turn off suggestions to connect your phone')
+        Werte = @((Dv 'CV:\Mobility' 'OptedIn' 0)) }
+    @{ Id = 'suggested-toast'; Gruppe = 'DBL-ADS'; Min = 0; Titel = (T 'Turn off notifications that advertise Microsoft services')
+        Werte = @((Dv 'CV:\Notifications\Settings\Windows.SystemToast.Suggested' 'Enabled' 0)) }
+    @{ Id = 'adid'; Gruppe = 'DBL-PRIVACY'; Min = 0; Titel = (T 'Turn off the advertising ID for apps')
+        Werte = @((Dv 'CV:\AdvertisingInfo' 'Enabled' 0)) }
+    @{ Id = 'tailored'; Gruppe = 'DBL-PRIVACY'; Min = 0; Titel = (T 'Turn off tailored tips and ads based on diagnostic data')
+        Werte = @((Dv 'CV:\Privacy' 'TailoredExperiencesWithDiagnosticDataEnabled' 0)) }
+    @{ Id = 'trackprogs'; Gruppe = 'DBL-PRIVACY'; Min = 0; Titel = (T 'Stop tracking app launches for Start and search results')
+        Werte = @((Dv 'CV:\Explorer\Advanced' 'Start_TrackProgs' 0)) }
+    @{ Id = 'speech'; Gruppe = 'DBL-PRIVACY'; Min = 0; Titel = (T 'Turn off online speech recognition')
+        Werte = @((Dv 'HKCU:\Software\Microsoft\Speech_OneCore\Settings\OnlineSpeechPrivacy' 'HasAccepted' 0)) }
+    @{ Id = 'inking'; Gruppe = 'DBL-PRIVACY'; Min = 0; Titel = (T 'Turn off sending inking and typing samples')
+        Werte = @((Dv 'HKCU:\Software\Microsoft\Input\TIPC' 'Enabled' 0)) }
+    @{ Id = 'bing'; Gruppe = 'DBL-SHELL'; Min = 0; Titel = (T 'Remove web results (Bing) from Start menu search')
+        Werte = @((Dv 'HKCU:\Software\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions' 1)) }
+    @{ Id = 'copilot-btn'; Gruppe = 'DBL-SHELL'; Min = 22621; Titel = (T 'Hide the Copilot button in the taskbar')
+        Werte = @((Dv 'CV:\Explorer\Advanced' 'ShowCopilotButton' 0)) }
+    @{ Id = 'chat'; Gruppe = 'DBL-SHELL'; Min = 22000; Titel = (T 'Hide the Chat (Teams) icon in the taskbar')
+        Werte = @((Dv 'CV:\Explorer\Advanced' 'TaskbarMn' 0)) }
+    @{ Id = 'taskview'; Gruppe = 'DBL-SHELL'; Min = 0; Titel = (T 'Hide the Task view button in the taskbar')
+        Werte = @((Dv 'CV:\Explorer\Advanced' 'ShowTaskViewButton' 0)) }
+    @{ Id = 'search-icon'; Gruppe = 'DBL-SHELL'; Min = 0; Titel = (T 'Show search as an icon instead of a search box')
+        Werte = @((Dv 'CV:\Search' 'SearchboxTaskbarMode' 1)) }
+    @{ Id = 'endtask'; Gruppe = 'DBL-SHELL'; Min = 22621; Titel = (T 'Add "End task" to the taskbar context menu')
+        Werte = @((Dv 'CV:\Explorer\Advanced\TaskbarDeveloperSettings' 'TaskbarEndTask' 1)) }
+    @{ Id = 'fileext'; Gruppe = 'DBL-COMFORT'; Min = 0; Titel = (T 'Always show file extensions (e.g. .pdf)')
+        Werte = @((Dv 'CV:\Explorer\Advanced' 'HideFileExt' 0)) }
+    @{ Id = 'hidden'; Gruppe = 'DBL-COMFORT'; Min = 0; Titel = (T 'Show hidden files and folders')
+        Werte = @((Dv 'CV:\Explorer\Advanced' 'Hidden' 1)) }
+    @{ Id = 'thispc'; Gruppe = 'DBL-COMFORT'; Min = 0; Titel = (T 'Open File Explorer at "This PC"')
+        Werte = @((Dv 'CV:\Explorer\Advanced' 'LaunchTo' 1)) }
+    @{ Id = 'sticky'; Gruppe = 'DBL-COMFORT'; Min = 0; Titel = (T 'Turn off the Sticky Keys shortcut (pressing Shift five times)')
+        Werte = @((Dv 'HKCU:\Control Panel\Accessibility\StickyKeys' 'Flags' '506' 'String')) }
+)
+# Removable apps: Gruppe|package name (start of the name)|display name. PROMO = ad and trial apps of third parties,
+# MS = Microsoft apps that many people never use, OEM = tools of PC makers. Never in here: Store, Edge, Terminal, Xbox identity, Get Help.
+# Apps that are never removed (prefix match in both directions, so a too short name cannot hit them either)
+$Script:DebloatNever = 'Microsoft.WindowsStore', 'Microsoft.StorePurchaseApp', 'Microsoft.SecHealthUI', 'Microsoft.DesktopAppInstaller', 'Microsoft.Windows.ShellExperienceHost', 'Microsoft.Windows.StartMenuExperienceHost', 'Microsoft.AAD.BrokerPlugin', 'Microsoft.WindowsAppRuntime', 'Microsoft.VCLibs', 'Microsoft.UI.Xaml', 'Microsoft.NET.', 'Microsoft.WindowsTerminal', 'MicrosoftWindows.Client', 'Microsoft.Windows.Search', 'Microsoft.LockApp', 'Microsoft.Win32WebViewHost', 'Microsoft.WebpImageExtension', 'Microsoft.HEIFImageExtension', 'Microsoft.VP9VideoExtensions', 'Microsoft.WindowsCalculator', 'Microsoft.Windows.Photos', 'Microsoft.WindowsNotepad', 'Microsoft.Paint', 'Microsoft.ScreenSketch', 'Microsoft.WindowsCamera', 'Microsoft.GamingServices', 'Microsoft.Xbox.TCUI', 'NVIDIACorp', 'RealtekSemiconductorCorp', 'AdvancedMicroDevicesInc', 'IntelCorporation'
+$Script:DebloatApps = @(@'
+PROMO|Clipchamp.Clipchamp|Clipchamp
+PROMO|ACGMediaPlayer|ACG Media Player
+PROMO|ActiproSoftwareLLC|Actipro Software
+PROMO|AdobeSystemsIncorporated.AdobePhotoshopExpress|Adobe Photoshop Express
+PROMO|Amazon.com.Amazon|Amazon
+PROMO|AmazonVideo.PrimeVideo|Prime Video
+PROMO|Asphalt8Airborne|Asphalt 8
+PROMO|AutodeskSketchBook|Autodesk SketchBook
+PROMO|CaesarsSlotsFreeCasino|Caesars Slots
+PROMO|COOKINGFEVER|Cooking Fever
+PROMO|CyberLinkMediaSuiteEssentials|CyberLink Media Suite
+PROMO|DisneyMagicKingdoms|Disney Magic Kingdoms
+PROMO|Disney.37853FC22B2CE|Disney+
+PROMO|DrawboardPDF|Drawboard PDF
+PROMO|Duolingo-LearnLanguagesforFree|Duolingo
+PROMO|FACEBOOK.FACEBOOK|Facebook
+PROMO|FarmVille2CountryEscape|FarmVille 2
+PROMO|Flipboard|Flipboard
+PROMO|HiddenCity|Hidden City
+PROMO|HULULLC.HULUPLUS|Hulu
+PROMO|iHeartRadio|iHeartRadio
+PROMO|Facebook.Instagram|Instagram
+PROMO|king.com.BubbleWitch3Saga|Bubble Witch 3
+PROMO|king.com.CandyCrushSaga|Candy Crush Saga
+PROMO|king.com.CandyCrushSodaSaga|Candy Crush Soda
+PROMO|LinkedInforWindows|LinkedIn
+PROMO|MarchofEmpires|March of Empires
+PROMO|4DF9E0F8.Netflix|Netflix
+PROMO|NYTCrossword|NYT Crossword
+PROMO|OneCalendar|One Calendar
+PROMO|PandoraMediaInc|Pandora
+PROMO|PhototasticCollage|Phototastic Collage
+PROMO|PicsArt-PhotoStudio|PicsArt
+PROMO|PolarrPhotoEditorAcademicEdition|Polarr Photo Editor
+PROMO|flaregamesGmbH.RoyalRevolt|Royal Revolt
+PROMO|Sidia.LiveWallpaper|Live Wallpaper
+PROMO|SlingTV|Sling TV
+PROMO|SpotifyAB.SpotifyMusic|Spotify
+PROMO|BytedancePte.Ltd.TikTok|TikTok
+PROMO|TuneInRadio|TuneIn Radio
+PROMO|WinZipUniversal|WinZip
+MS|Microsoft.BingFinance|Bing Finance
+MS|Microsoft.BingFoodAndDrink|Bing Food And Drink
+MS|Microsoft.BingHealthAndFitness|Bing Health And Fitness
+MS|Microsoft.BingSports|Bing Sports
+MS|Microsoft.BingTranslator|Bing Translator
+MS|Microsoft.BingTravel|Bing Travel
+MS|Microsoft.Windows.AIHub|Copilot+ AI Hub
+MS|Microsoft.PCManager|Microsoft PC Manager
+MS|Microsoft.Messaging|Messaging
+MS|Microsoft.MicrosoftJournal|Microsoft Journal
+MS|Microsoft.MicrosoftPowerBIForWindows|Power BI
+MS|Microsoft.NetworkSpeedTest|Network Speed Test
+MS|Microsoft.Office.Sway|Sway
+MS|Microsoft.OneConnect|One Connect
+MS|Microsoft.XboxApp|Xbox Console Companion
+MS|Microsoft.MicrosoftOfficeHub|Office Hub
+MS|Microsoft.Todos|Microsoft To Do
+MS|Microsoft.WindowsAlarms|Alarms & Clock
+MS|Microsoft.WindowsMaps|Windows Maps
+MS|Microsoft.WindowsSoundRecorder|Sound Recorder
+MS|Microsoft.YourPhone|Phone Link
+MS|MicrosoftWindows.CrossDevice|Cross Device Experience
+MS|Microsoft.Whiteboard|Whiteboard
+MS|Microsoft.windowscommunicationsapps|Mail & Calendar
+OEM|AD2F1837.OMENCommandCenter|HP OMEN Gaming Hub
+OEM|AcerIncorporated.AcerCareCenterS|Acer Care Center S
+OEM|B9ECED6F.ASUSPCAssistant|MyASUS
+OEM|B9ECED6F.Glidex|ASUS GlideX
+OEM|SAMSUNGELECTRONICSCoLtd.SamsungQuickShare|Samsung Quick Share
+OEM|9426MICRO-STARINTERNATION.MSICenter|MSI Center
+OEM|SAMSUNGELECTRONICSCO.LTD.PCGallery|Samsung Gallery
+OEM|SAMSUNGELECTRONICSCoLtd.SamsungFlux|Samsung Flow
+OEM|SAMSUNGELECTRONICSCoLtd.SamsungNotes|Samsung Notes
+OEM|B9ECED6F.ScreenPadMaster|ASUS ScreenXpert
+OEM|SAMSUNGELECTRONICSCO.LTD.SamsungStudio|Samsung Studio
+OEM|SAMSUNGELECTRONICSCO.LTD.SamsungScreenRecording|Samsung Screen Recorder
+OEM|SAMSUNGELECTRONICSCO.LTD.Bixby|Samsung Bixby
+OEM|SAMSUNGELECTRONICSCO.LTD.SamsungWelcome|Samsung Galaxy Book Experience
+OEM|SAMSUNGELECTRONICSCO.LTD.SmartThingsWindows|Samsung SmartThings
+OEM|SAMSUNGELECTRONICSCoLtd.MultiControl|Samsung Multi control
+OEM|SAMSUNGELECTRONICSCoLtd.SecondScreen|Samsung Second Screen
+OEM|SAMSUNGELECTRONICSCO.LTD.PENUP|Samsung PENUP
+OEM|9426MICRO-STARINTERNATION.BusinessCenter|MSI Center Pro
+OEM|AcerIncorporated.AcerRegistration|Acer Product Registration
+OEM|E0469640.SmartAppearance|Lenovo Smart Appearance
+OEM|LGElectronics.LGMonitorApp|LG Monitor App
+OEM|AD2F1837.HPAIExperienceCenter|HP AI Experience Center
+OEM|AD2F1837.HPConnectedMusic|HP Connected Music
+OEM|AD2F1837.HPConnectedPhotopoweredbySnapfish|HP Connected Photo
+OEM|AD2F1837.HPDesktopSupportUtilities|HP Desktop Support Utilities
+OEM|AD2F1837.HPEasyClean|HP Easy Clean
+OEM|AD2F1837.HPFileViewer|HP File Viewer
+OEM|AD2F1837.HPJumpStarts|HP JumpStarts
+OEM|AD2F1837.HPPCHardwareDiagnosticsWindows|HP PC Hardware Diagnostics
+OEM|AD2F1837.HPPowerManager|HP Power Manager
+OEM|AD2F1837.HPPrinterControl|HP Printer Control
+OEM|AD2F1837.HPPrivacySettings|HP Privacy Settings
+OEM|AD2F1837.HPQuickDrop|HP QuickDrop
+OEM|AD2F1837.HPQuickTouch|HP QuickTouch
+OEM|AD2F1837.HPRegistration|HP Registration
+OEM|AD2F1837.HPSupportAssistant|HP Support Assistant
+OEM|AD2F1837.HPSureShieldAI|HP Sure Shield AI
+OEM|AD2F1837.HPSystemInformation|HP System Information
+OEM|AD2F1837.HPWelcome|HP Welcome
+OEM|AD2F1837.HPWorkWell|HP WorkWell
+OEM|AD2F1837.myHP|myHP
+OEM|E046963F.LenovoCompanion|Lenovo Vantage
+OEM|LenovoCompanyLimited.LenovoVantageService|Lenovo Vantage Service
+OEM|DellInc.DellSupportAssistforPCs|Dell SupportAssist
+OEM|DellInc.DellDigitalDelivery|Dell Digital Delivery Services
+OEM|DellInc.DellMobileConnect|Dell Mobile Connect
+'@ -split "`r?`n" | Where-Object { $_ } | ConvertFrom-Csv -Delimiter '|' -Header Gruppe, Id, Name)
+
+function Get-DebloatValue([string]$Key, [string]$Name) {
+    try { $p = Get-ItemProperty -LiteralPath $Key -ErrorAction Stop; $pr = $p.PSObject.Properties[$Name]; if ($pr) { return $pr.Value } } catch { }
+    return $null
+}
+# Are all values of the setting already as WinTidy would set them?
+function Test-DebloatTweakSet($Tweak) {
+    foreach ($v in @($Tweak.Werte)) {
+        $cur = Get-DebloatValue $v.Key $v.Name
+        if ($null -eq $cur -or [string]$cur -ne [string]$v.Wert) { return $false }
+    }
+    return $true
+}
+# HKCU and the app list belong to the account that runs WinTidy. If WinTidy runs under a different account than the one that is
+# signed in, the settings would land in the wrong profile - then the Debloat rules offer nothing.
+function Test-DebloatUserHive {
+    $ctx = $Script:LastContext
+    if (-not $ctx) { try { $ctx = Get-WtContext } catch { } }
+    return (-not ($ctx -and $ctx.AnderesKonto))
+}
+function Get-WtBuildNumber {
+    if (-not $Script:Cache.ContainsKey('Build')) {
+        $b = 0; try { $b = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop).CurrentBuild } catch { }
+        $Script:Cache['Build'] = $b
+    }
+    return $Script:Cache['Build']
+}
+function Get-DebloatTweakItems([string]$Group) {
+    if (-not (Test-DebloatUserHive)) { return }
+    $build = Get-WtBuildNumber
+    foreach ($t in $Script:DebloatTweaks) {
+        if ($t.Gruppe -ne $Group -or ($t.Min -and $build -gt 0 -and $build -lt $t.Min)) { continue }
+        if (-not (Test-DebloatTweakSet $t)) { New-Item2 $t.Titel 0 $t.Id }
+    }
+}
+function Set-DebloatTweak([string]$Rule, $Item) {
+    $t = $Script:DebloatTweaks | Where-Object { $_.Id -eq $Item.Data } | Select-Object -First 1
+    if (-not $t) { throw (T 'Unknown setting') }
+    foreach ($v in @($t.Werte)) { Set-RegValueWithUndo $Rule $t.Titel $v.Key $v.Name $v.Wert $v.Typ }
+    (T 'changed')
+}
+# Installed apps of the catalog group (apps from the BloatApps list are handled by the rule APP-BLOAT, not offered twice)
+function Get-DebloatAppItems([string]$Group) {
+    if (-not (Test-DebloatUserHive)) { return }
+    if (-not $Script:Cache.ContainsKey('Appx')) { $Script:Cache['Appx'] = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { -not $_.NonRemovable -and -not $_.IsFramework }) }
+    $skip = @($Script:Cfg.BloatApps)
+    foreach ($a in $Script:DebloatApps) {
+        if ($a.Gruppe -ne $Group -or $skip -contains $a.Id) { continue }
+        $p = @($Script:Cache['Appx'] | Where-Object { $_.Name -like ($a.Id + '*') })
+        if ($p.Count) { New-Item2 $a.Name 0 $a.Id ("{0} {1}" -f $p[0].Name, $p[0].Version) }
+    }
+}
+function Remove-DebloatApp([string]$Id) {
+    if ($Id -notmatch '^[\w\.\-]+$' -or @($Script:DebloatNever | Where-Object { $Id -like ($_ + '*') -or $_ -like ($Id + '*') }).Count) { throw (T 'Unexpected app name - not removed') }
+    $found = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ($Id + '*') -and -not $_.NonRemovable -and -not $_.IsFramework })
+    foreach ($p in $found) { Remove-AppxPackage -Package $p.PackageFullName -ErrorAction Stop }
+    # also from the Windows image, so that new accounts do not get the app again
+    if ($Script:IsAdmin) { try { Get-AppxProvisionedPackage -Online -ErrorAction Stop | Where-Object { $_.DisplayName -like ($Id + '*') } | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null } } catch { } }
+    (T 'removed')
+}
+
 # Change a registry value with undo info (before/after; Restore only resets if nobody has changed the value since)
 function Set-RegValueWithUndo([string]$Rule, [string]$Objekt, [string]$Key, [string]$Name, $Value, [string]$Type, [switch]$Remove) {
     $vorher = Get-RegValueRaw $Key $Name
@@ -1394,7 +1636,7 @@ $Script:Rules = @(
             if (-not (Test-Path "$env:windir\System32\cleanmgr.exe")) { return }
             $t = @("$env:windir\SoftwareDistribution\Download", "$env:windir\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache", "$env:ProgramData\Microsoft\Windows\WER", "$env:windir\MEMORY.DMP", "$env:windir\Minidump", "$env:windir\LiveKernelReports")
             $sum = 0; $found = @()
-            foreach ($p in $t) { $s = Get-DirSize $p; if ($s -gt 10MB) { $sum += $s; $found += ('{0} ({1})' -f (Split-Path $p -Leaf), (Fmt-Bytes $s)) } }
+            foreach ($p in $t) { $s = Get-DirSize $p; if ($s -gt 10MB) { $sum += $s; $found += ('{0} ({1})' -f (Split-Path $p -Leaf), (Fmt-Bytes $s)) }
             if ($sum -gt 50MB) { New-Item2 ((T 'Leftovers of Windows updates and error reports (') + ($found -join ', ') + ')') $sum $null }
         }
         Fix = { param($it)
@@ -1557,7 +1799,7 @@ $Script:Rules = @(
         Detect = {
             $apps = Get-InstalledApps
             $norm = { param($s) (([string]$s).ToLower() -replace '[^a-z0-9]', '') }
-            $names = @(); foreach ($a in $apps) { $names += (& $norm $a.DisplayName); $names += (& $norm $a.Publisher); if ($a.InstallLocation) { $names += (& $norm (Split-Path ([string]$a.InstallLocation).Trim('"').TrimEnd('\') -Leaf)) } }
+            $names = @(); foreach ($a in $apps) { $names += (& $norm $a.DisplayName); $names += (& $norm $a.Publisher); if ($a.InstallLocation) { $names += (& $norm (Split-Path ([string]$a.InstallLocation).Trim('"').TrimEnd('\') -Leaf)) }
             foreach ($ax in (Get-AppxPackage -ErrorAction SilentlyContinue)) { $names += (& $norm $ax.Name) }
             $names = @($names | Where-Object { $_.Length -ge 3 } | Select-Object -Unique)
             $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:LOCALAPPDATA, $env:APPDATA) | Where-Object { $_ }
@@ -2058,6 +2300,49 @@ $Script:Rules = @(
         Warum = (T 'Unexpected shutdowns, blue screens, hardware errors (WHEA), disk errors and GPU driver resets are warning signs.')
         Detect = {     foreach ($w in (Get-WarningSignals)) { New-Item2 ((T '{0}: {1} times') -f $w.Text, $w.Anzahl) 0 @{ Stufe = 'warn' } } }
         Fix = $null
+    }
+
+    # ---------------------------------------------------------------- Debloat (own page in the app; only with -Rule on the command line)
+    [pscustomobject]@{ Id = 'DBL-ADS'; Kategorie = 'System'; Seite = 'Debloat'; Titel = (T 'Ads and suggestions in Windows'); Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $false; Standard = $false; Umkehrbar = $true; Vorwahl = $true
+        Warum = (T 'Windows shows suggestions, tips and offers for Microsoft products in Start, Settings and on the lock screen, and installs suggested apps on its own. Only the settings you also find in Windows Settings are changed for your user account.')
+        Detect = { Get-DebloatTweakItems 'DBL-ADS' }
+        Fix = { param($it) Set-DebloatTweak 'DBL-ADS' $it }
+    }
+
+    [pscustomobject]@{ Id = 'DBL-PRIVACY'; Kategorie = 'System'; Seite = 'Debloat'; Titel = (T 'Tracking and personalisation'); Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $false; Standard = $false; Umkehrbar = $true; Vorwahl = $false
+        Warum = (T 'Switches off personalisation and data sharing that Windows offers in Settings > Privacy (advertising ID, tailored ads, speech and typing samples). Not a hardening package: telemetry of Windows itself is not touched.')
+        Detect = { Get-DebloatTweakItems 'DBL-PRIVACY' }
+        Fix = { param($it) Set-DebloatTweak 'DBL-PRIVACY' $it }
+    }
+
+    [pscustomobject]@{ Id = 'DBL-SHELL'; Kategorie = 'System'; Seite = 'Debloat'; Titel = (T 'Start menu and taskbar'); Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $false; Standard = $false; Umkehrbar = $true; Vorwahl = $false
+        Warum = (T 'Removes buttons and web results you may not need. A matter of taste, so nothing is preselected. The taskbar changes appear after signing out and in again (or restarting File Explorer).')
+        Detect = { Get-DebloatTweakItems 'DBL-SHELL' }
+        Fix = { param($it) Set-DebloatTweak 'DBL-SHELL' $it }
+    }
+
+    [pscustomobject]@{ Id = 'DBL-COMFORT'; Kategorie = 'System'; Seite = 'Debloat'; Titel = (T 'Everyday annoyances'); Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $false; Standard = $false; Umkehrbar = $true; Vorwahl = $false
+        Warum = (T 'Small settings that many people change right after setting up Windows. A matter of taste, so nothing is preselected.')
+        Detect = { Get-DebloatTweakItems 'DBL-COMFORT' }
+        Fix = { param($it) Set-DebloatTweak 'DBL-COMFORT' $it }
+    }
+
+    [pscustomobject]@{ Id = 'DBL-APPS-PROMO'; Kategorie = 'Programme'; Seite = 'Debloat'; Titel = (T 'Advertising apps from third parties'); Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $false; Endgueltig = $true; Vorwahl = $false
+        Warum = (T 'Trial, game and streaming apps that Windows or the PC maker installed. If you installed one yourself and use it, leave it unchecked. Everything can be reinstalled from the Store.')
+        Detect = { Get-DebloatAppItems 'PROMO' }
+        Fix = { param($it) Remove-DebloatApp $it.Data }
+    }
+
+    [pscustomobject]@{ Id = 'DBL-APPS-MS'; Kategorie = 'Programme'; Seite = 'Debloat'; Titel = (T 'Microsoft apps you may never use'); Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $false; Endgueltig = $true; Vorwahl = $false
+        Warum = (T 'Preinstalled Microsoft apps such as Bing news and finance, Phone Link or Sticky Notes. Check each one: if you use it, leave it unchecked. Everything can be reinstalled from the Store.')
+        Detect = { Get-DebloatAppItems 'MS' }
+        Fix = { param($it) Remove-DebloatApp $it.Data }
+    }
+
+    [pscustomobject]@{ Id = 'DBL-APPS-OEM'; Kategorie = 'Programme'; Seite = 'Debloat'; Titel = (T 'Apps from the PC maker'); Risiko = 'Hoch'; Wirkung = 'Hygiene'; Admin = $true; Standard = $false; Endgueltig = $true; Einzeln = $true; Vorwahl = $false
+        Warum = (T 'Support and "welcome" apps of HP, Dell, Lenovo, Acer, ASUS, MSI, Samsung and LG. Some of them deliver driver, BIOS or warranty functions - remove only what you know you do not need.')
+        Detect = { Get-DebloatAppItems 'OEM' }
+        Fix = { param($it) Remove-DebloatApp $it.Data }
     }
 )
 
@@ -2649,6 +2934,13 @@ $Script:Friendly = @{
     'HW-COOLING'          = @((T 'Cooling and temperatures'), (T 'Whether the processor, graphics card and drives get too warm, are throttled or whether a fan has stopped. Fan curves themselves live in the BIOS – WinTidy measures their effect.'))
     'HW-COOLPOLICY'       = @((T 'Spin up the fans first when it gets warm'), (T 'On mains power the fans should spin faster first before Windows throttles the processor. The setting here is "throttle first". Can be undone.'))
     'HW-DISPLAY'          = @((T 'Monitor'), (T 'Whether your monitor runs at the highest refresh rate it supports.'))
+    'DBL-ADS'             = @((T 'Turn off ads and suggestions'), (T 'Windows suggests apps and Microsoft offers in Start, in Settings and on the lock screen and installs suggested apps by itself. This switches it off for you. Nothing else changes.'))
+    'DBL-PRIVACY'         = @((T 'Limit tracking and personalisation'), (T 'Switches off personalisation that you can also turn off in Windows Settings under Privacy: advertising ID, tailored ads, online speech recognition and typing samples.'))
+    'DBL-SHELL'           = @((T 'Tidy up Start menu and taskbar'), (T 'Takes away buttons and web results that many people do not use. A matter of taste – please tick only what bothers you. Changes appear after signing out and in again.'))
+    'DBL-COMFORT'         = @((T 'Everyday annoyances'), (T 'Small settings that many people change after setting up Windows, for example always showing file extensions. A matter of taste.'))
+    'DBL-APPS-PROMO'      = @((T 'Remove advertising apps'), (T 'Trial, game and streaming apps that came with the PC or were installed by Windows. If you use one of them yourself, leave it unchecked. Everything can be reinstalled from the Store.'))
+    'DBL-APPS-MS'         = @((T 'Remove Microsoft apps you do not use'), (T 'Preinstalled Microsoft apps such as news, finance or Phone Link. Please look at each one: if you use it, leave it unchecked. Everything can be reinstalled from the Store.'))
+    'DBL-APPS-OEM'        = @((T 'Remove apps from the PC maker (expert)'), (T 'Support and welcome apps of PC makers. Some of them also deliver drivers, BIOS updates or warranty functions – remove only what you are sure you do not need.'))
     'EVT-HEALTH'          = @((T 'Warning messages from Windows'), (T 'Windows noted problems in the last 30 days, e.g. crashes or sudden power-offs. Single entries are no reason to worry. If they occur often, have the PC checked.'))
 }
 # Medium rules that the app preselects. Final actions (deleting, uninstalling, removing devices, updates) deliberately not.
@@ -2665,16 +2957,19 @@ function Test-RuleAllowed($r, $ctx) {
     return ($r.Risiko -eq 'Info' -or ($r.Kategorie -eq 'Speicher' -and $r.Risiko -eq 'Niedrig') -or $r.Id -eq 'SYS-TRIM')
 }
 
-function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $null) {
+# Page '' = the normal check (all standard rules); Page 'Debloat' = only the rules of that page (own tab in the app)
+function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $null, [string]$Page = '') {
     $Script:Cache = @{}
     $Script:Preview = $true
     $ctx = $null; try { $ctx = Get-WtContext } catch { }
     $Script:LastContext = $ctx
-    $rules = @($Script:Rules | Where-Object { ($_.Standard -or $Expert) -and (Test-RuleAllowed $_ $ctx) })
+    $rules = @($Script:Rules | Where-Object { $(if ($Page) { $_.Seite -eq $Page } else { ($_.Standard -or $Expert) -and -not $_.Seite }) -and (Test-RuleAllowed $_ $ctx) })
     $res = New-Object System.Collections.Generic.List[object]
     # Measure hardware first while the PC is still idle
-    if ($OnProgress) { try { & $OnProgress 0 $rules.Count (T 'Checking: hardware and cooling …') } catch { } }
-    try { $null = Get-HardwarePoints } catch { }
+    if (-not $Page) {
+        if ($OnProgress) { try { & $OnProgress 0 $rules.Count (T 'Checking: hardware and cooling …') } catch { } }
+        try { $null = Get-HardwarePoints } catch { }
+    }
     $i = 0
     foreach ($r in $rules) {
         $i++
@@ -2689,7 +2984,7 @@ function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $nul
         $k = 0
         $its = foreach ($it in $items) {
             $pre = $false
-            if ($r.Risiko -eq 'Niedrig') { $pre = $true }
+            if ($r.Risiko -eq 'Niedrig') { $pre = ($r.Vorwahl -ne $false) }
             elseif ($r.Risiko -eq 'Mittel') {
                 $pre = ($Script:GuiPreselectMedium -contains $r.Id) -or [bool]$it.AutoOk
             }
@@ -2701,10 +2996,12 @@ function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $nul
             $k++
         }
         $res.Add([pscustomobject]@{ Id = $r.Id; Kategorie = $r.Kategorie; Titel = $titel; Text = $text; Warum = $r.Warum; Risiko = $r.Risiko; Fixbar = [bool]$r.Fix; Bytes = [int64](($items | Measure-Object Bytes -Sum).Sum); Items = @($its)
-                Dauer = $r.Dauer; Endgueltig = $r.Endgueltig; Einzeln = $r.Einzeln; Umkehrbar = $r.Umkehrbar })
+                Dauer = $r.Dauer; Endgueltig = $r.Endgueltig; Einzeln = $r.Einzeln; Umkehrbar = $r.Umkehrbar; Seite = $r.Seite })
     }
-    $Script:LastFindings = $res.ToArray()
-    return $Script:LastFindings
+    # The findings of the other page stay available for Invoke-FixSelection
+    $keep = @($Script:LastFindings | Where-Object { $(if ($Page) { $_.Seite -ne $Page } else { $_.Seite }) })
+    $Script:LastFindings = @($res.ToArray()) + $keep
+    return $res.ToArray()
 }
 
 function ConvertTo-Befunde($findings, [switch]$NurInfo) {
@@ -2722,6 +3019,18 @@ function Invoke-GuiScan([bool]$Expert = $false, [bool]$DeepScan = $false, [scrip
         $rep = New-Report
     } finally { Stop-RunLog }
     [pscustomobject]@{ Findings = $f; Snapshot = $snap; Report = $rep; Context = $Script:LastContext }
+}
+
+# "Debloat" page of the app: only the rules of that page (registry values and the app list, takes a few seconds).
+# Hinweis = text for the page if nothing is offered because of the context.
+function Invoke-GuiDebloatScan([scriptblock]$OnProgress = $null) {
+    $f = @(Get-AllFindings $false $OnProgress 'Debloat')
+    $ctx = $Script:LastContext
+    $hint = ''
+    if ($ctx -and $ctx.Server) { $f = @(); $hint = (T 'WinTidy makes no changes on Windows Server.') }
+    elseif ($ctx -and $ctx.Verwaltet) { $hint = (T 'This PC is managed by an organization. Its settings are controlled by the organization, so WinTidy offers nothing on this page.') }
+    elseif ($ctx -and $ctx.AnderesKonto) { $hint = (T 'WinTidy runs under a different account than the one that is signed in. Settings and apps would end up in the wrong profile, so nothing is offered. Start WinTidy while signed in with your own account.') }
+    [pscustomobject]@{ Findings = $f; Hinweis = $hint; Context = $ctx }
 }
 
 function New-RestorePointSilent {

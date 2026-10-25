@@ -27,7 +27,7 @@ jobs:
       - name: Run tests (Windows PowerShell 5.1)
         shell: pwsh
         run: |
-          foreach ($t in 'Test-Parse', 'Test-Report', 'Test-Hardware', 'Test-GuiApi', 'Test-Update') {
+          foreach ($t in 'Test-Parse', 'Test-Report', 'Test-Hardware', 'Test-GuiApi', 'Test-Update', 'Test-Debloat') {
             & powershell -NoProfile -ExecutionPolicy Bypass -File "tests/$t.ps1"
             if ($LASTEXITCODE -ne 0) { Write-Host "::error::$t failed"; exit 1 }
           }
@@ -38,7 +38,7 @@ jobs:
           $name = "WinTidy-${{ github.ref_name }}"
           $dir = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory -Path $dir | Out-Null
-          $files = 'WinTidy.ps1', 'WinTidy-App.ps1', 'WinTidy.cmd', 'WinTidy App.cmd', 'WinTidy.config.json', 'WinTidy.config.example.json', 'README.md', 'USAGE.md', 'CHANGELOG.md', 'LICENSE'
+          $files = 'WinTidy.ps1', 'WinTidy-App.ps1', 'WinTidy.cmd', 'WinTidy App.cmd', 'WinTidy.config.json', 'WinTidy.config.example.json', 'README.md', 'USAGE.md', 'CHANGELOG.md', 'THIRD-PARTY-NOTICES.md', 'LICENSE'
           foreach ($f in $files) { Copy-Item -LiteralPath $f -Destination $dir }
           Copy-Item -LiteralPath 'lang' -Destination $dir -Recurse
           Compress-Archive -Path $dir -DestinationPath "$name.zip"

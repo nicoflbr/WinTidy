@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0 – 2026-10-25
+**New page: Debloat**
+- New page **Debloat** in the app (own check, own "Apply selected" button). It removes what Windows and PC makers put in your way: ads and suggestions, tracking, unneeded buttons and preinstalled apps. The selection was compiled with the help of [Win11Debloat](https://github.com/raphire/win11debloat) (MIT, see `THIRD-PARTY-NOTICES.md`) - but WinTidy only takes over what fits its principles: per-user settings from Windows Settings and Explorer options, removable Store apps. No policies for the whole PC, no services, no security features, no telemetry policies, no scripts from the internet.
+- Four rules for **settings** (`DBL-ADS`, `DBL-PRIVACY`, `DBL-SHELL`, `DBL-COMFORT`), 24 settings in total. Only ads and suggestions are preselected; the rest is a matter of taste. Every change is written through `Set-RegValueWithUndo`, so it shows up under History and can be undone one by one. Settings that do not exist on the installed Windows build (e.g. Copilot button, Chat icon, "End task" in the taskbar) are not offered.
+- Three rules for **apps**: advertising apps from third parties (`DBL-APPS-PROMO`), Microsoft apps (`DBL-APPS-MS`) and apps of PC makers (`DBL-APPS-OEM`, expert level, each app individually). A catalog of 112 known apps; only installed ones are shown, nothing is preselected, a note says that everything can be reinstalled from the Store. Apps are removed for the current user and from the Windows image. Windows components, the Store, Defender, App Installer and similar apps are on a never-remove list that is checked again when removing.
+- Not offered on managed PCs, on Windows Server and when WinTidy runs under a different account than the one that is signed in (the settings would end up in the wrong profile).
+- New optional rule fields `Seite` (page of the app) and `Vorwahl` (preselection of Low-risk rules). `Get-AllFindings` has a new parameter `-Page`; the normal check does not include the Debloat rules, and the findings of both pages stay available for `Invoke-FixSelection`. New `Invoke-GuiDebloatScan`. Command line: `-Rule DBL-ADS,...` works as for every other rule.
+- New `tests/Test-Debloat.ps1` (catalog, allow-list, detection per Windows build, fix, app removal and refusal of dangerous names, page handling, contexts), also run by CI and the release workflow.
+- Not taken over from Win11Debloat on purpose: removing Edge, OneDrive or Defender, disabling services, telemetry and Windows Update policies, Start menu layout files, changes for all users or the default profile, and running as a script from the internet.
+
 ## 1.5.0 – 2026-10-25
 **Automatic updates (opt-in)**
 - New setting **Update WinTidy automatically** (Settings, off by default). When it is on, the app checks GitHub for a new release at most once a day (`UpdateIntervalHours`), downloads it, verifies it and installs it. A banner offers **Restart now**; the new version is used after the next start. A button **Check for updates now** does the same on request and asks before installing.

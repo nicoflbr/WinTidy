@@ -3157,7 +3157,7 @@ function Invoke-GuiUpdateStage {
         Save-WtHttpFile ([string]$rel.ZipUrl) $zip $Script:UpdateMaxZipBytes
         $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
         if ($hash -ne $expected[0]) { throw (T 'The checksum of the download is wrong. It is not installed.') }
-        $files = @(Expand-WtUpdateZip $zip (Join-Path $stage 'files'))
+        $files = [string[]](Expand-WtUpdateZip $zip (Join-Path $stage 'files'))   # (the function returns the array wrapped on purpose; @() would nest it)
         $err = Test-WtUpdatePackage (Join-Path $stage 'files') $files $rel.Version
         if ($err) { throw $err }
         $list = @($files | ForEach-Object { [ordered]@{ Pfad = $_; Sha256 = (Get-FileHash -LiteralPath ([IO.Path]::Combine($stage, 'files', $_)) -Algorithm SHA256).Hash.ToLower() } })

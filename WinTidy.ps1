@@ -1636,7 +1636,7 @@ $Script:Rules = @(
             if (-not (Test-Path "$env:windir\System32\cleanmgr.exe")) { return }
             $t = @("$env:windir\SoftwareDistribution\Download", "$env:windir\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache", "$env:ProgramData\Microsoft\Windows\WER", "$env:windir\MEMORY.DMP", "$env:windir\Minidump", "$env:windir\LiveKernelReports")
             $sum = 0; $found = @()
-            foreach ($p in $t) { $s = Get-DirSize $p; if ($s -gt 10MB) { $sum += $s; $found += ('{0} ({1})' -f (Split-Path $p -Leaf), (Fmt-Bytes $s)) }
+            foreach ($p in $t) { $s = Get-DirSize $p; if ($s -gt 10MB) { $sum += $s; $found += ('{0} ({1})' -f (Split-Path $p -Leaf), (Fmt-Bytes $s)) } }
             if ($sum -gt 50MB) { New-Item2 ((T 'Leftovers of Windows updates and error reports (') + ($found -join ', ') + ')') $sum $null }
         }
         Fix = { param($it)
@@ -1799,7 +1799,7 @@ $Script:Rules = @(
         Detect = {
             $apps = Get-InstalledApps
             $norm = { param($s) (([string]$s).ToLower() -replace '[^a-z0-9]', '') }
-            $names = @(); foreach ($a in $apps) { $names += (& $norm $a.DisplayName); $names += (& $norm $a.Publisher); if ($a.InstallLocation) { $names += (& $norm (Split-Path ([string]$a.InstallLocation).Trim('"').TrimEnd('\') -Leaf)) }
+            $names = @(); foreach ($a in $apps) { $names += (& $norm $a.DisplayName); $names += (& $norm $a.Publisher); if ($a.InstallLocation) { $names += (& $norm (Split-Path ([string]$a.InstallLocation).Trim('"').TrimEnd('\') -Leaf)) } }
             foreach ($ax in (Get-AppxPackage -ErrorAction SilentlyContinue)) { $names += (& $norm $ax.Name) }
             $names = @($names | Where-Object { $_.Length -ge 3 } | Select-Object -Unique)
             $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:LOCALAPPDATA, $env:APPDATA) | Where-Object { $_ }

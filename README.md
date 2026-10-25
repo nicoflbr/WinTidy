@@ -25,7 +25,7 @@
 
 | Area | Examples |
 |---|---|
-| **Storage** | Temp files by age, Windows Disk Cleanup handlers, `Windows.old` (only after 10 days), WinSxS cleanup, crash dumps, old recycle-bin items, unused driver packages, hibernation file size on desktops |
+| **Storage** | Temp files by age, Windows Disk Cleanup handlers, `Windows.old` (only after 10 days), WinSxS cleanup, crash dumps, old recycle-bin items, unused driver packages, hibernation file size on desktops, large browser caches (Edge, Chrome, Brave, Vivaldi, Opera, Firefox - cache folders only, never cookies or sign-ins), an overview of large and old files in your personal folders (shown only, never deleted) |
 | **Startup** | Broken autostart entries, orphaned startup state, active autostarts ranked by their *measured* boot delay (Event 100/101) |
 | **Tasks & services** | Scheduled tasks and services pointing to missing files, harmful patterns in home-made "maintenance" scripts |
 | **Apps** | Side-by-side duplicate versions, preinstalled Store bloatware, outdated programs (via winget) |
@@ -41,7 +41,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 - No registry "cleaners" and no tweaks without measurable benefit. The optional **Debloat** page is the one exception: it only changes settings that Windows itself offers (per user, undoable), and only ads and suggestions are ticked.
 - It never turns off Defender, Windows Update, UAC or the firewall.
 - It never changes fan curves or BIOS settings. Windows has no safe, vendor-neutral way to do this, so WinTidy only measures the effect.
-- It never force-removes drivers, and it never touches Documents, Pictures or the Desktop.
+- It never force-removes drivers, and it never deletes anything in Documents, Pictures, Downloads or the Desktop (the large-file overview only reads).
 - Nothing on a currently disconnected drive is treated as "orphaned".
 
 ## Safety model
@@ -91,6 +91,8 @@ pwsh ./tests/Test-Report.ps1
 pwsh ./tests/Test-Hardware.ps1
 pwsh ./tests/Test-GuiApi.ps1
 pwsh ./tests/Test-Update.ps1
+pwsh ./tests/Test-Debloat.ps1
+pwsh ./tests/Test-Storage.ps1
 ```
 
 GitHub Actions runs them on Windows PowerShell 5.1 and PowerShell 7 for every push and pull request. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the rule contract in [DEVELOPMENT.md](DEVELOPMENT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).

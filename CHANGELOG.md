@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.0 – 2026-10-25
+**Automatic updates (opt-in)**
+- New setting **Update WinTidy automatically** (Settings, off by default). When it is on, the app checks GitHub for a new release at most once a day (`UpdateIntervalHours`), downloads it, verifies it and installs it. A banner offers **Restart now**; the new version is used after the next start. A button **Check for updates now** does the same on request and asks before installing.
+- New command line mode `-Mode Update` (also **[U]** in the menu): shows the release notes, asks for confirmation (`-Yes` skips it) and installs.
+- New configuration keys `UpdateEnabled` (`false` switches updates off completely, e.g. on managed PCs), `UpdateRepo` (default `nicoflbr/WinTidy`) and `UpdateIntervalHours` (default 24).
+- Only official, published releases of the configured repository are installed (no pre-releases, no drafts), and only via HTTPS from GitHub hosts. The ZIP must match the SHA-256 checksum of the release (GitHub's digest of the asset and/or the new `WinTidy-vX.Y.Z.zip.sha256` file; at least one is required and they must agree). The package is checked before anything is touched: allowed file names and types only (no path tricks), size limits, PowerShell syntax of every script, and its version must equal the release tag and be newer than the installed one.
+- Updating needs administrator rights and the protected data folder: the download is staged there, so that other programs cannot swap it between check and installation. It is blocked for git clones (use `git pull`), network drives, folders WinTidy cannot write to, and `-DataPath`.
+- A copy of the replaced files is kept in the data folder (`update\backup\<version>`). Files are replaced one by one with a journal; if a step fails, or the PC loses power half way, the old files are put back (also at the next check). `WinTidy.config.json` is never overwritten if it exists, `WinTidy.config.local.json` is never touched, unchanged files are skipped.
+- Release workflow: every release now also contains `WinTidy-vX.Y.Z.zip.sha256`.
+- New `tests/Test-Update.ps1` (offline, with built ZIP packages): version parsing, allowed paths, blockers, checksum cases, zip-slip, forbidden files, syntax and version checks, tampering, rollback, journal repair. Runs in the CI on Windows PowerShell 5.1 and PowerShell 7.
+- Note: WinTidy releases are not code-signed. The update is as trustworthy as the GitHub account and release it comes from (see `SECURITY.md`). Version 1.4.1 and older have no updater: install 1.5.0 manually once.
+
 ## 1.4.1 – 2026-10-25
 - App: the number badge next to "Recommendations" was cut off in English. The sidebar is a bit wider and the badge is anchored on the right, so it is always fully visible.
 

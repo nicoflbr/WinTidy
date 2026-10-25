@@ -22,6 +22,7 @@
     Report   Rebuilds the HTML report from all stored data
     Restore  Restores registry/tasks/services of a run
     Rules    Lists all rules
+    Update   Checks GitHub for a new WinTidy version and installs it (admin rights, asks first)
 
 .PARAMETER Language
     auto (default: German if Windows is German, otherwise English), en or de
@@ -36,10 +37,11 @@
     .\WinTidy.ps1 -Mode Hardware                  # cooling, fans, temperatures, drives (changes nothing)
     .\WinTidy.ps1 -Mode Hardware -CoolingTest -Seconds 90   # additionally a cooling test under load
     .\WinTidy.ps1 -Mode Scan -Language de         # German output
+    .\WinTidy.ps1 -Mode Update                   # install a newer WinTidy release
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu', 'Scan', 'Preview', 'Apply', 'Compare', 'Report', 'Restore', 'Rules', 'Hardware')]
+    [ValidateSet('Menu', 'Scan', 'Preview', 'Apply', 'Compare', 'Report', 'Restore', 'Rules', 'Hardware', 'Update')]
     [string]$Mode = 'Menu',
     [string[]]$Rule,
     [string[]]$ExcludeRule,
@@ -65,7 +67,7 @@ if ($Rule) { $Rule = @($Rule | ForEach-Object { $_ -split ',' } | ForEach-Object
 if ($ExcludeRule) { $ExcludeRule = @($ExcludeRule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.4.1'
+$Script:Version = '1.5.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)
@@ -228,6 +230,10 @@ $Script:DefaultConfig = [ordered]@{
     WinOldMinAgeDays        = 10
     # End of security updates per Windows build (Home/Pro; Enterprise/Education: +12 months). Source: Microsoft Lifecycle
     WindowsSupportEnd       = [ordered]@{ '19045' = '2025-10-14'; '22621' = '2024-10-08'; '22631' = '2025-11-11'; '26100' = '2026-10-13'; '26200' = '2027-10-12' }
+    # Updates: GitHub repository whose releases WinTidy installs, hours between automatic checks, master switch ($false = never update)
+    UpdateRepo              = 'nicoflbr/WinTidy'
+    UpdateIntervalHours     = 24
+    UpdateEnabled           = $true
 }
 # Configuration = defaults + WinTidy.config.json + WinTidy.config.local.json (personal, not in Git).
 # Only keys that differ from the defaults belong in the files; keys starting with _ are ignored.
@@ -255,11 +261,13 @@ function Merge-Config {
 }
 # Check the configuration for dangerous values (e.g. age limit 0 = delete everything)
 function Test-Config($cfg) {
-    $min = @{ TempAgeDays = 1; RecycleBinAgeDays = 7; CrashDumpAgeDays = 1; WinOldMinAgeDays = 10; OrphanDirMinMB = 10; CoolingTestSeconds = 20 }
+    $min = @{ TempAgeDays = 1; RecycleBinAgeDays = 7; CrashDumpAgeDays = 1; WinOldMinAgeDays = 10; OrphanDirMinMB = 10; CoolingTestSeconds = 20; UpdateIntervalHours = 1 }
     foreach ($k in @($min.Keys)) { $v = 0; if (-not [int]::TryParse([string]$cfg[$k], [ref]$v) -or $v -lt $min[$k]) { Write-Warning (T 'Configuration: {0} invalid ({1}) - default value is used' $k ($cfg[$k])); $cfg[$k] = $Script:DefaultConfig[$k] } }
     $never = 'Microsoft.WindowsStore', 'Microsoft.SecHealthUI', 'Microsoft.DesktopAppInstaller', 'Microsoft.Windows.ShellExperienceHost', 'Microsoft.Windows.StartMenuExperienceHost', 'Microsoft.AAD.BrokerPlugin', 'Microsoft.WindowsAppRuntime', 'Microsoft.VCLibs', 'Microsoft.UI.Xaml', 'Microsoft.NET'
     $cfg.BloatApps = @($cfg.BloatApps | Where-Object { $n = [string]$_; $n -match '^[\w\.\-]+$' -and -not ($never | Where-Object { $n -like "$_*" }) })
     if ([string]$cfg.ShadowStorageTarget -notmatch '^(\d{1,2})%$' -or [int]$Matches[1] -lt 3) { $cfg.ShadowStorageTarget = $Script:DefaultConfig.ShadowStorageTarget }
+    if ([string]$cfg.UpdateRepo -notmatch '^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$') { Write-Warning (T 'Configuration: {0} invalid ({1}) - default value is used' 'UpdateRepo' ([string]$cfg.UpdateRepo)); $cfg.UpdateRepo = $Script:DefaultConfig.UpdateRepo }
+    $cfg.UpdateEnabled = [bool]$cfg.UpdateEnabled
     $cfg.ExtraTempPaths = @($cfg.ExtraTempPaths | Where-Object { $_ -and ([string]$_) -match '^[A-Za-z]:\\.+' })
     return $cfg
 }
@@ -2873,6 +2881,376 @@ function Invoke-GuiCoolingTest([int]$Seconds = 0, [scriptblock]$OnProgress = $nu
 }
 
 # =============================================================================
+#  Updates (releases on GitHub)
+#  WinTidy only updates itself on request (app setting "Update WinTidy automatically" or -Mode Update). It downloads the
+#  ZIP of the latest release, verifies it (checksum, allowed file types, syntax, version), keeps a copy of the old files
+#  and then replaces the program files. This needs admin rights: the download is staged in the protected data folder,
+#  so that programs without admin rights cannot swap it between the check and the installation.
+# =============================================================================
+$Script:UpdateHostPattern = '(^|\.)(github\.com|githubusercontent\.com)$'
+$Script:UpdateMaxZipBytes = 20MB
+$Script:UpdateMaxFileBytes = 10MB
+$Script:UpdateMaxFiles = 100
+$Script:PendingUpdate = $null
+
+# 'v1.4.2' or '1.4.2' -> [version]; anything else (pre-release suffixes, text) -> $null
+function ConvertTo-WtVersion([string]$Text) {
+    if ($Text -match '^v?(\d{1,4})\.(\d{1,4})\.(\d{1,4})$') { return [version]('{0}.{1}.{2}' -f $Matches[1], $Matches[2], $Matches[3]) }
+    return $null
+}
+
+# Reason why this copy of WinTidy cannot update itself (translated text), $null if it can
+function Get-WtUpdateBlocker {
+    if (-not [bool]$Script:Cfg.UpdateEnabled) { return (T 'Updates are switched off in the configuration (UpdateEnabled).') }
+    if (-not $Script:IsAdmin) { return (T 'Updating needs administrator rights.') }
+    if (-not $Script:DataDirProtected) { return (T 'Updating works only with the protected data folder (not with -DataPath).') }
+    $root = [string]$Script:ToolRoot
+    $net = ($root -like '\\*')
+    try { if ($root -match '^([A-Za-z]):' -and ([string](New-Object IO.DriveInfo ($Matches[1])).DriveType) -eq 'Network') { $net = $true } } catch { }
+    if ($net) { return (T 'WinTidy is on a network drive. Please copy it to this PC first.') }
+    if (Test-Path -LiteralPath (Join-Path $root '.git')) { return (T 'This copy of WinTidy is a git clone. Please update it with "git pull".') }
+    try {
+        $probe = Join-Path $root ('.wt-write-test-' + [guid]::NewGuid().ToString('N'))
+        [IO.File]::WriteAllText($probe, 'x'); [IO.File]::Delete($probe)
+    } catch { return (T 'WinTidy is not allowed to change its own folder.') }
+    return $null
+}
+
+function Add-WtUpdateLog([string]$Text) {
+    try {
+        $d = Join-Path $Script:DataDir 'update'
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+        $f = Join-Path $d 'update.log'
+        if ((Test-Path -LiteralPath $f) -and (Get-Item -LiteralPath $f).Length -gt 200KB) { Remove-Item -LiteralPath $f -Force }
+        ('{0}  {1}' -f (Get-Date -Format 's'), $Text) | Out-File -LiteralPath $f -Append -Encoding utf8
+    } catch { }
+}
+
+# Opens an https address. Redirects are followed by hand and only to GitHub hosts. The caller closes the response.
+function Open-WtHttp([string]$Url, [string]$Accept = '*/*', [int]$TimeoutSec = 20) {
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch { }   # TLS 1.2 (Windows PowerShell 5.1 may default to older protocols)
+    for ($hop = 0; $hop -lt 6; $hop++) {
+        $u = $null
+        if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$u) -or $u.Scheme -ne 'https' -or $u.Host -notmatch $Script:UpdateHostPattern) { throw (T 'Blocked address: {0}' $Url) }
+        $req = [Net.HttpWebRequest][Net.WebRequest]::Create($u)
+        $req.UserAgent = 'WinTidy/' + $Script:Version
+        $req.Accept = $Accept
+        $req.Timeout = $TimeoutSec * 1000
+        $req.ReadWriteTimeout = $TimeoutSec * 1000
+        $req.AllowAutoRedirect = $false
+        try { $req.Proxy = [Net.WebRequest]::GetSystemWebProxy(); $req.Proxy.Credentials = [Net.CredentialCache]::DefaultCredentials } catch { }
+        $resp = $null
+        try { $resp = [Net.HttpWebResponse]$req.GetResponse() }
+        catch [Net.WebException] { if ($_.Exception.Response) { $resp = [Net.HttpWebResponse]$_.Exception.Response } else { throw } }
+        $code = [int]$resp.StatusCode
+        if ($code -ge 300 -and $code -lt 400) {
+            $loc = [string]$resp.Headers['Location']
+            $resp.Close()
+            if (-not $loc) { throw (T 'The server answered with status {0}.' $code) }
+            $Url = (New-Object System.Uri -ArgumentList $u, $loc).AbsoluteUri
+            continue
+        }
+        if ($code -ne 200) { $resp.Close(); throw (T 'The server answered with status {0}.' $code) }
+        return $resp
+    }
+    throw (T 'Too many redirects.')
+}
+
+# Small text download (release information, checksum file)
+function Get-WtHttpText([string]$Url, [string]$Accept = '*/*', [int]$MaxBytes = 1MB) {
+    $resp = Open-WtHttp $Url $Accept 10   # short timeout: the app waits for this check
+    try {
+        $in = $resp.GetResponseStream()
+        $ms = New-Object IO.MemoryStream
+        $buf = New-Object byte[] 16384
+        while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+            $ms.Write($buf, 0, $n)
+            if ($ms.Length -gt $MaxBytes) { throw (T 'The download is larger than expected.') }
+        }
+        return [Text.Encoding]::UTF8.GetString($ms.ToArray())
+    } finally { $resp.Close() }
+}
+
+# File download with a size limit
+function Save-WtHttpFile([string]$Url, [string]$Path, [int64]$MaxBytes) {
+    $resp = Open-WtHttp $Url 'application/octet-stream' 60
+    try {
+        if ($resp.ContentLength -gt $MaxBytes) { throw (T 'The download is larger than expected.') }
+        $in = $resp.GetResponseStream()
+        $out = [IO.File]::Create($Path)
+        try {
+            $buf = New-Object byte[] 65536
+            $total = [int64]0
+            while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                $total += $n
+                if ($total -gt $MaxBytes) { throw (T 'The download is larger than expected.') }
+                $out.Write($buf, 0, $n)
+            }
+        } finally { $out.Dispose() }
+    } finally { $resp.Close() }
+}
+
+# Latest published release of the configured repository (network access). The tests replace this function.
+function Get-LatestRelease {
+    $json = Get-WtHttpText ('https://api.github.com/repos/{0}/releases/latest' -f [string]$Script:Cfg.UpdateRepo) 'application/vnd.github+json'
+    $j = $json | ConvertFrom-Json
+    $ver = ConvertTo-WtVersion ([string]$j.tag_name)
+    if (-not $ver -or $j.draft -or $j.prerelease) { return $null }
+    $zipName = 'WinTidy-v{0}.zip' -f $ver
+    $zip = @($j.assets | Where-Object { $_.name -eq $zipName }) | Select-Object -First 1
+    if (-not $zip) { return $null }
+    $sha = @($j.assets | Where-Object { $_.name -eq ($zipName + '.sha256') }) | Select-Object -First 1
+    $dig = ''
+    if ($zip.digest -and ([string]$zip.digest) -match '^sha256:([0-9a-fA-F]{64})$') { $dig = $Matches[1] }
+    [pscustomobject]@{
+        Tag = [string]$j.tag_name; Version = $ver; ZipUrl = [string]$zip.browser_download_url; ZipSize = [int64]$zip.size; Digest = $dig
+        ShaUrl = $(if ($sha) { [string]$sha.browser_download_url } else { '' }); Notes = [string]$j.body; PageUrl = [string]$j.html_url
+    }
+}
+
+# Which files may be part of an update package: a few text file types in the program folder or one subfolder (e.g. lang/)
+function Test-WtUpdatePath([string]$Rel) {
+    if (-not $Rel -or $Rel -match '\.\.') { return $false }
+    if ($Rel -eq 'LICENSE') { return $true }
+    if (-not ($Rel -match '^([A-Za-z0-9][A-Za-z0-9_\-]*/)?([A-Za-z0-9][A-Za-z0-9 _.\-]*)\.(ps1|psd1|cmd|json|md|txt)$')) { return $false }
+    if ($Matches[2] -match '(^(CON|PRN|AUX|NUL|COM\d|LPT\d)(\.|$))|[ .]$') { return $false }   # reserved device names, trailing space or dot
+    return $true
+}
+
+# Unpacks the release ZIP into $Dest. Every entry name is checked first; returns the relative paths (with /).
+function Expand-WtUpdateZip([string]$Zip, [string]$Dest) {
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem -ErrorAction Stop
+    $z = [IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        $entries = @($z.Entries | Where-Object { $_.FullName -and -not $_.FullName.EndsWith('/') -and -not $_.FullName.EndsWith('\') })
+        if ($entries.Count -eq 0 -or $entries.Count -gt $Script:UpdateMaxFiles) { throw (T 'The package has an unexpected number of files.') }
+        $names = @($entries | ForEach-Object { $_.FullName -replace '\\', '/' })
+        # the release ZIP has one top folder (WinTidy-vX.Y.Z); it is removed
+        $top = ($names[0] -split '/')[0]
+        $strip = $names[0].Contains('/') -and (@($names | Where-Object { -not $_.StartsWith($top + '/') }).Count -eq 0)
+        New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+        $destFull = [IO.Path]::GetFullPath($Dest).TrimEnd('\', '/') + [string][IO.Path]::DirectorySeparatorChar
+        $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        $list = New-Object System.Collections.Generic.List[string]
+        $total = [int64]0
+        for ($i = 0; $i -lt $entries.Count; $i++) {
+            $rel = $names[$i]
+            if ($strip) { $rel = $rel.Substring($top.Length + 1) }
+            if (-not (Test-WtUpdatePath $rel) -or -not $seen.Add($rel)) { throw (T 'The package contains an unexpected file: {0}' $rel) }
+            $target = [IO.Path]::GetFullPath([IO.Path]::Combine($Dest, $rel))
+            if (-not $target.StartsWith($destFull, [StringComparison]::OrdinalIgnoreCase)) { throw (T 'The package contains an unexpected file: {0}' $rel) }
+            if ($entries[$i].Length -gt $Script:UpdateMaxFileBytes) { throw (T 'The download is larger than expected.') }
+            New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($target)) | Out-Null
+            $in = $entries[$i].Open()
+            $out = [IO.File]::Create($target)
+            try {
+                $buf = New-Object byte[] 65536
+                $size = [int64]0
+                while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                    $size += $n; $total += $n
+                    if ($size -gt $Script:UpdateMaxFileBytes -or $total -gt $Script:UpdateMaxZipBytes) { throw (T 'The download is larger than expected.') }
+                    $out.Write($buf, 0, $n)
+                }
+            } finally { $out.Dispose(); $in.Dispose() }
+            $list.Add($rel)
+        }
+        return , $list.ToArray()
+    } finally { $z.Dispose() }
+}
+
+# Checks the unpacked package; returns an error text, or $null if it is usable
+function Test-WtUpdatePackage([string]$Dir, [string[]]$Files, $Version) {
+    foreach ($req in 'WinTidy.ps1', 'WinTidy-App.ps1', 'lang/de.psd1') {
+        if ($Files -notcontains $req) { return (T 'The package is incomplete: {0} is missing.' $req) }
+    }
+    foreach ($f in $Files) {
+        if ($f -match '\.(ps1|psd1)$') {
+            $err = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile([IO.Path]::Combine($Dir, $f), [ref]$null, [ref]$err)
+            if ($err -and $err.Count) { return (T 'The package contains a file with a syntax error: {0}' $f) }
+        }
+    }
+    $txt = [IO.File]::ReadAllText([IO.Path]::Combine($Dir, 'WinTidy.ps1'))
+    $m = [regex]::Match($txt, "(?m)^\`$Script:Version = '([^']+)'")
+    if (-not $m.Success -or (ConvertTo-WtVersion $m.Groups[1].Value) -ne $Version) { return (T 'The version in the package does not match the release.') }
+    return $null
+}
+
+# Puts the old files back after a failed or interrupted installation (journal.json lists what the installation touched)
+function Undo-WtUpdateFiles([string]$Upd) {
+    $jf = Join-Path $Upd 'journal.json'
+    if (-not (Test-Path -LiteralPath $jf)) { return $false }
+    $ok = $true
+    try {
+        $j = Get-Content -LiteralPath $jf -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.Fertig) { Remove-Item -LiteralPath $jf -Force -ErrorAction SilentlyContinue; return $false }   # installation was complete, only the cleanup is left
+        $bk = Join-Path (Join-Path $Upd 'backup') ([string]$j.Von)
+        foreach ($f in @($j.Dateien)) {
+            $rel = [string]$f.Pfad
+            if (-not (Test-WtUpdatePath $rel)) { continue }
+            $dest = [IO.Path]::Combine([string]$Script:ToolRoot, $rel)
+            try {
+                if ([bool]$f.Vorhanden) { [IO.File]::Copy([IO.Path]::Combine($bk, $rel), $dest, $true) }
+                elseif (Test-Path -LiteralPath $dest -PathType Leaf) { [IO.File]::Delete($dest) }
+                if (Test-Path -LiteralPath ($dest + '.wtnew')) { [IO.File]::Delete($dest + '.wtnew') }
+            } catch { $ok = $false }
+        }
+    } catch { $ok = $false }
+    if ($ok) { Remove-Item -LiteralPath $jf -Force -ErrorAction SilentlyContinue; Add-WtUpdateLog 'Rolled back an unfinished installation' }
+    return $ok
+}
+
+# --- Interface for the app and the command line: check -> stage (download + verify) -> apply (replace files) ---
+
+# Status: AKTUELL | NEU | GESPERRT | FEHLER (internal values stay German); Meldung is the text for the user
+function Invoke-GuiUpdateCheck {
+    $Script:PendingUpdate = $null
+    $blocker = Get-WtUpdateBlocker
+    if ($blocker) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = $blocker; Aktuell = [string]$Script:Version } }
+    $rel = $null
+    try {
+        $null = Undo-WtUpdateFiles (Join-Path $Script:DataDir 'update')
+        $rel = Get-LatestRelease
+    } catch {
+        Add-WtUpdateLog ('Check failed: ' + $_.Exception.Message)
+        return [pscustomobject]@{ Status = 'FEHLER'; Meldung = (T 'The update check failed: {0}' ($_.Exception.Message)); Aktuell = [string]$Script:Version }
+    }
+    $cur = ConvertTo-WtVersion ([string]$Script:Version)
+    if (-not $cur) { return [pscustomobject]@{ Status = 'FEHLER'; Meldung = (T 'The installed version number is not readable.'); Aktuell = [string]$Script:Version } }
+    if (-not $rel) { return [pscustomobject]@{ Status = 'FEHLER'; Meldung = (T 'No installable release was found.'); Aktuell = [string]$Script:Version } }
+    if ($rel.Version -le $cur) { return [pscustomobject]@{ Status = 'AKTUELL'; Meldung = ''; Aktuell = [string]$Script:Version } }
+    $Script:PendingUpdate = $rel
+    $notes = [string]$rel.Notes
+    if ($notes.Length -gt 700) { $notes = $notes.Substring(0, 700) + ' …' }
+    return [pscustomobject]@{ Status = 'NEU'; Meldung = ''; Aktuell = [string]$Script:Version; Neu = [string]$rel.Version; Notizen = $notes; Seite = [string]$rel.PageUrl }
+}
+
+# Downloads the release found by the last check, verifies it and unpacks it into the protected data folder.
+# Status: BEREIT | GESPERRT | FEHLER. Nothing in the program folder is changed.
+function Invoke-GuiUpdateStage {
+    $blocker = Get-WtUpdateBlocker
+    if ($blocker) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = $blocker } }
+    $rel = $Script:PendingUpdate
+    if (-not $rel) { return [pscustomobject]@{ Status = 'FEHLER'; Meldung = (T 'Please check for updates first.') } }
+    $upd = Join-Path $Script:DataDir 'update'
+    $stage = Join-Path $upd 'staged'
+    $dl = Join-Path $upd 'download'
+    try {
+        $prefix = 'https://github.com/{0}/releases/download/' -f [string]$Script:Cfg.UpdateRepo
+        if (-not ([string]$rel.ZipUrl).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or ($rel.ShaUrl -and -not ([string]$rel.ShaUrl).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))) { throw (T 'The release points to an unexpected address.') }
+        if ($rel.ZipSize -le 0 -or $rel.ZipSize -gt $Script:UpdateMaxZipBytes) { throw (T 'The download is larger than expected.') }
+        # Expected checksum: GitHub's digest of the asset and/or the .sha256 file of the release. At least one is required;
+        # if both exist they must agree.
+        $expected = New-Object System.Collections.Generic.List[string]
+        if ($rel.Digest) { $expected.Add(([string]$rel.Digest).ToLower()) }
+        if ($rel.ShaUrl) {
+            $txt = Get-WtHttpText ([string]$rel.ShaUrl) 'text/plain' 4096
+            $m = [regex]::Match($txt, '(?i)\b([0-9a-f]{64})\b')
+            if (-not $m.Success) { throw (T 'The checksum file of the release is not readable.') }
+            $expected.Add($m.Groups[1].Value.ToLower())
+        }
+        if ($expected.Count -eq 0) { throw (T 'The release has no checksum and is not installed.') }
+        if (@($expected | Select-Object -Unique).Count -gt 1) { throw (T 'The checksums of the release do not match each other.') }
+        foreach ($p in $stage, $dl) { if (Test-Path -LiteralPath $p) { Remove-TreeNoFollow $p } }
+        New-Item -ItemType Directory -Force -Path $dl, $stage | Out-Null
+        $zip = Join-Path $dl ('WinTidy-v{0}.zip' -f $rel.Version)
+        Save-WtHttpFile ([string]$rel.ZipUrl) $zip $Script:UpdateMaxZipBytes
+        $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
+        if ($hash -ne $expected[0]) { throw (T 'The checksum of the download is wrong. It is not installed.') }
+        $files = @(Expand-WtUpdateZip $zip (Join-Path $stage 'files'))
+        $err = Test-WtUpdatePackage (Join-Path $stage 'files') $files $rel.Version
+        if ($err) { throw $err }
+        $list = @($files | ForEach-Object { [ordered]@{ Pfad = $_; Sha256 = (Get-FileHash -LiteralPath ([IO.Path]::Combine($stage, 'files', $_)) -Algorithm SHA256).Hash.ToLower() } })
+        [ordered]@{ Version = [string]$rel.Version; Tag = [string]$rel.Tag; Zeit = (Get-Date).ToString('o'); Dateien = $list } | ConvertTo-Json -Depth 4 | Out-File -LiteralPath (Join-Path $stage 'staged.json') -Encoding utf8
+        Remove-TreeNoFollow $dl
+        Add-WtUpdateLog ('Downloaded and verified version {0}' -f $rel.Version)
+        return [pscustomobject]@{ Status = 'BEREIT'; Version = [string]$rel.Version; Meldung = '' }
+    } catch {
+        $msg = $_.Exception.Message
+        foreach ($p in $stage, $dl) { try { if (Test-Path -LiteralPath $p) { Remove-TreeNoFollow $p } } catch { } }
+        Add-WtUpdateLog ('Download failed: ' + $msg)
+        return [pscustomobject]@{ Status = 'FEHLER'; Meldung = (T 'The update could not be downloaded: {0}' $msg) }
+    }
+}
+
+# Replaces the program files with the staged version. Keeps a copy of the old files, never overwrites an existing
+# WinTidy.config.json, and rolls everything back if a step fails. Status: OK | GESPERRT | FEHLER.
+function Invoke-GuiUpdateApply {
+    $blocker = Get-WtUpdateBlocker
+    if ($blocker) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = $blocker } }
+    $upd = Join-Path $Script:DataDir 'update'
+    $stage = Join-Path $upd 'staged'
+    $files = Join-Path $stage 'files'
+    $journal = Join-Path $upd 'journal.json'
+    $tmpFiles = New-Object System.Collections.Generic.List[string]
+    $swapStarted = $false
+    try {
+        $mf = Join-Path $stage 'staged.json'
+        if (-not (Test-Path -LiteralPath $mf)) { throw (T 'There is no downloaded update to install.') }
+        if (-not (Test-WtDataRootSafe $stage)) { throw (T 'The data folder is not protected. The update is not installed.') }
+        $m = Get-Content -LiteralPath $mf -Raw -Encoding UTF8 | ConvertFrom-Json
+        $new = ConvertTo-WtVersion ([string]$m.Version)
+        $cur = ConvertTo-WtVersion ([string]$Script:Version)
+        if (-not $new -or -not $cur -or $new -le $cur) { throw (T 'The downloaded version is not newer than the installed one.') }
+        # Check every staged file against the checksum recorded at download time and decide what has to be replaced
+        $plan = New-Object System.Collections.Generic.List[object]
+        foreach ($f in @($m.Dateien)) {
+            $rel = [string]$f.Pfad
+            if (-not (Test-WtUpdatePath $rel)) { throw (T 'The package contains an unexpected file: {0}' $rel) }
+            $src = [IO.Path]::Combine($files, $rel)
+            if (-not (Test-Path -LiteralPath $src -PathType Leaf) -or ((Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne [string]$f.Sha256)) { throw (T 'A downloaded file was changed. The update is not installed.') }
+            $dest = [IO.Path]::Combine([string]$Script:ToolRoot, $rel)
+            $exists = Test-Path -LiteralPath $dest -PathType Leaf
+            # The shipped configuration may contain own settings: never overwritten. Unchanged files stay as they are.
+            if ($rel -eq 'WinTidy.config.json' -and $exists) { continue }
+            if ($exists -and ((Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash -eq [string]$f.Sha256)) { continue }
+            $plan.Add([pscustomobject]@{ Rel = $rel; Src = $src; Dest = $dest; Exists = $exists })
+        }
+        # Engine last: its version number marks the update as done. Other files first.
+        $order = @($plan | Sort-Object @{ Expression = { if ($_.Rel -eq 'WinTidy.ps1') { 1 } else { 0 } } }, Rel)
+        # Copy of the old files (only the last one is kept) and the new files next to their targets
+        $bkRoot = Join-Path $upd 'backup'
+        $bk = Join-Path $bkRoot ([string]$Script:Version)
+        if (Test-Path -LiteralPath $bkRoot) { foreach ($d in @(Get-ChildItem -LiteralPath $bkRoot -Directory -Force)) { Remove-TreeNoFollow $d.FullName } }
+        New-Item -ItemType Directory -Force -Path $bk | Out-Null
+        foreach ($p in $order) {
+            if ($p.Exists) {
+                $b = [IO.Path]::Combine($bk, $p.Rel)
+                New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($b)) | Out-Null
+                [IO.File]::Copy($p.Dest, $b, $true)
+            }
+            New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($p.Dest)) | Out-Null
+            $t = $p.Dest + '.wtnew'
+            [IO.File]::Copy($p.Src, $t, $true)
+            $tmpFiles.Add($t)
+        }
+        $jr = [ordered]@{ Von = [string]$Script:Version; Nach = [string]$m.Version; Fertig = $false; Dateien = @($order | ForEach-Object { [ordered]@{ Pfad = $_.Rel; Vorhanden = [bool]$_.Exists } }) }
+        $jr | ConvertTo-Json -Depth 4 | Out-File -LiteralPath $journal -Encoding utf8
+        # The actual replacement: a rename per file, so the window in which the program folder is inconsistent is tiny
+        $swapStarted = $true
+        foreach ($p in $order) {
+            $t = $p.Dest + '.wtnew'
+            if ($p.Exists) { [IO.File]::Replace($t, $p.Dest, $null) } else { [IO.File]::Move($t, $p.Dest) }
+        }
+        # Done. From here on nothing is rolled back any more, even if the cleanup fails.
+        $swapStarted = $false
+        $jr.Fertig = $true
+        try { $jr | ConvertTo-Json -Depth 4 | Out-File -LiteralPath $journal -Encoding utf8; Remove-Item -LiteralPath $journal -Force } catch { }
+        try { Remove-TreeNoFollow $stage } catch { }
+        Add-WtUpdateLog ('Installed version {0} (was {1}, {2} files replaced)' -f $m.Version, $Script:Version, $order.Count)
+        return [pscustomobject]@{ Status = 'OK'; Version = [string]$m.Version; Geaendert = $order.Count; Sicherung = $bk; Meldung = ''; Zurueck = $false }
+    } catch {
+        $msg = $_.Exception.Message
+        $rolled = $false
+        foreach ($t in $tmpFiles) { try { if (Test-Path -LiteralPath $t) { [IO.File]::Delete($t) } } catch { } }
+        if ($swapStarted) { try { $rolled = [bool](Undo-WtUpdateFiles $upd) } catch { } }
+        else { try { Remove-Item -LiteralPath $journal -Force -ErrorAction SilentlyContinue } catch { } }
+        Add-WtUpdateLog ('Installation failed: {0} (rolled back: {1})' -f $msg, $rolled)
+        return [pscustomobject]@{ Status = 'FEHLER'; Meldung = (T 'The update could not be installed: {0}' $msg); Zurueck = $rolled }
+    }
+}
+
+# =============================================================================
 #  Modes
 # =============================================================================
 function Open-Report([string]$Path) { if (-not $Path) { return }; try { Start-Process -FilePath "$env:windir\explorer.exe" -ArgumentList ('"{0}"' -f $Path) } catch { try { Start-Process $Path } catch { } } }
@@ -2952,6 +3330,24 @@ function Invoke-Mode([string]$m) {
         }
         'Report' { $rep = New-Report; if ($rep) { Open-Report $rep } }
         'Restore' { Start-RunLog 'restore'; $null = Invoke-Restore; Stop-RunLog }
+        'Update' {
+            Section (T 'Update')
+            W (T '  Installed version: {0}' $Script:Version) 'Gray'
+            $c = Invoke-GuiUpdateCheck
+            if ($c.Status -eq 'AKTUELL') { W (T '  WinTidy is up to date.') 'Green'; return }
+            if ($c.Status -ne 'NEU') { W ('  ' + $c.Meldung) 'Yellow'; return }
+            W (T '  New version available: {0}' $c.Neu) 'Cyan'
+            foreach ($l in @(($c.Notizen -split "`r?`n") | Select-Object -First 12)) { W ('    ' + $l) 'DarkGray' }
+            W (T '  Source: {0}' $c.Seite) 'DarkGray'
+            $a = if ($Yes) { 'y' } else { Read-Host (T '  Install it now? [y/N]') }
+            if ($a -notmatch '^(j|ja|y|yes)$') { W (T '  Not installed.') 'Yellow'; return }
+            $s = Invoke-GuiUpdateStage
+            if ($s.Status -ne 'BEREIT') { W ('  ' + $s.Meldung) 'Red'; return }
+            $r = Invoke-GuiUpdateApply
+            if ($r.Status -ne 'OK') { W ('  ' + $r.Meldung) 'Red'; return }
+            W (T '  Version {0} is installed. Please start WinTidy again to use it.' $r.Version) 'Green'
+            W (T '  A copy of the previous version is in {0}' $r.Sicherung) 'DarkGray'
+        }
         'Hardware' {
             Start-RunLog 'hardware'
             Section (T 'Hardware and cooling (changes nothing)')
@@ -2986,6 +3382,7 @@ while ($true) {
     W (T '  [7] Restore') 'White'
     W (T '  [8] Deep scan   - incl. file system/integrity check (slow)') 'White'
     W (T '  [9] Hardware    - cooling, fans, temperatures; optional cooling test') 'White'
+    W (T '  [U] Update      - check for a new WinTidy version and install it') 'White'
     W (T '  [0] Exit') 'White'
     $c = Read-Host (T '  Choice')
     switch ($c) {
@@ -2993,6 +3390,7 @@ while ($true) {
         '5' { Invoke-Mode 'Report' } '6' { Invoke-Mode 'Rules' } '7' { Invoke-Mode 'Restore' }
         '8' { $Deep = $true; Invoke-Mode 'Scan'; $Deep = $false }
         '9' { $a = Read-Host (T '  Additionally run the cooling test (about 1 minute full load, fans get loud)? [y/N]'); $CoolingTest = ($a -match '^(j|ja|y|yes)$'); Invoke-Mode 'Hardware'; $CoolingTest = $false }
+        'u' { Invoke-Mode 'Update' }
         '0' { return }
     }
 }

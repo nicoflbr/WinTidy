@@ -2,7 +2,7 @@
 
 This document is the basis for further development. It describes the goal and principles, the architecture, the rule contract, the data formats, the tests, the lessons learned from the first deployment and open ideas.
 
-As of version 1.4.0, 2026-10-25.
+As of version 1.5.0, 2026-10-25.
 
 ---
 
@@ -39,12 +39,13 @@ WinTidy\
   CLAUDE.md              # short instructions for AI assistants (refers here)
   CONTRIBUTING.md, SECURITY.md, CHANGELOG.md, LICENSE (MIT)
   .github\workflows\tests.yml    # automatic tests (Windows PowerShell 5.1 and PowerShell 7)
-  .github\workflows\release.yml  # tag v* -> ZIP + GitHub release with the CHANGELOG section
+  .github\workflows\release.yml  # tag v* -> ZIP + .sha256 + GitHub release with the CHANGELOG section
   tests\
     Test-Parse.ps1       # syntax of all .ps1, unique rule IDs, completeness of lang\de.psd1
     Test-Report.ps1      # synthetic snapshots -> comparison + HTML report in English and German (also runs on Linux/pwsh)
     Test-Hardware.ps1    # hardware rating, score, cooling test with synthetic values
     Test-GuiApi.ps1      # interface engine <-> app with test rules
+    Test-Update.ps1      # updater offline: checksums, package checks, install, rollback (built ZIPs, mocked network)
     Probe-Hardware.ps1   # diagnosis on real PCs: which sensor sources deliver what (writes probe-hardware.json)
     Probe-Display.ps1    # diagnosis: refresh rates according to driver and EDID
   WinTidy-Daten\         # runtime data up to 1.2 (in .gitignore); since 1.3 see below
@@ -123,6 +124,29 @@ WinTidy speaks English and German. The code contains the **English** texts; `lan
 - **Internal values stay German** and must never be translated: rule fields `Kategorie`, `Risiko` (`Niedrig`/`Mittel`/`Hoch`/`Info`), `Stufe`, status codes (`OK`, `Fehler`, `Uebersprungen`, `GESPERRT`, `RP-FEHLT` …), snapshot labels (`scan`/`vorher`/`nachher`), undo types, snapshot field names, folder and file names in the data folder. For display use `Get-RiskText`, `Get-CategoryText`, `Get-SnapshotLabelText`, `Get-StatusText` (engine) or `Get-GroupText` (app).
 - **New text:** write it in English in the code with `T`, add the German translation to `lang\de.psd1` (alphabetical order is not required, but keep it tidy), run `Test-Parse.ps1`. It reports missing, unused and duplicate keys and placeholders `{0}` … that differ between English and German.
 - **Parsing localized tool output** (pnputil, winget, robocopy) is independent of the WinTidy language – always cover German and English Windows.
+
+### 3b. Updates (since 1.5)
+
+Opt-in self-update from GitHub releases. Code: section "Updates" in `WinTidy.ps1` (before the modes), UI in `WinTidy-App.ps1` (card "Updates", banner), CLI `-Mode Update`. Three steps, each one a function that returns a `pscustomobject` with a German status code and a translated `Meldung`:
+
+| Step | Function | Status | Does |
+|---|---|---|---|
+| check | `Invoke-GuiUpdateCheck` | `AKTUELL` `NEU` `GESPERRT` `FEHLER` | blockers, repairs an unfinished installation (`Undo-WtUpdateFiles`), asks `Get-LatestRelease`, remembers the release in `$Script:PendingUpdate` |
+| stage | `Invoke-GuiUpdateStage` | `BEREIT` `GESPERRT` `FEHLER` | checks the addresses, requires a checksum, downloads to `<data>\update\download`, compares SHA-256, unpacks into `<data>\update\staged\files` (`Expand-WtUpdateZip`), checks the package (`Test-WtUpdatePackage`), writes `staged.json` with a hash per file. Changes nothing in the program folder |
+| apply | `Invoke-GuiUpdateApply` | `OK` `GESPERRT` `FEHLER` | re-checks the staged files against `staged.json`, backs up the old files to `update\backup\<oldversion>`, copies the new ones next to their targets as `*.wtnew`, writes `journal.json`, then swaps file by file (`[IO.File]::Replace/Move`), engine last |
+
+Security design (do not weaken):
+- **Network:** `Open-WtHttp` only accepts `https` and the hosts in `$Script:UpdateHostPattern` (`github.com`, `*.githubusercontent.com`); redirects are followed by hand, each hop is checked again. Size limits everywhere. `Get-WtHttpText`/`Save-WtHttpFile`/`Get-LatestRelease` are separate functions so that tests can replace them.
+- **Authenticity:** the ZIP must match GitHub's `digest` of the asset and/or the `.sha256` asset (at least one, both must agree). The release must belong to `UpdateRepo` (download URL prefix is checked). No pre-releases or drafts. There is **no code signing**: whoever controls the GitHub release controls the update. Say so in the docs, never claim more.
+- **Package:** one optional top folder; every entry must pass `Test-WtUpdatePath` (a few text types in the root or one subfolder such as `lang/`, no `..`, no device names), unique names, max. 100 files and 10 MB per file / 20 MB total, required files present, every `.ps1`/`.psd1` parses, `$Script:Version` in the package equals the tag and is newer than the installed one.
+- **Local tampering:** staging happens in the protected data folder (`Test-WtDataRootSafe`), so that only admins can swap the files between the steps. Updates therefore need admin rights and are refused with `-DataPath`.
+- **Blockers** (`Get-WtUpdateBlocker`): `UpdateEnabled=false`, no admin, unprotected data folder, network drive, git clone, folder not writable.
+- **Rollback:** `journal.json` lists the touched files (`Von`, `Nach`, `Fertig`, `Dateien` with `Pfad`/`Vorhanden`). `Undo-WtUpdateFiles` restores from the backup, removes new files and `*.wtnew`; it runs after a failed swap and at the start of every check (power loss). Once all swaps are done the journal gets `Fertig` and a failing cleanup never rolls back.
+- **User files:** `WinTidy.config.json` is never overwritten if it exists; `WinTidy.config.local.json` is not part of the package; identical files are skipped (a running launcher `.cmd` is not touched).
+
+App flow: setting `AutoUpdate` and the time of the last check `UpdateGeprueft` in `app-einstellungen.json`; after the start a silent check (once per `UpdateIntervalHours`), then stage and apply as separate silent operations (`updatecheck`, `updatestage`, `updateapply`); closing the window is blocked while `updateapply` runs; a banner offers **Restart now** (`Restart-App`). The manual button asks before installing. The first update from 1.4.1 or older is manual - those versions have no updater.
+
+Tests: `tests/Test-Update.ps1` (offline, builds ZIP packages with `System.IO.Compression`, mocks the network and `Test-WtDataRootSafe`).
 
 ---
 
@@ -259,6 +283,7 @@ pwsh ./tests/Test-Parse.ps1     # syntax, BOM, PS7 operators, unique rule IDs, G
 pwsh ./tests/Test-Report.ps1    # builds the report from test data in the temp folder, in English and German (also checks the hardware section)
 pwsh ./tests/Test-Hardware.ps1  # scenarios for cooling/fans/GPU/drives/battery, score, cooling test (English and German texts)
 pwsh ./tests/Test-GuiApi.ps1    # app interface: findings, RP-FEHLT, OhneRP, cancel, battery, server/company PC, restore preview
+pwsh ./tests/Test-Update.ps1    # updater: checksums, package checks, zip-slip, install, rollback, journal repair (offline)
 ```
 
 All of them also run on Linux/macOS with PowerShell 7. Functions are loaded via the AST so that Windows-specific startup code is not executed. `Test-Hardware.ps1` replaces the data sources (`Get-HwMonitorSensors`, `Get-NvidiaGpus`, `Get-ThermalZones`, `Get-DiskHealth`, `Get-CpuPerfSample` …) with functions returning synthetic values – so always build new hardware data sources as their own `Get-*` function.
@@ -351,6 +376,7 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 - Fan curves and BIOS settings are not readable. Desktop motherboards only report CPU temperature and fans via additional programs (LibreHardwareMonitor, HWiNFO). AMD/Intel graphics cards: only via these programs (no counterpart to `nvidia-smi` without additional software).
 - `HW-DISPLAY` only rates with exactly one monitor; monitors that report high rates only in EDID extension blocks are not detected (no false alarm, just no hint).
 - Languages: only English and German. Snapshots and run logs keep the language of the run that wrote them.
+- Updates: releases are not code-signed, the checksum comes from the same GitHub release as the ZIP (it protects against damaged or swapped downloads, not against a compromised GitHub account). Versions up to 1.4.1 have no updater. A running app keeps using the old code until it is restarted.
 
 ---
 
@@ -370,6 +396,8 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 **Short term**
 - [x] App: dark mode (1.3.1)
 - [x] English and German (1.4.0)
+- [x] Opt-in automatic updates from GitHub releases (1.5.0)
+- [ ] Updates: test on a real Windows PC with a real release (the 1.5.0 updater was only tested offline in CI); optionally a Windows service/scheduled task so that updates also happen when the app is not open
 - [ ] App: own icon (.ico)
 - [ ] Hardware: AMD GPU via ADLX/`amdsmi` (if present), history chart of the cooling test in app and report, GPU load in the cooling test
 - [ ] App: mark recommendations as "done" individually after applying instead of asking for a new check
@@ -385,7 +413,7 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 **Medium term**
 - [ ] Split into a module (`WinTidy.psm1` + `Rules\*.ps1`), rules as individual files
 - [ ] More languages (`lang\<code>.psd1` with the same mechanism)
-- [ ] Code signing, so that RemoteSigned/AllSigned is enough without `-ExecutionPolicy Bypass`
+- [ ] Code signing, so that RemoteSigned/AllSigned is enough without `-ExecutionPolicy Bypass` - and so that updates can be verified by signature, not only by checksum
 - [ ] Combined report across several PCs
 - [ ] Benchmark mode (disk sequential/4K with `winsat` or DiskSpd, app start time measurement) for before/after beyond the boot time
 

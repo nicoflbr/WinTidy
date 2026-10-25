@@ -241,5 +241,8 @@
     "22631": "2025-11-11",
     "26100": "2026-10-13",
     "26200": "2027-10-12"
-  }
+  },
+  "UpdateRepo": "nicoflbr/WinTidy",
+  "UpdateIntervalHours": 24,
+  "UpdateEnabled": true
 }

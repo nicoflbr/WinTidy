@@ -27,7 +27,7 @@ jobs:
       - name: Run tests (Windows PowerShell 5.1)
         shell: pwsh
         run: |
-          foreach ($t in 'Test-Parse', 'Test-Report', 'Test-Hardware', 'Test-GuiApi') {
+          foreach ($t in 'Test-Parse', 'Test-Report', 'Test-Hardware', 'Test-GuiApi', 'Test-Update') {
             & powershell -NoProfile -ExecutionPolicy Bypass -File "tests/$t.ps1"
             if ($LASTEXITCODE -ne 0) { Write-Host "::error::$t failed"; exit 1 }
           }
@@ -42,6 +42,9 @@ jobs:
           foreach ($f in $files) { Copy-Item -LiteralPath $f -Destination $dir }
           Copy-Item -LiteralPath 'lang' -Destination $dir -Recurse
           Compress-Archive -Path $dir -DestinationPath "$name.zip"
+          # Checksum file: the updater in WinTidy compares the download with it (and with GitHub's own digest of the asset)
+          $hash = (Get-FileHash -LiteralPath "$name.zip" -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText((Join-Path $PWD "$name.zip.sha256"), "$hash  $name.zip`n", (New-Object Text.UTF8Encoding $false))
 
       - name: Publish release
         shell: pwsh
@@ -54,4 +57,4 @@ jobs:
           $notes = New-Object System.Collections.Generic.List[string]
           for ($i = $start + 1; $i -lt $lines.Count -and $lines[$i] -notlike '## *'; $i++) { $notes.Add($lines[$i]) }
           $notes -join "`n" | Out-File notes.md -Encoding utf8
-          gh release create '${{ github.ref_name }}' "WinTidy-${{ github.ref_name }}.zip" --title "WinTidy $ver" --notes-file notes.md
+          gh release create '${{ github.ref_name }}' "WinTidy-${{ github.ref_name }}.zip" "WinTidy-${{ github.ref_name }}.zip.sha256" --title "WinTidy $ver" --notes-file notes.md

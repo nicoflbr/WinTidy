@@ -597,6 +597,17 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
+              <TextBlock Text="Updates" Style="{StaticResource H2}" Margin="0,0,0,10"/>
+              <CheckBox x:Name="OptAutoUpdate" Margin="0,4" IsEnabled="False"><TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Ink}">Update WinTidy automatically <Run Foreground="{DynamicResource Muted}">(checks for a new version at most once a day and installs it; a copy of the old version is kept)</Run></TextBlock></CheckBox>
+              <WrapPanel Margin="0,10,0,0">
+                <Button x:Name="BtnUpdateCheck" Style="{StaticResource Secondary}" Content="Check for u_pdates now" Margin="0,0,12,6" IsEnabled="False"/>
+              </WrapPanel>
+              <TextBlock x:Name="UpdateStatus" Style="{StaticResource Sub}" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
+              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap" Text="WinTidy only installs official releases from GitHub, and only after a checksum and a safety check."/>
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
               <TextBlock Text="Program" Style="{StaticResource H2}" Margin="0,0,0,10"/>
               <WrapPanel>
                 <Button x:Name="BtnShortcut" Style="{StaticResource Secondary}" Content="Create _desktop shortcut" Margin="0,0,12,10"/>
@@ -777,10 +788,11 @@ function Apply-Theme {
 function Save-AppSettings {
     try {
         $d = Split-Path $AppSettingsFile; if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
-        [ordered]@{ Darstellung = $Script:ThemeMode; Sprache = $Script:LangMode } | ConvertTo-Json | Out-File -LiteralPath $AppSettingsFile -Encoding utf8
+        [ordered]@{ Darstellung = $Script:ThemeMode; Sprache = $Script:LangMode; AutoUpdate = [bool]$Script:AutoUpdate; UpdateGeprueft = $Script:UpdateChecked } | ConvertTo-Json | Out-File -LiteralPath $AppSettingsFile -Encoding utf8
     } catch { }
 }
-try { if (Test-Path -LiteralPath $AppSettingsFile) { $st = Get-Content -LiteralPath $AppSettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json; if ([string]$st.Darstellung -in 'Auto', 'Hell', 'Dunkel') { $Script:ThemeMode = [string]$st.Darstellung } } } catch { }
+$Script:AutoUpdate = $false; $Script:UpdateChecked = $null
+try { if (Test-Path -LiteralPath $AppSettingsFile) { $st = Get-Content -LiteralPath $AppSettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json; if ([string]$st.Darstellung -in 'Auto', 'Hell', 'Dunkel') { $Script:ThemeMode = [string]$st.Darstellung }; if ($st.AutoUpdate -eq $true) { $Script:AutoUpdate = $true }; if ($st.UpdateGeprueft) { $Script:UpdateChecked = [string]$st.UpdateGeprueft } } } catch { }
 Apply-Theme
 # Settings: show the selection and switch
 if ($HighContrast) {
@@ -829,7 +841,7 @@ $RS.ApartmentState = 'STA'; $RS.ThreadOptions = 'ReuseThread'; $RS.Open()
 $RS.SessionStateProxy.SetVariable('Sync', $Sync)
 $RS.SessionStateProxy.SetVariable('Control', $Control)
 $RS.SessionStateProxy.SetVariable('EnginePath', $EnginePath)
-$State = @{ CoolTest = $null; Op = $null; Findings = @(); InfoFindings = @(); Snapshot = $null; ScanTime = $null; History = $null; LastResult = $null; Busy = $false; Version = ''; DataDir = $null; Context = $null; Locked = ''; EngineOk = $false; ForceClose = $false; Narrow = $false; Retry = $null; ErrReport = '' }
+$State = @{ CoolTest = $null; Op = $null; Findings = @(); InfoFindings = @(); Snapshot = $null; ScanTime = $null; History = $null; LastResult = $null; Busy = $false; Version = ''; DataDir = $null; Context = $null; Locked = ''; EngineOk = $false; ForceClose = $false; Narrow = $false; Retry = $null; ErrReport = ''; UpdateBlocker = ''; UpdateHours = 24; UpdateMsg = ''; UpdateMode = ''; UpdateRunning = $false; UpdatedTo = '' }
 $Stopwatch = New-Object System.Diagnostics.Stopwatch
 
 # Kind: init | scan | fix | undo | silent (background, without progress page)
@@ -953,6 +965,10 @@ function Restart-Elevated {
 function Restart-ForLanguage {
     if ($State.Busy -or $State.Op) { return }
     if ((Show-Msg (T 'Restart WinTidy now so that the new language takes effect?') 'YesNo' 'Question') -ne 'Yes') { return }
+    Restart-App
+}
+function Restart-App {
+    if ($State.Busy -or $State.Op) { return }
     try {
         Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate', '-Restarted') -ErrorAction Stop
         $State.ForceClose = $true
@@ -998,6 +1014,7 @@ function Update-Banners {
     # An imminent data loss belongs at the very top, not in the card for experts
     $krit = @(@($State.Findings) + @($State.InfoFindings) | Where-Object { $_ -and "$($_.Id)" -eq 'HW-COOLING' } | ForEach-Object { @($_.Items) } | Where-Object { (Get-ItemLevel $_) -eq 'krit' -and (Get-ItemArea $_) -in 'Laufwerke', 'Speicher' -and (Get-ItemRating $_) -ne 'moment' })
     if ($krit.Count) { Add-Banner ((T 'Important: your PC reports a problem with a drive or the RAM. Back up your photos and documents to a USB stick or the cloud soon and have the PC checked. (') + [string]$krit[0].Label + ')') 'bad' }
+    if ($State.UpdatedTo) { Add-Banner ((T 'WinTidy was updated to version {0}. The new version is used after the next start.') -f $State.UpdatedTo) 'info' (T 'Restart now') { if (-not (Test-Busy)) { Restart-App } } }
     $UI.BannerPanel.Visibility = $(if ($UI.BannerPanel.Children.Count) { 'Visible' } else { 'Collapsed' })
 }
 $UI.BtnElevate2.Add_Click({ Restart-Elevated })
@@ -1663,6 +1680,110 @@ $UI.BtnShortcut.Add_Click({
 })
 
 # =============================================================================
+#  Updates (settings card, automatic check at start)
+#  Check (silent) -> download and verify (silent) -> replace files (silent, window cannot be closed meanwhile).
+#  The running instance keeps using the old files it has already loaded; the new version starts after a restart.
+# =============================================================================
+function Get-UpdateCheckedTime {
+    if (-not $Script:UpdateChecked) { return $null }
+    try { return [datetime]::Parse([string]$Script:UpdateChecked, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind) } catch { return $null }
+}
+function Test-UpdateDue {
+    $t = Get-UpdateCheckedTime
+    if (-not $t) { return $true }
+    $h = ((Get-Date) - $t).TotalHours
+    return ($h -lt 0 -or $h -ge [math]::Max(1, [int]$State.UpdateHours))
+}
+function Update-UpdateUi {
+    $off = [bool]$State.UpdateBlocker
+    $UI.OptAutoUpdate.IsChecked = [bool]$Script:AutoUpdate
+    $UI.OptAutoUpdate.IsEnabled = (-not $off)
+    $UI.BtnUpdateCheck.IsEnabled = ((-not $off) -and (-not $State.UpdateRunning))
+    if ($off) { $UI.UpdateStatus.Text = [string]$State.UpdateBlocker; return }
+    $parts = @()
+    if ($State.UpdateMsg) { $parts += [string]$State.UpdateMsg }
+    $t = Get-UpdateCheckedTime
+    $parts += $(if ($t) { (T 'Last checked: {0}' ($t.ToString((T 'yyyy-MM-dd HH:mm')))) } else { (T 'Not checked yet.') })
+    $UI.UpdateStatus.Text = ($parts -join '  ')
+}
+# Mode: 'auto' (at start, or right after switching it on; no message boxes) or 'manual' (button)
+function Start-UpdateCheck([string]$Mode) {
+    if ($State.UpdateBlocker) { if ($Mode -eq 'manual') { Show-Msg ([string]$State.UpdateBlocker) | Out-Null }; return }
+    if ($State.UpdateRunning) { return }
+    if ($Mode -eq 'manual' -and (Test-Busy)) { return }
+    $State.UpdateMode = $Mode
+    $State.UpdateMsg = (T 'Checking for updates …')
+    $State.UpdateRunning = $true
+    if (-not (Start-Op 'updatecheck' 'Invoke-GuiUpdateCheck' { param($r, $err, $c) Complete-UpdateCheck $r $err $c } -Silent)) { $State.UpdateRunning = $false; $State.UpdateMsg = '' }
+    Update-UpdateUi
+}
+function Complete-UpdateCheck($r, $err, $cancelled) {
+    $State.UpdateRunning = $false
+    $State.UpdateMsg = ''
+    $manual = ($State.UpdateMode -eq 'manual')
+    if ($cancelled) { Update-UpdateUi; return }
+    $Script:UpdateChecked = (Get-Date).ToString('o'); Save-AppSettings
+    if ($err -or -not $r) {
+        if ($err) { Write-ErrLog "Update check: $err" }
+        $State.UpdateMsg = (T 'The update did not work. Details are in the error log.'); Update-UpdateUi
+        if ($manual) { Show-Msg ([string]$State.UpdateMsg) 'OK' 'Warning' | Out-Null }
+        return
+    }
+    switch ([string]$r.Status) {
+        'AKTUELL' {
+            $State.UpdateMsg = (T 'WinTidy is up to date (version {0}).' ([string]$r.Aktuell)); Update-UpdateUi
+            if ($manual) { Show-Msg ([string]$State.UpdateMsg) | Out-Null }
+        }
+        'NEU' {
+            if ($manual) {
+                $State.UpdateMsg = (T 'A new version ({0}) is available.' ([string]$r.Neu)); Update-UpdateUi
+                if ((Show-Msg (T "Version {0} is available (you have {1}).`n`nInstall it now?" ([string]$r.Neu) ([string]$r.Aktuell)) 'YesNo' 'Question') -ne 'Yes') { return }
+            }
+            Start-UpdateInstall
+        }
+        default {
+            $State.UpdateMsg = [string]$r.Meldung; Update-UpdateUi
+            if ($manual) { Show-Msg ([string]$r.Meldung) 'OK' 'Warning' | Out-Null }
+        }
+    }
+}
+function Start-UpdateInstall {
+    $State.UpdateMsg = (T 'Downloading the update …'); $State.UpdateRunning = $true; Update-UpdateUi
+    if (-not (Start-Op 'updatestage' 'Invoke-GuiUpdateStage' { param($r, $err, $c) Complete-UpdateStage $r $err $c } -Silent)) {
+        $State.UpdateRunning = $false; $State.UpdateMsg = (T 'The update could not be installed right now. WinTidy tries again later.'); Update-UpdateUi
+    }
+}
+function Complete-UpdateStage($r, $err, $cancelled) {
+    if ($cancelled) { $State.UpdateRunning = $false; $State.UpdateMsg = ''; Update-UpdateUi; return }
+    if ($err -or -not $r -or [string]$r.Status -ne 'BEREIT') {
+        $State.UpdateRunning = $false
+        if ($err) { Write-ErrLog "Update download: $err" }
+        $State.UpdateMsg = $(if ($r -and $r.Meldung) { [string]$r.Meldung } else { (T 'The update did not work. Details are in the error log.') }); Update-UpdateUi
+        if ($State.UpdateMode -eq 'manual') { Show-Msg ([string]$State.UpdateMsg) 'OK' 'Warning' | Out-Null }
+        return
+    }
+    $State.UpdateMsg = (T 'Installing the update …'); Update-UpdateUi
+    if (-not (Start-Op 'updateapply' 'Invoke-GuiUpdateApply' { param($r2, $err2, $c2) Complete-UpdateApply $r2 $err2 } -Silent)) {
+        $State.UpdateRunning = $false; $State.UpdateMsg = (T 'The update could not be installed right now. WinTidy tries again later.'); Update-UpdateUi
+    }
+}
+function Complete-UpdateApply($r, $err) {
+    $State.UpdateRunning = $false
+    if ($err) { Write-ErrLog "Update install: $err" }
+    if (-not $err -and $r -and [string]$r.Status -eq 'OK') {
+        $State.UpdatedTo = [string]$r.Version
+        $State.UpdateMsg = (T 'Updated to version {0}. Restart WinTidy to use it.' $State.UpdatedTo)
+        Update-Banners
+    } else {
+        $State.UpdateMsg = $(if ($r -and $r.Meldung) { [string]$r.Meldung } else { (T 'The update did not work. Details are in the error log.') })
+        if ($State.UpdateMode -eq 'manual') { Show-Msg ([string]$State.UpdateMsg) 'OK' 'Warning' | Out-Null }
+    }
+    Update-UpdateUi
+}
+$UI.OptAutoUpdate.Add_Click({ $Script:AutoUpdate = [bool]$UI.OptAutoUpdate.IsChecked; Save-AppSettings; if ($Script:AutoUpdate) { Start-UpdateCheck 'auto' } })
+$UI.BtnUpdateCheck.Add_Click({ Start-UpdateCheck 'manual' })
+
+# =============================================================================
 #  Start, exit, global error handling
 # =============================================================================
 $Win.Dispatcher.Add_UnhandledException({
@@ -1683,7 +1804,8 @@ $Win.Add_Loaded({
 $Script:UiSink = { param($t, $c) $Sync.Log.Enqueue([string]$t) }
 $last = Get-Snapshots | Select-Object -Last 1
 $ctx = $null; if (Get-Command Get-WtContext -ErrorAction SilentlyContinue) { try { $ctx = Get-WtContext } catch { } }
-[pscustomobject]@{ Version = $Script:Version; Last = $(if ($last) { Read-Snapshot $last } else { $null }); DataDir = $Script:DataDir; Context = $ctx; Friendly = $Script:Friendly; Migriert = [bool]$Script:DataMigrated; Ok = [bool](Get-Command Invoke-GuiScan -ErrorAction SilentlyContinue) }
+$upd = $null; if (Get-Command Get-WtUpdateBlocker -ErrorAction SilentlyContinue) { try { $upd = [pscustomobject]@{ Blocker = [string](Get-WtUpdateBlocker); Stunden = [int]$Script:Cfg.UpdateIntervalHours } } catch { } }
+[pscustomobject]@{ Version = $Script:Version; Last = $(if ($last) { Read-Snapshot $last } else { $null }); DataDir = $Script:DataDir; Context = $ctx; Friendly = $Script:Friendly; Migriert = [bool]$Script:DataMigrated; Update = $upd; Ok = [bool](Get-Command Invoke-GuiScan -ErrorAction SilentlyContinue) }
 '@ {
         param($init, $err, $c)
         if (-not $init -or -not $init.Ok -or -not $init.Version) {
@@ -1709,12 +1831,18 @@ $ctx = $null; if (Get-Command Get-WtContext -ErrorAction SilentlyContinue) { try
             $UI.BtnToRecs.Visibility = 'Collapsed'
         }
         Update-SelSummary
+        # Updates: only on request (setting), at most once per interval; failures stay silent
+        $State.UpdateBlocker = $(if ($init.Update) { [string]$init.Update.Blocker } else { (T 'Updates are not available.') })
+        if ($init.Update -and [int]$init.Update.Stunden -gt 0) { $State.UpdateHours = [int]$init.Update.Stunden }
+        Update-UpdateUi
+        if ($Script:AutoUpdate -and -not $State.UpdateBlocker -and (Test-UpdateDue)) { Start-UpdateCheck 'auto' }
     } -Silent)
 })
 $Win.Add_Closing({
     param($s, $e)
     if ($State.ForceClose) { return }
     $op = $State.Op
+    if ($op -and $op.Kind -eq 'updateapply') { Show-Msg (T 'WinTidy is installing an update right now. Please wait a moment.') | Out-Null; $e.Cancel = $true; return }
     if ($op -and $op.Kind -eq 'fix') {
         Show-Msg (T 'WinTidy is applying changes right now. Please wait until it is done – or click Cancel. WinTidy then stops after the current step.') | Out-Null
         $e.Cancel = $true; return

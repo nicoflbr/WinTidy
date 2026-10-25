@@ -26,7 +26,7 @@ Double-click `WinTidy App.cmd` → confirm the Windows prompt with **Yes** → t
 3. **"Apply selected"**: creates a restore point, applies the changes and then shows before/after.
 4. **Hardware** (Overview, "For experts"): cooling, fans, temperatures of processor, graphics card and drives, throttling, battery wear and refresh rate. With **"Test cooling"** WinTidy puts the processor under load for about a minute and checks whether the cooling keeps up.
 5. **History**: boot time chart across all restarts, all checks and optimizations.
-6. **Settings**: appearance (same as Windows, light or dark), language, undo, create desktop shortcut, thorough check, expert mode.
+6. **Settings**: appearance (same as Windows, light or dark), language, **updates**, undo, create desktop shortcut, thorough check, expert mode.
 
 The app uses the same logic and the same data as the command line – you can use both alternately.
 
@@ -50,6 +50,7 @@ The app uses the same logic and the same data as the command line – you can us
 | `Restore` | restores backed-up registry values, tasks and service start types of a run | yes |
 | `Rules` | lists all rules with their risk | no |
 | `Hardware` | cooling, fans, temperatures, drives, battery; with `-CoolingTest [-Seconds 90]` additionally a cooling test under load | no |
+| `Update` | checks GitHub for a newer release, shows the release notes and (after confirmation, or with `-Yes`) installs it | yes (WinTidy itself) |
 
 Examples:
 
@@ -65,6 +66,7 @@ Examples:
 .\WinTidy.ps1 -Mode Restore -RunId 20261021-183100
 .\WinTidy.ps1 -Mode Hardware -CoolingTest      # check cooling, 60 s full load
 .\WinTidy.ps1 -Mode Scan -Language de          # German output and report
+.\WinTidy.ps1 -Mode Update                     # look for a new WinTidy version and install it
 ```
 
 ## Risk levels
@@ -133,6 +135,18 @@ Tip for shared PCs: put the WinTidy folder itself into `C:\Program Files\WinTidy
 1. `Restore` resets every changed setting individually: autostarts, Run entries, Game DVR, TRIM, cooling policy, hibernation file, script policy, service start types (including delayed), disabled tasks and deleted startup shortcuts. Values that someone else has changed since are not overwritten. Only expected registry paths are touched.
 2. For everything else: System Restore (`rstrui.exe`) → point "WinTidy <run>".
 3. Deleted files, uninstalled programs and removed Store apps cannot be brought back via WinTidy (Store apps can be reinstalled from the Store).
+
+## Updates
+
+WinTidy can keep itself up to date. This is **off by default**.
+
+- **App:** Settings → Updates → tick **Update WinTidy automatically**. WinTidy then checks GitHub for a new release at most once a day, downloads and installs it. Afterwards a banner offers **Restart now**; until you restart, the old version keeps running. **Check for updates now** does it on request and asks before installing.
+- **Command line:** `.\WinTidy.ps1 -Mode Update` (or **[U]** in the menu).
+- **What is installed:** only official releases of the configured repository (`nicoflbr/WinTidy`) from GitHub, downloaded over HTTPS. WinTidy compares the download with the SHA-256 checksum of the release and checks the package (allowed files, PowerShell syntax, version) before it touches anything.
+- **Safety net:** the replaced files are kept under `update\backup\<version>` in the data folder. If something goes wrong during the installation (or the PC loses power), the old files are put back automatically. Your `WinTidy.config.json` and `WinTidy.config.local.json` are not overwritten.
+- **Requirements:** administrator rights and the normal protected data folder (not `-DataPath`). Updates are not possible for a git clone (use `git pull`) or when WinTidy runs from a network drive or a folder it cannot write to; the app then shows the reason.
+- **Switch off completely** (e.g. on managed PCs): `"UpdateEnabled": false` in `WinTidy.config.json` or `WinTidy.config.local.json`.
+- **Limits:** releases are not code-signed. An update is as trustworthy as the GitHub account behind the release. Version 1.4.1 and older cannot update themselves – install 1.5.0 manually once.
 
 ## Configuration
 

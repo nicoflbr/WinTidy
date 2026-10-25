@@ -7,6 +7,7 @@
 - Everything is logged and backed up. Settings can be rolled back individually.
 - Includes a friendly desktop app for non-technical users and a scriptable command line for IT pros.
 - **English and German.** It follows the Windows display language; you can switch in the app settings or with `-Language en|de`.
+- **Optional automatic updates** (off by default): official GitHub releases only, verified by checksum, with backup and automatic rollback.
 
 > Full user guide: [USAGE.md](USAGE.md). Developer guide: [DEVELOPMENT.md](DEVELOPMENT.md).
 
@@ -49,6 +50,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 - **Per-value undo.** Every registry value, service start type, scheduled task and power setting is recorded before it changes. **Restore** puts back exactly those values and skips any value that someone else has changed since.
 - **Safe deletion.** Deletion never follows junctions, symlinks or OneDrive placeholders. System roots are protected, and file age uses both the modified *and* created time.
 - **Protected data folder.** Runtime data lives in `%ProgramData%\WinTidy\<PC>` with an admin-only ACL, so unprivileged programs cannot tamper with the backups that Restore applies with admin rights.
+- **Updates are opt-in and verified.** If you switch them on, WinTidy installs only official releases of its GitHub repository, over HTTPS, after a SHA-256 and package check, keeps a copy of the old files and rolls back on errors. Releases are not code-signed (see [SECURITY.md](SECURITY.md)).
 - **Context-aware.** On Windows Server, WinTidy only checks and never changes anything. On domain-, Entra-, Intune- or ConfigMgr-managed devices, it offers only safe cleanup and information.
 
 ## Command line
@@ -62,6 +64,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 .\WinTidy.ps1 -Mode Restore -RunId 20261021-183100
 .\WinTidy.ps1 -Mode Hardware -CoolingTest     # cooling test under load
 .\WinTidy.ps1 -Mode Rules                     # list all rules with risk level
+.\WinTidy.ps1 -Mode Update                    # check for a new version and install it
 .\WinTidy.ps1 -Mode Scan -Language de         # German output and report
 ```
 
@@ -86,6 +89,7 @@ pwsh ./tests/Test-Parse.ps1
 pwsh ./tests/Test-Report.ps1
 pwsh ./tests/Test-Hardware.ps1
 pwsh ./tests/Test-GuiApi.ps1
+pwsh ./tests/Test-Update.ps1
 ```
 
 GitHub Actions runs them on Windows PowerShell 5.1 and PowerShell 7 for every push and pull request. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the rule contract in [DEVELOPMENT.md](DEVELOPMENT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).

@@ -32,6 +32,7 @@ pwsh ./tests/Test-Parse.ps1     # syntax, BOM, PS7-only operators, typographic q
 pwsh ./tests/Test-Report.ps1    # synthetic snapshots -> comparison + HTML report (English and German)
 pwsh ./tests/Test-Hardware.ps1  # hardware rating, score, cooling test with synthetic readings
 pwsh ./tests/Test-GuiApi.ps1    # engine <-> app interface with test rules
+pwsh ./tests/Test-Update.ps1    # updater (offline)
 ```
 
 GitHub Actions also runs them on Windows PowerShell 5.1. `tests/Probe-*.ps1` are read-only diagnostics for real PCs. Their JSON output contains hardware details and is git-ignored, so please don't commit it.

@@ -1,4 +1,4 @@
-﻿# Probe-Display.ps1 - nur lesend. Aktueller Anzeigemodus je Bildschirm vs. hoechste angebotene Bildwiederholrate.
+﻿# Probe-Display.ps1 - read-only. Current display mode per monitor vs. the highest refresh rate offered.
 $ErrorActionPreference = 'Continue'
 $Error.Clear()
 try {
@@ -31,7 +31,7 @@ $res = @()
 for ($i = 0; $i -lt 16; $i++) {
   $dd = New-Object WtDisp+DISPLAY_DEVICE; $dd.cb = [Runtime.InteropServices.Marshal]::SizeOf($dd)
   if (-not [WtDisp]::EnumDisplayDevices($null, $i, [ref]$dd, 0)) { break }
-  if (-not ($dd.StateFlags -band 1)) { continue }   # nicht am Desktop angeschlossen
+  if (-not ($dd.StateFlags -band 1)) { continue }   # not attached to the desktop
   $cur = New-Object WtDisp+DEVMODE; $cur.dmSize = [Runtime.InteropServices.Marshal]::SizeOf($cur)
   [void][WtDisp]::EnumDisplaySettings($dd.DeviceName, -1, [ref]$cur)
   $modes = @(); $m = 0
@@ -39,16 +39,16 @@ for ($i = 0; $i -lt 16; $i++) {
   $same = $modes | Where-Object { $_.W -eq $cur.dmPelsWidth -and $_.H -eq $cur.dmPelsHeight }
   $mon = New-Object WtDisp+DISPLAY_DEVICE; $mon.cb = [Runtime.InteropServices.Marshal]::SizeOf($mon); [void][WtDisp]::EnumDisplayDevices($dd.DeviceName, 0, [ref]$mon, 0)
   $res += [pscustomobject]@{
-    Ausgang = $dd.DeviceName; Grafik = $dd.DeviceString; Monitor = $mon.DeviceString; MonitorId = $mon.DeviceID
-    Aktuell = "$($cur.dmPelsWidth)x$($cur.dmPelsHeight) @ $($cur.dmDisplayFrequency) Hz"
-    MaxHzBeiAufloesung = ($same | Measure-Object Hz -Maximum).Maximum
-    MaxAufloesung = ($modes | Sort-Object { $_.W * $_.H } -Descending | Select-Object -First 1 | ForEach-Object { "$($_.W)x$($_.H)" })
-    AlleHz = (($modes | Select-Object -ExpandProperty Hz -Unique | Sort-Object) -join ',')
+    Output = $dd.DeviceName; Graphics = $dd.DeviceString; Monitor = $mon.DeviceString; MonitorId = $mon.DeviceID
+    Current = "$($cur.dmPelsWidth)x$($cur.dmPelsHeight) @ $($cur.dmDisplayFrequency) Hz"
+    MaxHzAtResolution = ($same | Measure-Object Hz -Maximum).Maximum
+    MaxResolution = ($modes | Sort-Object { $_.W * $_.H } -Descending | Select-Object -First 1 | ForEach-Object { "$($_.W)x$($_.H)" })
+    AllHz = (($modes | Select-Object -ExpandProperty Hz -Unique | Sort-Object) -join ',')
   }
 }
-} catch { $fehler = $_ | Out-String }
-$wmi = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorListedSupportedSourceModes | ForEach-Object { $i = $_.InstanceName; $_.MonitorSourceModes | ForEach-Object { [pscustomobject]@{ Instanz = $i; W = $_.HorizontalActivePixels; H = $_.VerticalActivePixels; Hz = if ($_.VerticalRefreshRateDenominator) { [math]::Round($_.VerticalRefreshRateNumerator / $_.VerticalRefreshRateDenominator, 2) } else { 0 } } } } | Sort-Object Hz -Descending | Select-Object -First 8)
-$out = [ordered]@{ Anzeigen = $res; EdidModiTop = $wmi; Fehler = $fehler; Errors = @($Error | ForEach-Object { $_.ToString() + ' @ ' + $_.InvocationInfo.PositionMessage }) }
+} catch { $failure = $_ | Out-String }
+$wmi = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorListedSupportedSourceModes | ForEach-Object { $i = $_.InstanceName; $_.MonitorSourceModes | ForEach-Object { [pscustomobject]@{ Instance = $i; W = $_.HorizontalActivePixels; H = $_.VerticalActivePixels; Hz = if ($_.VerticalRefreshRateDenominator) { [math]::Round($_.VerticalRefreshRateNumerator / $_.VerticalRefreshRateDenominator, 2) } else { 0 } } } } | Sort-Object Hz -Descending | Select-Object -First 8)
+$out = [ordered]@{ Displays = $res; EdidModesTop = $wmi; Failure = $failure; Errors = @($Error | ForEach-Object { $_.ToString() + ' @ ' + $_.InvocationInfo.PositionMessage }) }
 $path = Join-Path $PSScriptRoot 'probe-display.json'
 $out | ConvertTo-Json -Depth 5 | Set-Content -Path $path -Encoding UTF8
-Write-Host "Fertig: $path" -ForegroundColor Green
+Write-Host "Done: $path" -ForegroundColor Green

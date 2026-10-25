@@ -1,131 +1,146 @@
 # Changelog
 
+## 1.4.0 – 2026-10-25
+**English and German**
+- WinTidy now speaks English and German: app, command line, HTML report and all messages. By default it follows Windows (German Windows → German, otherwise English).
+- App: new setting **Language** (Same as Windows / Deutsch / English); WinTidy offers to restart so that the change takes effect. Saved together with the appearance in `%APPDATA%\WinTidy\app-einstellungen.json`.
+- Command line: new parameter `-Language auto|en|de`. Prompts accept `y`/`yes` as well as `j`/`ja`.
+- The texts are in English in the code; the German translation is in `lang\de.psd1`. `Test-Parse.ps1` checks that every text has a translation, that there are no unused or duplicate entries and that placeholders match.
+- Internal values (rule categories, risk levels, status codes, snapshot fields, file names in the data folder) are unchanged, so existing data, history and undo keep working in both languages.
+
+**Configuration**
+- New optional `WinTidy.config.local.json` for personal settings of this PC. It is loaded after `WinTidy.config.json`, is not part of the repository and is never overwritten by an update – so a git clone or a new ZIP can be used directly as the installation.
+- `WinTidy.config.beispiel.json` is now called `WinTidy.config.example.json`.
+
+**Documentation**
+- All documentation, code comments and tests are in English. `ANLEITUNG.md` is now `USAGE.md`, `ENTWICKLUNG.md` is now `DEVELOPMENT.md` (with a new section on languages). This changelog was translated.
+
 ## 1.3.4 – 2026-10-23
-- Fix: Die gewählte Darstellung (Hell/Dunkel/Wie Windows) wurde nie gespeichert. Im Dateinamen stand durch einen Tippfehler ein unsichtbares Steuerzeichen (`\a`); Windows lehnte den Pfad ab. `Test-Parse.ps1` meldet Steuerzeichen jetzt.
-- Dunkler Modus: Der ausgewählte Menüpunkt in der Seitenleiste war dunkelblau auf dunkelblau. Eigene Textfarbe `NavSelFg` (hell im dunklen Modus).
-- Hardware-Hinweise zeigen eine Glühbirne statt eines Symbols, das wie ein leeres Kontrollkästchen aussah (dort lässt sich nichts auswählen).
-- Versionsnummer der Engine auf dem Stand der App (zeigte noch 1.3.2).
-- Veröffentlichung auf GitHub vorbereitet: englische `README.md`, Anwenderdoku jetzt in `ANLEITUNG.md`, MIT-Lizenz, `CONTRIBUTING.md`, `SECURITY.md`, Vorlagen für Issues und Pull Requests, automatische Tests (Windows PowerShell 5.1 und PowerShell 7) und ein Release-Workflow, der bei einem Tag `vX.Y.Z` ein fertiges ZIP veröffentlicht.
+- Fix: the chosen appearance (light/dark/same as Windows) was never saved. Because of a typo, the file name contained an invisible control character (`\a`); Windows rejected the path. `Test-Parse.ps1` now reports control characters.
+- Dark mode: the selected menu item in the sidebar was dark blue on dark blue. Own text color `NavSelFg` (light in dark mode).
+- Hardware hints show a light bulb instead of a symbol that looked like an empty checkbox (nothing can be selected there).
+- Version number of the engine on the level of the app (still showed 1.3.2).
+- Prepared publication on GitHub: English `README.md`, user documentation now in `ANLEITUNG.md`, MIT license, `CONTRIBUTING.md`, `SECURITY.md`, templates for issues and pull requests, automatic tests (Windows PowerShell 5.1 and PowerShell 7) and a release workflow that publishes a ready ZIP for a tag `vX.Y.Z`.
 
 ## 1.3.3 – 2026-10-23
-- Fix: App startete nicht („Unable to cast object of type PSObject to type Brush“). `New-Object` liefert in PowerShell ein Hüllobjekt; als Ressource eingetragen kann WPF es nicht als Pinsel verwenden. Jetzt wird das eigentliche Objekt (`.psobject.BaseObject`) eingetragen.
+- Fix: the app did not start ("Unable to cast object of type PSObject to type Brush"). In PowerShell `New-Object` returns a wrapper object; stored as a resource, WPF cannot use it as a brush. Now the actual object (`.psobject.BaseObject`) is stored.
 
 ## 1.3.2 – 2026-10-23
-- Fix Dunkler Modus: Karten, Seitenleiste und Texte blieben hell, weil WPF von Styles benutzte Pinsel einfriert. Farben werden jetzt als Ressource ersetzt, im Code erzeugte Elemente verweisen per `Set-Brush` (SetResourceReference) auf den Schlüssel.
-- Eigene, zum Design passende Kontrollkästchen (inkl. „teilweise ausgewählt“), Auswahlknöpfe für die Darstellung, schmale Bildlaufleisten und Tooltips – hell wie dunkel.
+- Fix dark mode: cards, sidebar and texts stayed light because WPF freezes brushes used by styles. Colors are now replaced as resources; elements created in code refer to the key via `Set-Brush` (SetResourceReference).
+- Own checkboxes matching the design (incl. "partially selected"), radio buttons for the appearance, narrow scroll bars and tooltips – light and dark.
 
 ## 1.3.1 – 2026-10-23
-- **App: Dunkler Modus.** Einstellungen › Darstellung: „Wie Windows“ (Standard, folgt Personalisierung › Farben auch bei offenem Fenster), „Hell“ oder „Dunkel“. Auch die Titelleiste wird dunkel. Die Wahl wird pro Benutzer in `%APPDATA%\WinTidy\app-einstellungen.json` gespeichert. Bei aktivem Windows-Kontrastdesign gelten weiterhin dessen Farben.
-- Farben im dunklen Modus auf Lesbarkeit geprüft (Text ≥ 4,5:1, Rahmen ≥ 3:1); eigene Linkfarbe (`Link`) statt der Akzentfarbe.
+- **App: dark mode.** Settings › Appearance: "Same as Windows" (default, follows Personalization › Colors even while the window is open), "Light" or "Dark". The title bar becomes dark too. The choice is saved per user in `%APPDATA%\WinTidy\app-einstellungen.json`. With an active Windows contrast theme its colors still apply.
+- Colors in dark mode checked for readability (text ≥ 4.5:1, borders ≥ 3:1); own link color (`Link`) instead of the accent color.
 
 ## 1.3.0 – 2026-10-23
-Ergebnis von vier unabhängigen Prüfungen (Code, Sicherheit, Bedienbarkeit, Fachlogik).
+Result of four independent reviews (code, security, usability, domain logic).
 
-**Sicherheit und Datenschutz**
-- Datenordner geschützt unter `%ProgramData%\WinTidy\<PC>` (nur Admins/SYSTEM schreiben), ohne Adminrechte unter `%LOCALAPPDATA%`; alte Daten werden übernommen. Vorher konnten Programme ohne Adminrechte Sicherungen manipulieren, die „Wiederherstellen“ mit Adminrechten einspielte.
-- Löschen folgt keinen Verknüpfungen mehr (Junctions/Symlinks/OneDrive-Platzhalter); Schutzliste für Laufwerkswurzel, Windows, Profile, Programme. Alter = Änderungs- **und** Erstellungsdatum.
-- `C:\Temp` nicht mehr fest eingetragen (nur noch über `ExtraTempPaths`).
-- `CLN-WINOLD`: warnt bei persönlichen Dateien in `Windows.old\Users` und wählt dann nichts vor; Vorauswahl nur bei bekanntem Alter ≥ 10 Tage; die Dateien für „Diesen PC zurücksetzen“ bleiben.
-- Server-/Firmen-PC-Sperre auch in der Kommandozeile; Erkennung fail-closed und zusätzlich Entra-Join und ConfigMgr.
-- Restore: Einzelwert-Undo (Vorher/Nachher) statt `reg import` ganzer Schlüssel, überschreibt keine seitdem geänderten Werte, nur Whitelist-Pfade; Aufgaben werden wieder eingeschaltet statt aus XML neu registriert; eindeutige Lauf-IDs.
-- Konfiguration wird geprüft (Mindestalter, keine Systemkomponenten in `BloatApps`, Schattenkopie-Ziel ≥ 3 %); Tabellen werden pro Unterschlüssel zusammengeführt.
-- Mit Adminrechten: `PSModulePath` nur Systemordner, `winget` nur aus dem App-Installer-Paket, Deinstallationsbefehle nur aus HKLM; Berichte werden über den Explorer geöffnet (kein Browser mit Adminrechten); HTML-Werte konsequent maskiert.
-- `cleanmgr`: liegengebliebene Kategorie-Flags werden vorher entfernt; `SystemRestorePointCreationFrequency` wird wiederhergestellt statt gelöscht.
-- Netzwerkpfade (NAS/VPN) gelten nie als „verwaist“; `\??\`-Dienstpfade werden korrekt geprüft.
-- Kühlungstest mit Watchdog im C#-Teil, Abbruch bei Übertemperatur/Hitzedrosselung/Netzteil gezogen, Timeouts für alle Messungen, gesperrt auf Servern und in VMs.
-- Vorauswahl in der App: nur noch Endgültiges, das wirklich sicher ist. Nicht mehr vorausgewählt: Papierkörbe alter Konten, alte Treiber, Store-Apps, Programm-Updates, Geistergeräte; Autostarts nur noch aus `HeavyStartup`. `ProtectedStartup` deutlich erweitert (Virenschutz, VPN, Backup, Cloud, Eingabegeräte), Abgleich auch über Hersteller/Beschreibung der Datei.
+**Security and privacy**
+- Data folder protected under `%ProgramData%\WinTidy\<PC>` (only admins/SYSTEM can write), without admin rights under `%LOCALAPPDATA%`; old data is taken over. Before, programs without admin rights could manipulate backups that "Restore" applied with admin rights.
+- Deleting no longer follows links (junctions/symlinks/OneDrive placeholders); protection list for drive root, Windows, profiles, programs. Age = modification **and** creation date.
+- `C:\Temp` is no longer hard-coded (only via `ExtraTempPaths`).
+- `CLN-WINOLD`: warns about personal files in `Windows.old\Users` and then preselects nothing; preselection only with a known age ≥ 10 days; the files for "Reset this PC" stay.
+- Server/company PC lock in the command line too; detection fails closed and additionally covers Entra join and ConfigMgr.
+- Restore: single-value undo (before/after) instead of `reg import` of whole keys, does not overwrite values changed since, only allow-listed paths; tasks are switched on again instead of re-registered from XML; unique run IDs.
+- Configuration is validated (minimum ages, no system components in `BloatApps`, shadow copy target ≥ 3 %); tables are merged per sub-key.
+- With admin rights: `PSModulePath` only system folders, `winget` only from the App Installer package, uninstall commands only from HKLM; reports are opened via Explorer (no browser with admin rights); HTML values consistently escaped.
+- `cleanmgr`: leftover category flags are removed first; `SystemRestorePointCreationFrequency` is restored instead of deleted.
+- Network paths (NAS/VPN) never count as "orphaned"; `\??\` service paths are checked correctly.
+- Cooling test with a watchdog in the C# part, stop on overheating/heat throttling/power adapter unplugged, timeouts for all measurements, blocked on servers and in VMs.
+- Preselection in the app: only permanent changes that are really safe. No longer preselected: recycle bins of old accounts, old drivers, Store apps, program updates, ghost devices; autostarts only from `HeavyStartup`. `ProtectedStartup` extended considerably (antivirus, VPN, backup, cloud, input devices), matching also via vendor/description of the file.
 
-**Fachlogik / Fehlalarme**
-- Laufwerkszustand „Unknown“ ist kein Alarm mehr; Warning = warn, Unhealthy/Predictive Failure = krit. SMART-Vorhersage wird jetzt wirklich zugeordnet (vorher Präzedenzfehler).
-- CPU-Temperatur relativ zur Temperaturgrenze der CPU-Familie (`CpuTjMax`); Scan-Temperatur als Median und nur bei Leerlauf bewertet; Tdie vor Tctl.
-- Ereignis 37 als Episoden gezählt, Warnung nur Desktop ≥ 3 in 7 Tagen, sonst Hinweis.
-- NVIDIA: Lüfterwert als Sollwert gedeutet, 0x20 (regelt an der Temperaturgrenze) ist normal, Drosselgründe nur bei 2 von 3 Proben, Grenzwerte der Karte aus `nvidia-smi -q`, Leerlauf-/Lastunterscheidung, PCIe-Anbindung.
-- Lüfter: Lüfterstopp im Leerlauf ist kein Defekt, Pumpen auf 100 % sind normal, Pumpe 0 U/min nur Warnung, Volllast nur bei passendem laufendem Lüfter. Lüfterreaktion im Test je Lüfter (ohne GPU/Pumpe).
-- Kühlungstest: EcoQoS für die Messung abgeschaltet, normale Thread-Priorität, Firmware-Leistungslimit ausgewertet, abgebrochene Tests werden nicht gespeichert.
-- `HW-COOLPOLICY` nur bei ACPI-Aktivkühlung, keine automatische Vorauswahl mehr; `/setactive` nur für den noch aktiven Plan.
-- `SYS-TRIM` nur bei echtem Problem (TRIM abgeschaltet oder > 14 Tage nicht gelaufen) statt Dauerbefund; `SYS-MAINT` erkennt abgeschaltete Laufwerkspflege.
-- `CLN-WINSXS`-Analyse höchstens alle 7 Tage, nicht bei ausstehendem Neustart. `CLN-DRIVERSTORE` bietet keine Pakete an, die irgendein (auch abgestecktes) Gerät nutzt. `SEC-CHECKS` berücksichtigt fremden Virenschutz/Firewall und Legacy-BIOS.
-- Laptop-Erkennung über `PCSystemType`/Gehäuse (USV zählt nicht als Akku), Akkubetrieb über `BatteryStatus.PowerOnline`.
-- Gesundheitswert: Momentaufnahmen zählen nicht, freier Speicher mit absoluter Untergrenze, Fehlerzahl max. −5, neu: Windows ohne Support −20, Updates > 40 Tage −10, Windows Update aus −15.
+**Domain logic / false alarms**
+- Drive state "Unknown" is no longer an alarm; Warning = warn, Unhealthy/Predictive Failure = crit. SMART prediction is now really assigned (operator precedence bug before).
+- CPU temperature relative to the temperature limit of the CPU family (`CpuTjMax`); scan temperature as a median and only rated at idle; Tdie before Tctl.
+- Event 37 counted as episodes, warning only on desktops with ≥ 3 in 7 days, otherwise a hint.
+- NVIDIA: fan value interpreted as a target value, 0x20 (regulates at the temperature limit) is normal, throttle reasons only in 2 of 3 samples, limits of the card from `nvidia-smi -q`, idle/load distinction, PCIe link.
+- Fans: fan stop at idle is not a defect, pumps at 100 % are normal, pump at 0 RPM only a warning, full speed only with a matching running fan. Fan reaction in the test per fan (without GPU/pump).
+- Cooling test: EcoQoS switched off for the measurement, normal thread priority, firmware power limit evaluated, cancelled tests are not saved.
+- `HW-COOLPOLICY` only with ACPI active cooling, no automatic preselection any more; `/setactive` only for the plan that is still active.
+- `SYS-TRIM` only on a real problem (TRIM switched off or not run for > 14 days) instead of a permanent finding; `SYS-MAINT` detects switched-off drive optimization.
+- `CLN-WINSXS` analysis at most every 7 days, not with a pending restart. `CLN-DRIVERSTORE` offers no packages that any (also unplugged) device uses. `SEC-CHECKS` considers third-party antivirus/firewall and legacy BIOS.
+- Laptop detection via `PCSystemType`/chassis (a UPS does not count as a battery), battery operation via `BatteryStatus.PowerOnline`.
+- Health score: snapshots in time don't count, free space with an absolute lower limit, error count max. −5, new: Windows without support −20, updates > 40 days −10, Windows Update off −15.
 
-**Neue Prüfungen**
-- Hardware: nur ein RAM-Riegel, Monitor am Mainboard, Grafikkarte zu schmal angebunden, fehlender Grafiktreiber, Geräte mit Fehlercode, Energieplan begrenzt Prozessor/Turbo aus/Minimum 100 %, Intel 13./14. Gen mit Microcode < 0x12F, LAN nur 100 Mbit/s, mehrere Lüfter-Tools, Tuning-Programme, Speicherdiagnose-Fehler, WHEA 19/17, lange Laufzeit trotz Schnellstart.
-- Sicherheit: Windows ohne Support/bald ohne Support, keine Updates seit > 40 Tagen, Windows Update abgeschaltet, Secure-Boot-Zertifikate 2023.
-- `SYS-TWEAKS`: Auslagerungsdatei aus, Prefetch aus, SysMain aus, Defender per Richtlinie aus.
-- `CLN-HIBERFIL`: Ruhezustandsdatei auf Desktops verkleinern (umkehrbar).
+**New checks**
+- Hardware: only one RAM module, monitor on the motherboard, graphics card with too narrow a link, missing graphics driver, devices with an error code, power plan limits processor/turbo off/minimum 100 %, Intel 13th/14th gen with microcode < 0x12F, LAN only 100 Mbit/s, several fan tools, tuning programs, memory diagnostic errors, WHEA 19/17, long uptime despite Fast Startup.
+- Security: Windows without support/soon without support, no updates for > 40 days, Windows Update switched off, Secure Boot certificates 2023.
+- `SYS-TWEAKS`: pagefile off, Prefetch off, SysMain off, Defender off by policy.
+- `CLN-HIBERFIL`: shrink the hibernation file on desktops (reversible).
 
 **App**
-- Fortschritt zeigt den geprüften Bereich statt Aktionswörter („löschen“); kein „Schritt x von y“ bei Messungen und Kühlungstest.
-- Laientexte für fast alle Befunde (Umlaute, keine Registry-Pfade/Paketnamen), Anzeigenamen für Store-Apps und Geräteklassen, entschärfte Hinweise zu Secure Boot/BIOS/Firewall.
-- Rotes Banner bei drohendem Datenverlust (Laufwerk/RAM); eigenes Symbol und „Wichtig:“ für kritische Punkte; Ampel bleibt nach Neustart der App erhalten; Hardware-Karte mit Überschriften, Legende und „Was tun?“.
-- Kühlungstest: Akku/Server/VM vorab abgefangen, ehrliches Ergebnis, wenn nichts messbar war, Laptop-Hinweis.
-- Kein stilles „nichts passiert“ mehr während Hintergrundarbeit; Prüfen-Knopf erst nach dem Laden aktiv; Verlauf lädt nach.
-- Wiederherstellungspunkt-Rückfrage mit „Nein“ als Standard; „Nichts umgesetzt“ statt „Fertig!“ bei 0 Änderungen; Übersprungenes getrennt von Fehlern (z. B. „Treiber wird noch benutzt“, „Deinstallation abgebrochen“).
-- Verlauf zeigt „rückgängig gemacht am …“; Rückgängig-Vorschau mit verständlichen Namen.
-- Gruppe „Windows pflegen“, Kontrast verbessert, Screenreader-Namen für die Navigation, Esc bricht ab, neue Hilfe-Fragen.
+- Progress shows the area being checked instead of action words ("delete"); no "step x of y" for measurements and the cooling test.
+- Plain-language texts for almost all findings (no registry paths/package names), display names for Store apps and device classes, toned-down hints on Secure Boot/BIOS/firewall.
+- Red banner on imminent data loss (drive/RAM); own symbol and "Important:" for critical points; traffic light kept after an app restart; hardware card with headings, legend and "What to do?".
+- Cooling test: battery/server/VM caught in advance, honest result if nothing was measurable, laptop hint.
+- No more silent "nothing happens" during background work; check button only active after loading; history loads afterwards.
+- Restore point prompt with "No" as default; "Nothing applied" instead of "Done!" with 0 changes; skipped items separated from errors (e.g. "driver is still in use", "uninstall cancelled").
+- History shows "undone on …"; undo preview with understandable names.
+- Group "Maintain Windows", improved contrast, screen reader names for the navigation, Esc cancels, new help questions.
 
-**Nachprüfung (fünfter, unabhängiger Agent)**
-- Datenordner: Inhalt wird mitgeprüft (Besitzer, Schreibrechte, keine Verknüpfungen) und bei Bedarf zurückgesetzt; ist er nicht sicher, sperrt WinTidy „Wiederherstellen“.
-- Restore normalisiert Dateipfade (kein `..`), Registry-Pfade mit `..` werden abgelehnt; Löschen prüft unmittelbar vorher die Pfadkette auf Verknüpfungen.
-- `SYS-GAMEDVR` prüft und schaltet nur noch die Hintergrundaufnahme (`HistoricalCaptureEnabled`) – vorher Fehlalarm auf fast jedem PC.
-- `CLN-HIBERFIL`: keine Vorauswahl, wenn hybrider Standby oder Ruhezustand per Taste genutzt wird; Hinweis im Text.
-- Rotes Laufwerks-Banner nicht bei bloß warmen Laufwerken; Bereich/Wertung im Snapshot, damit es auch nach App-Neustart stimmt.
-- Kleinigkeiten: Datenübernahme bei `[ ]` im Pfad, LibreHardwareMonitor-Sensor „Distance to TjMax“ ignoriert, Skript-Richtlinie-Undo erst nach Erfolg, App-Autostarts fail-closed, TRIM-Meldung nur mit SSD, VM-Fehlalarme, Windows-10-Enterprise-Supportende, `-Rule A,B` über WinTidy.cmd, Technik-Text im Expertenmodus.
+**Follow-up review (fifth, independent agent)**
+- Data folder: the content is checked too (owner, write permissions, no links) and reset if needed; if it is not safe, WinTidy blocks "Restore".
+- Restore normalizes file paths (no `..`), registry paths with `..` are rejected; deleting checks the path chain for links immediately before.
+- `SYS-GAMEDVR` only checks and switches background recording (`HistoricalCaptureEnabled`) – before, a false alarm on almost every PC.
+- `CLN-HIBERFIL`: no preselection if hybrid sleep or hibernation via button is used; hint in the text.
+- Red drive banner not for merely warm drives; area/rating in the snapshot, so that it is also right after an app restart.
+- Small things: data takeover with `[ ]` in the path, LibreHardwareMonitor sensor "Distance to TjMax" ignored, script policy undo only after success, app autostarts fail closed, TRIM message only with an SSD, VM false alarms, Windows 10 Enterprise end of support, `-Rule A,B` via WinTidy.cmd, technical text in expert mode.
 
 **Tests**
-- `Test-Parse.ps1` prüft zusätzlich UTF-8-BOM, PS7-Operatoren und typografische Anführungszeichen. `Test-Hardware.ps1` und `Test-GuiApi.ps1` stark erweitert (Lüfterstopp, Pumpe, GPU-Gründe, Laufwerkszustände, TjMax, Zahlenformate, Sicherheitsstopp, Abbruch, SKIP, RP-FEHLT mit Computerschutz, Einzelwert-Undo, Whitelist, Lauf-IDs).
+- `Test-Parse.ps1` additionally checks UTF-8 BOM, PS7 operators and typographic quotes. `Test-Hardware.ps1` and `Test-GuiApi.ps1` extended considerably (fan stop, pump, GPU reasons, drive states, TjMax, number formats, safety stop, cancel, SKIP, RP-FEHLT with System Protection, single-value undo, allow list, run IDs).
 
 ## 1.2.0 – 2026-10-23
-**Hardware & Kühlung**
-- Neue Regel `HW-COOLING`: Prozessor-, Grafikkarten- und Laufwerkstemperaturen, Lüfterdrehzahlen (stehender CPU-Lüfter → kritisch, Volllast bei kühlem Prozessor → Lüfterkurve zu scharf), Drosselung durch Firmware (Ereignis 37) und Hitze (ACPI-Thermalzonen), NVIDIA-Drosselgründe über `nvidia-smi`, SSD-Verschleiß, SMART-Warnung, Laufwerkszustand, Akku-Verschleiß. Jeder Punkt mit Stufe ok/warn/krit.
-- Sensoren aus LibreHardwareMonitor/OpenHardwareMonitor (WMI) oder HWiNFO (Gadget-Registry) werden automatisch mitgelesen, wenn eines davon läuft.
-- **Kühlungstest** (App: „Kühlung testen“, CLI: `-Mode Hardware -CoolingTest [-Seconds n]`, Menü [9]): Volllast auf allen Kernen mit niedriger Priorität, bewertet Leistungsabfall (nur zusammen mit Hitze/Drosselung als Problem), Höchsttemperatur und Lüfterreaktion; Messreihe unter `kuehltest\`. Abbrechbar, nicht im Akkubetrieb.
-- Neue Regel `HW-COOLPOLICY` (Mittel): Kühlrichtlinie im Netzbetrieb von „Passiv“ auf „Aktiv“ (nur mit ACPI-Thermalzonen); rückgängig über Wiederherstellen.
-- Neue Regel `HW-DISPLAY`: Bildwiederholrate unter dem, was der Monitor laut EDID kann.
-- Snapshot: neue Abschnitte `Hardware` und `Stabilitaet`; Bericht: Abschnitt „Hardware & Kühlung“ inkl. letztem Kühlungstest; Vergleich: Warnsignale und Hardware-Auffälligkeiten.
-- Score: kritische Hardware-Befunde −5 (max. −10), Auffälligkeiten −1 (max. −3).
+**Hardware & cooling**
+- New rule `HW-COOLING`: processor, graphics card and drive temperatures, fan speeds (stopped CPU fan → critical, full speed with a cool processor → fan curve too aggressive), throttling by firmware (event 37) and heat (ACPI thermal zones), NVIDIA throttle reasons via `nvidia-smi`, SSD wear, SMART warning, drive state, battery wear. Every point with level ok/warn/crit.
+- Sensors from LibreHardwareMonitor/OpenHardwareMonitor (WMI) or HWiNFO (gadget registry) are read automatically if one of them is running.
+- **Cooling test** (app: "Test cooling", CLI: `-Mode Hardware -CoolingTest [-Seconds n]`, menu [9]): full load on all cores with low priority, rates performance drop (only a problem together with heat/throttling), maximum temperature and fan reaction; measurement series under `kuehltest\`. Can be cancelled, not on battery.
+- New rule `HW-COOLPOLICY` (Medium): cooling policy on AC from "passive" to "active" (only with ACPI thermal zones); undo via Restore.
+- New rule `HW-DISPLAY`: refresh rate below what the monitor can do according to EDID.
+- Snapshot: new sections `Hardware` and `Stabilitaet`; report: section "Hardware & cooling" incl. the last cooling test; comparison: warning signs and hardware irregularities.
+- Score: critical hardware findings −5 (max. −10), irregularities −1 (max. −3).
 
 **Engine**
-- `CLN-WINOLD` (neu, Mittel, endgültig): vorherige Windows-Version getrennt von `CLN-WINCLEAN`, vorausgewählt erst nach `WinOldMinAgeDays` (10) Tagen. `CLN-WINCLEAN` fasst Windows.old nicht mehr an.
-- Fix: Score „vorher“ war zu hoch, weil Warnsignale nur aus den Befunden kamen – jetzt misst jeder Snapshot sie selbst (`Stabilitaet.Warnsignale`).
-- Defender-Abzug nur, wenn kein anderer Virenschutz aktiv ist (`Sicherheit.AndererVirenschutz`).
-- Geistergeräte: „Microsoft VHD Loopback Controller“ und andere virtuelle Microsoft-Geräte ausgenommen.
-- `Get-WtContext`: Server, Firmen-PC (Domäne/Intune), anderes Konto, Neustart ausstehend, Akku. Firmen-PCs sehen nur sichere Aufräumpunkte; auf Servern sind Änderungen gesperrt.
-- `Invoke-FixSelection`: Wiederherstellungspunkt **vor** jeder Änderung (bei Fehlschlag Status `RP-FEHLT`, nichts geändert), Abbrechen zwischen Schritten, Details pro Schritt, lange Schritte im Akkubetrieb übersprungen, meldet eingeschalteten Computerschutz.
-- `Invoke-Restore` liefert ein Ergebnis (wiederhergestellt/Fehler/Details), neu `Get-RestorePreview`, `Get-HistoryLight`; Läufe kennen die Zahl umkehrbarer Änderungen.
-- Regeln können `Dauer`, `Endgueltig`, `Einzeln`, `Umkehrbar` angeben (für die App).
-- Konfiguration: `WinTidy.config.json` enthält nur noch eigene Abweichungen; alle Standardwerte in `WinTidy.config.beispiel.json`. Vorher überdeckte die mitgelieferte Vollkopie neue Standardwerte.
+- `CLN-WINOLD` (new, Medium, permanent): previous Windows version separated from `CLN-WINCLEAN`, preselected only after `WinOldMinAgeDays` (10) days. `CLN-WINCLEAN` no longer touches Windows.old.
+- Fix: the "before" score was too high because warning signs only came from the findings – now every snapshot measures them itself (`Stabilitaet.Warnsignale`).
+- Defender deduction only if no other antivirus is active (`Sicherheit.AndererVirenschutz`).
+- Ghost devices: "Microsoft VHD Loopback Controller" and other virtual Microsoft devices excluded.
+- `Get-WtContext`: server, company PC (domain/Intune), other account, restart pending, battery. Company PCs only see safe cleanup points; on servers changes are blocked.
+- `Invoke-FixSelection`: restore point **before** any change (on failure status `RP-FEHLT`, nothing changed), cancel between steps, details per step, long steps skipped on battery, reports switched-on System Protection.
+- `Invoke-Restore` returns a result (restored/errors/details), new `Get-RestorePreview`, `Get-HistoryLight`; runs know the number of reversible changes.
+- Rules can specify `Dauer`, `Endgueltig`, `Einzeln`, `Umkehrbar` (for the app).
+- Configuration: `WinTidy.config.json` only contains own deviations; all defaults in `WinTidy.config.beispiel.json`. Before, the shipped full copy hid new defaults.
 
 **App**
-- Hardware-Karte mit Ampel je Messpunkt und Knopf „Kühlung testen“.
-- Hinweisbanner (ohne Adminrechte, Server, Firmen-PC, anderes Konto, Neustart ausstehend, Akku), Abbrechen-Knopf, Fehlerseite statt Absturz, Hilfe-Seite mit FAQ, hoher Kontrast, „Warum nicht 100?“ zum Score, Ergebnis mit Details je Schritt, Rückfrage bei fehlendem Wiederherstellungspunkt, nur eine App-Instanz gleichzeitig.
+- Hardware card with a traffic light per measurement point and a "Test cooling" button.
+- Notice banners (without admin rights, server, company PC, other account, restart pending, battery), cancel button, error page instead of a crash, help page with FAQ, high contrast, "Why not 100?" for the score, result with details per step, prompt on a missing restore point, only one app instance at a time.
 
 **Tests**
-- Neu `tests/Test-Hardware.ps1`: Bewertung von Sensoren, GPU, Laufwerken, Akku, Score und Kühlungstest mit künstlichen Messwerten (plattformunabhängig). `Test-Report.ps1` prüft den Hardware-Abschnitt im Bericht. Neu `tests/Test-GuiApi.ps1`: Schnittstelle zur App (Wiederherstellungspunkt-Fehler, Abbrechen, Akku, Server/Firmen-PC, Restore-Vorschau).
+- New `tests/Test-Hardware.ps1`: rating of sensors, GPU, drives, battery, score and cooling test with synthetic values (platform independent). `Test-Report.ps1` checks the hardware section in the report. New `tests/Test-GuiApi.ps1`: interface to the app (restore point errors, cancel, battery, server/company PC, restore preview).
 
 ## 1.1.1 – 2026-10-21
-- Geistergeräte: virtuelle Systemadapter (WAN Miniport, Hyper-V, Bluetooth u. a.) und Software-Geräte (`SWD\`, `ROOT\`) werden nicht mehr angeboten (neu: `GhostDeviceExclude`)
-- WinSxS: kein erneuter Vorschlag, wenn die Bereinigung in den letzten 14 Tagen lief (DISM meldet sonst dauerhaft „empfohlen“); keine irreführende Platzschätzung mehr
-- Fix: „Illegal characters in path“ bei ungewöhnlichen Autostart-Befehlszeilen
+- Ghost devices: virtual system adapters (WAN Miniport, Hyper-V, Bluetooth etc.) and software devices (`SWD\`, `ROOT\`) are no longer offered (new: `GhostDeviceExclude`)
+- WinSxS: no new suggestion if the cleanup ran in the last 14 days (DISM otherwise permanently reports "recommended"); no misleading space estimate any more
+- Fix: "Illegal characters in path" with unusual autostart command lines
 
 ## 1.1.0 – 2026-10-21
-- **Neu: WinTidy App** (`WinTidy-App.ps1`, Start über `WinTidy App.cmd`): grafische Oberfläche für Nicht-ITler mit Übersicht (Gesundheitswert, Kennzahlen, Hinweise), Empfehlungen mit Ampel und Vorauswahl, Fortschrittsanzeige mit Protokoll, Ergebnis mit gemessenem Vorher/Nachher, Verlauf mit Startzeit-Diagramm, Einstellungen (Rückgängig, Desktop-Verknüpfung, Expertenmodus, gründliche Prüfung)
-- Engine als Bibliothek ladbar, GUI-API (`Invoke-GuiScan`, `Invoke-FixSelection`, `Get-HistoryData`, `Invoke-GuiRestore`), verständliche Texte für alle Regeln
-- Fix: `-RunId` für Restore wurde durch die Lauf-ID überschrieben
-- Fix: Wiederherstellungspunkt setzt das Schattenkopie-Limit nicht mehr zurück
-- Fix: `TSK-ANTIPATTERN` ignoriert Kommentare (keine Fehlalarme mehr bei erklärenden Hinweisen)
-- `CLN-WINCLEAN` leert zusätzlich Delivery-Optimization-Cache und alte LiveKernelReports
-- `SYS-MAINT` meldet nur noch echte Wartungslücken (> 14 Tage)
-- `HW-HINTS`: erkennt größere, kaum genutzte SSDs auch hinter RAID-Treibern und aktive RAID-Treiber ohne Verbund
+- **New: WinTidy App** (`WinTidy-App.ps1`, start via `WinTidy App.cmd`): graphical interface for non-IT users with overview (health score, key figures, hints), recommendations with traffic light and preselection, progress display with log, result with measured before/after, history with boot time chart, settings (undo, desktop shortcut, expert mode, thorough check)
+- Engine loadable as a library, GUI API (`Invoke-GuiScan`, `Invoke-FixSelection`, `Get-HistoryData`, `Invoke-GuiRestore`), understandable texts for all rules
+- Fix: `-RunId` for Restore was overwritten by the run ID
+- Fix: the restore point no longer resets the shadow copy limit
+- Fix: `TSK-ANTIPATTERN` ignores comments (no more false alarms on explanatory notes)
+- `CLN-WINCLEAN` additionally empties the Delivery Optimization cache and old LiveKernelReports
+- `SYS-MAINT` only reports real maintenance gaps (> 14 days)
+- `HW-HINTS`: detects larger, barely used SSDs also behind RAID drivers and active RAID drivers without an array
 
 ## 1.0.0 – 2026-10-21
-Erste Version, entstanden aus Assessment und zwei Optimierungsrunden auf dem ersten Test-PC.
+First version, created from an assessment and two optimization rounds on the first test PC.
 
-- Modi: Menu, Scan, Preview, Apply, Compare, Report, Restore, Rules
-- 28 Regeln in 9 Bereichen (Speicher, Autostart, Aufgaben, Dienste, Programme, System, Sicherheit, Hardware, Stabilität)
-- Snapshots als JSON, Aktionslog als JSONL, Registry- und Aufgaben-Sicherungen pro Lauf
-- Health-Score mit nachvollziehbaren Abzügen
-- HTML-Bericht: Score, Startzeit-Verlauf mit Apply-Markierungen, Vorher/Nachher, Befunde, Startbremsen, Autostart, Laufwerke, Aufräumbilanz, Aktionsprotokoll, Snapshot-Verlauf
-- Risikostufen Niedrig/Mittel/Hoch/Info mit `-Yes` / `-IncludeMedium`
-- Wiederherstellungspunkt vor jedem Apply (24-h-Sperre wird kurz aufgehoben)
-- Tests: Syntax/Regel-IDs, Bericht aus Testdaten (plattformunabhängig)
+- Modes: Menu, Scan, Preview, Apply, Compare, Report, Restore, Rules
+- 28 rules in 9 areas (storage, startup, tasks, services, programs, system, security, hardware, stability)
+- Snapshots as JSON, action log as JSONL, registry and task backups per run
+- Health score with traceable deductions
+- HTML report: score, boot time history with apply markers, before/after, findings, boot slowdowns, autostart, drives, cleanup balance, action log, snapshot history
+- Risk levels Low/Medium/High/Info with `-Yes` / `-IncludeMedium`
+- Restore point before every Apply (the 24-hour lock is lifted briefly)
+- Tests: syntax/rule IDs, report from test data (platform independent)

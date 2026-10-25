@@ -1,0 +1,161 @@
+# WinTidy – User guide
+
+Evidence-based cleanup and tuning for Windows 10/11 – measured before, asks before changing, proven result afterwards.
+
+WinTidy is a single PowerShell script without installation and without dependencies. It runs on the built-in Windows PowerShell 5.1 and works on any PC, because it only uses generic rules and knows no fixed paths or programs.
+
+## Download
+
+Download the latest version under **Releases** (or **Code → Download ZIP**). Windows marks downloaded files as "from the internet". To avoid security prompts at startup, before extracting: right-click the ZIP file → **Properties** → tick **Unblock**. Alternatively, in PowerShell inside the extracted folder: `Get-ChildItem -Recurse | Unblock-File`.
+
+## Language
+
+WinTidy speaks English and German. By default it follows Windows: on a German Windows it is German, otherwise English.
+
+- **App:** Settings → **Language** (Same as Windows / Deutsch / English). WinTidy offers to restart so that the change takes effect.
+- **Command line:** `-Language de` or `-Language en` (default `auto`).
+
+The HTML report is written in the language of the run that creates it. Internal data (snapshots, logs) stays the same in both languages, so you can switch at any time.
+
+## The app (for everyone)
+
+Double-click `WinTidy App.cmd` → confirm the Windows prompt with **Yes** → the window opens.
+
+1. **Overview → "Check now"**: measures the PC, shows a health score (0–100) and the most important key figures. Nothing is changed.
+2. **Recommendations**: every improvement in plain words, with a traffic light ("Safe", "Check briefly", "Experts only"). The safe points are already ticked. Under "Details" you can deselect individual entries.
+3. **"Apply selected"**: creates a restore point, applies the changes and then shows before/after.
+4. **Hardware** (Overview, "For experts"): cooling, fans, temperatures of processor, graphics card and drives, throttling, battery wear and refresh rate. With **"Test cooling"** WinTidy puts the processor under load for about a minute and checks whether the cooling keeps up.
+5. **History**: boot time chart across all restarts, all checks and optimizations.
+6. **Settings**: appearance (same as Windows, light or dark), language, undo, create desktop shortcut, thorough check, expert mode.
+
+The app uses the same logic and the same data as the command line – you can use both alternately.
+
+## Command line (for IT pros)
+
+1. Copy the `WinTidy` folder anywhere (a USB stick works too).
+2. Double-click `WinTidy.cmd` → confirm admin rights → menu.
+3. **[1] Scan** → measures, checks all rules, opens the HTML report. Changes nothing.
+4. **[3] Apply** → restore point, then every rule with a confirmation prompt.
+5. Restart the PC normally 2–3 times, then **[1] Scan** again → the report shows before/after including the boot time history.
+
+## Modes
+
+| Mode | What happens | Changes something? |
+|---|---|---|
+| `Scan` | snapshot + check all rules + report | no |
+| `Preview` | shows what `Apply` would do | no |
+| `Apply` | snapshot before → restore point → rules with prompts → snapshot after → comparison → report | yes |
+| `Compare` | compares two snapshots in the console | no |
+| `Report` | rebuilds the HTML report from all stored data | no |
+| `Restore` | restores backed-up registry values, tasks and service start types of a run | yes |
+| `Rules` | lists all rules with their risk | no |
+| `Hardware` | cooling, fans, temperatures, drives, battery; with `-CoolingTest [-Seconds 90]` additionally a cooling test under load | no |
+
+Examples:
+
+```powershell
+.\WinTidy.ps1 -Mode Scan -OpenReport
+.\WinTidy.ps1 -Mode Scan -Deep                 # additionally offers SFC and a file system scan
+.\WinTidy.ps1 -Mode Apply                      # interactive
+.\WinTidy.ps1 -Mode Apply -Yes                 # unattended: only risk "Low"
+.\WinTidy.ps1 -Mode Apply -Yes -IncludeMedium  # unattended including "Medium"
+.\WinTidy.ps1 -Mode Apply -Rule STA-HEAVY,APP-BLOAT
+.\WinTidy.ps1 -Mode Apply -ExcludeRule APP-UPDATES
+.\WinTidy.ps1 -Mode Compare -From 20261021 -To 20261024
+.\WinTidy.ps1 -Mode Restore -RunId 20261021-183100
+.\WinTidy.ps1 -Mode Hardware -CoolingTest      # check cooling, 60 s full load
+.\WinTidy.ps1 -Mode Scan -Language de          # German output and report
+```
+
+## Risk levels
+
+| Level | Meaning | Prompt | with `-Yes` |
+|---|---|---|---|
+| Low | safe and reversible, or pure cache | once per rule | is applied |
+| Medium | useful, but a matter of taste or not reversible (e.g. uninstalling) | per item | only with `-IncludeMedium` |
+| High | heuristic with possible false positives | always per item | never |
+| Info | report/hint only | – | – |
+
+At prompts: `y` yes · `n` no · `a` all of this rule · `s` skip rule. (`j`/`ja` also work for yes.)
+
+## Rules (excerpt)
+
+`.\WinTidy.ps1 -Mode Rules` shows the complete list.
+
+- **Storage:** temp files (by age), Windows Disk Cleanup (update leftovers, error reports …), previous Windows version (Windows.old, own rule, preselected only after 10 days), WinSxS cleanup, crash dumps, old recycle bin items, recycle bins of deleted accounts, old driver packages, *(optional)* orphaned program folders, smaller hibernation file on desktop PCs (Fast Startup keeps working)
+- **Startup:** entries with a missing file, orphaned state values, active autostarts sorted by **measured** boot delay
+- **Tasks/services:** tasks and services with a missing program file, harmful patterns in home-made maintenance scripts (deleting Prefetch, emptying the whole recycle bin, `winget --all` at every sign-in …)
+- **Programs:** versions installed side by side, bloatware Store apps, outdated programs (winget)
+- **System:** ghost devices, storage for restore points, SSD TRIM, stuck maintenance, system integrity (DISM/SFC), Game Bar background recording
+- **Hardware & cooling:** processor and graphics card temperature, fan speeds (stopped CPU fan, full speed on a cool PC, pump), throttling due to heat or firmware, several fan tools at once, drive health/temperature/wear, SMART warnings, memory diagnostic and WHEA errors, battery wear, cooling policy, refresh rate
+- **Hardware configuration:** only one RAM module, RAM speed (XMP/EXPO), monitor on the motherboard instead of the graphics card, graphics card with too narrow a PCIe link, missing graphics driver, devices with an error code, power plan limits the processor/turbo off, Intel 13th/14th gen with old microcode, LAN only 100 Mbit/s, system drive vs. free NVMe
+- **Security/stability:** Windows without support or without updates, Secure Boot and the new Secure Boot certificates, antivirus (third-party products too), firewall, UAC, BIOS age, PowerShell policy, unfavorable tuning settings (pagefile off, Prefetch/SysMain off, Defender off by policy), warnings in the event log
+
+## Cooling and fans – what works and what doesn't
+
+Fan curves are stored in the BIOS or in the motherboard firmware (or in vendor tools) and can neither be read nor set from Windows. WinTidy therefore measures the **effect**:
+
+- **Without an additional program:** throttling by the firmware (event 37), ACPI thermal zones (mainly laptops), NVIDIA graphics cards via `nvidia-smi` (temperature, fan, throttle reasons), drive temperature and wear, battery capacity.
+- **With [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) (0.9.5 or later; older versions use the WinRing0 driver that Defender flags) or HWiNFO** running in the background: additionally processor temperature and all fan speeds. WinTidy detects this automatically.
+- **Cooling test:** briefly puts all cores but one under full load and judges whether performance drops due to heat, whether the processor reaches its temperature limit (TjMax per CPU family, e.g. Ryzen 7000/9000 = 95 °C) and whether the fans speed up. A drop in performance after the turbo phase without heat counts as normal (vendor limit). Stops on its own on overheating, heavy heat throttling or when the power adapter is unplugged. Does not run on battery, on servers or in VMs.
+- **What is rated:** snapshots in time (current temperatures, throttling) appear as hints but do not count in the health score; lasting conditions (drive, memory errors, battery) do. The NVIDIA fan value is a target value – 0 % on a cool card is the intended fan stop.
+
+## What WinTidy deliberately does **not** do
+
+- no registry "cleaners", no "tweaks" without proof of effect
+- no fan or BIOS settings (there is no vendor-neutral, safe way to do this)
+- Defender, updates, UAC, firewall etc. are never switched off
+- no drivers are removed with `/force`, no files in Documents/Pictures/Desktop are touched
+- nothing on a drive that is currently not connected counts as "orphaned"
+
+## Data, logs, report
+
+With admin rights everything is stored protected under `%ProgramData%\WinTidy\<COMPUTERNAME>\` (only administrators and SYSTEM may write there – programs without admin rights cannot change the backups that "Restore" applies). Without admin rights under `%LOCALAPPDATA%\WinTidy\<COMPUTERNAME>\`. Data of older versions (`WinTidy-Daten` next to the script) is taken over once at the first start. Can be changed with `-DataPath`.
+
+The folder and file names are internal and stay German in both languages:
+
+```
+%ProgramData%\WinTidy\PC-NAME\
+  WinTidy-Bericht.html              # report (score, boot time history, before/after, findings, action log)
+  snapshots\<time>_<scan|vorher|nachher>.json
+  kuehltest\<time>.json             # measurement series of the cooling tests
+  runs\<time>_<scan|preview|apply|restore|hardware|kuehltest>\
+      konsole.txt                   # complete console log
+      actions.jsonl                 # every action as a JSON line (time, rule, object, status, bytes, message)
+      zusammenfassung.json          # summary of the run
+      backup\*.reg, backup\tasks\   # backups before every change (since 1.3 additionally single values in actions.jsonl)
+```
+
+Tip for shared PCs: put the WinTidy folder itself into `C:\Program Files\WinTidy`, so that the script can only be changed by administrators too.
+
+## Undo
+
+1. `Restore` resets every changed setting individually: autostarts, Run entries, Game DVR, TRIM, cooling policy, hibernation file, script policy, service start types (including delayed), disabled tasks and deleted startup shortcuts. Values that someone else has changed since are not overwritten. Only expected registry paths are touched.
+2. For everything else: System Restore (`rstrui.exe`) → point "WinTidy <run>".
+3. Deleted files, uninstalled programs and removed Store apps cannot be brought back via WinTidy (Store apps can be reinstalled from the Store).
+
+## Configuration
+
+WinTidy reads its settings in three layers – later ones win:
+
+1. the defaults in the script,
+2. `WinTidy.config.json` – shipped with WinTidy, contains only **deviations** from the default,
+3. `WinTidy.config.local.json` – optional, your **personal** settings for this PC. This file is not part of the repository (it is in `.gitignore`) and is never overwritten by an update.
+
+All keys with their default values are listed in `WinTidy.config.example.json` (not loaded). Keys you don't set come from the script – that way improved defaults take effect automatically after an update.
+
+Example `WinTidy.config.local.json` – never update KeePassXC via winget:
+
+```json
+{
+  "WingetExclude": ["rekordbox", "DaVinci", "Blackmagic", "AlphaTheta", "KeePassXC"]
+}
+```
+
+Lists replace the default list completely (that is why the defaults are repeated above); tables such as `DiskTempWarnC` are merged key by key.
+
+## Requirements
+
+Windows 10 (2004+) or Windows 11, Windows PowerShell 5.1. Admin rights for `Apply` and for complete scans; without admin rights e.g. the boot times are missing.
+
+Development: see [DEVELOPMENT.md](DEVELOPMENT.md).

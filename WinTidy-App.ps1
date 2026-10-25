@@ -1,11 +1,12 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    WinTidy App - grafische Oberflaeche fuer WinTidy (auch fuer Nicht-ITler).
+    WinTidy App - graphical interface for WinTidy (also for non-IT users).
 .DESCRIPTION
-    Startet ein Fenster (WPF). Die eigentliche Arbeit macht WinTidy.ps1, das in einem
-    Hintergrund-Runspace geladen wird, damit die Oberflaeche nie einfriert.
-    Start: "WinTidy App.cmd" doppelklicken oder Desktop-Verknuepfung (in den Einstellungen anlegbar).
+    Opens a window (WPF). The actual work is done by WinTidy.ps1, which is loaded into a
+    background runspace so that the interface never freezes.
+    Start: double-click "WinTidy App.cmd" or the desktop shortcut (can be created in the settings).
+    Language: German if Windows is German, otherwise English; can be changed in the settings.
 #>
 param([switch]$NoElevate, [switch]$Restarted)
 
@@ -13,10 +14,42 @@ $ErrorActionPreference = 'Stop'
 $ErrLog = Join-Path $env:TEMP 'WinTidy-App-Fehler.log'
 function Write-ErrLog([string]$t) { try { "$(Get-Date -Format s)  $t" | Out-File -LiteralPath $ErrLog -Append -Encoding utf8 } catch { } }
 
-# Fehler beim Start sichtbar machen (die Konsole ist versteckt)
+# Language: the code contains English texts, German comes from lang\de.psd1 (same mechanism as WinTidy.ps1).
+# Setting in the app (Sprache = Auto | de | en); Auto = German if Windows is German, otherwise English.
+$AppSettingsFile = Join-Path $env:APPDATA 'WinTidy\app-einstellungen.json'
+$Script:Lang = 'en'; $Script:De = $null; $Script:LangMode = 'Auto'
+function Read-WtLangFile([string]$Path) {
+    $dict = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $err = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$err)
+    if ($err -and $err.Count) { throw "$Path`: $($err[0].Message)" }
+    $h = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)
+    if (-not $h) { throw "$Path`: no table found" }
+    foreach ($kv in $h.KeyValuePairs) {
+        $v = $kv.Item2
+        if ($v -is [System.Management.Automation.Language.PipelineAst] -and $v.PipelineElements.Count -eq 1) { $v = $v.PipelineElements[0].Expression }
+        if ($kv.Item1 -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $v -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $dict[$kv.Item1.Value] = $v.Value }
+    }
+    return , $dict
+}
+function T([string]$Text) {
+    $s = $Text
+    if ($Script:Lang -eq 'de' -and $null -ne $Script:De) { $v = $null; if ($Script:De.TryGetValue($Text, [ref]$v)) { $s = $v } }
+    if ($args.Count) { try { return ($s -f $args) } catch { return $s } }
+    return $s
+}
+try { if (Test-Path -LiteralPath $AppSettingsFile) { $st0 = Get-Content -LiteralPath $AppSettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json; if ([string]$st0.Sprache -in 'Auto', 'de', 'en') { $Script:LangMode = [string]$st0.Sprache } } } catch { }
+if ($Script:LangMode -in 'de', 'en') { $Script:Lang = $Script:LangMode }
+else { try { if ([Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName -eq 'de') { $Script:Lang = 'de' } } catch { } }
+if ($Script:Lang -eq 'de') {
+    try { $Script:De = Read-WtLangFile (Join-Path $(if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }) 'lang\de.psd1') }
+    catch { $Script:Lang = 'en'; $Script:De = $null; Write-ErrLog "Language file: $($_.Exception.Message)" }
+}
+
+# Make errors at startup visible (the console is hidden)
 trap {
     Write-ErrLog ("FATAL " + ($_ | Out-String))
-    try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show("WinTidy konnte nicht starten.`n`n$($_.Exception.Message)`n`nFehlerprotokoll: $ErrLog", 'WinTidy', 'OK', 'Error') | Out-Null } catch { }
+    try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show((T "WinTidy could not start.`n`n{0}`n`nError log: {1}" ($_.Exception.Message) $ErrLog), 'WinTidy', 'OK', 'Error') | Out-Null } catch { }
     try { if ($Script:Mutex) { $Script:Mutex.ReleaseMutex() } } catch { }
     exit 1
 }
@@ -25,7 +58,7 @@ $AppPath = $PSCommandPath
 $AppRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-# Netzlaufwerk (Z:\...): Der Prozess mit Adminrechten sieht verbundene Laufwerke meist nicht -> UNC-Pfad verwenden
+# Network drive (Z:\...): the process with admin rights usually does not see mapped drives -> use the UNC path
 $NetDriveProblem = $false
 try {
     if ($AppRoot -match '^([A-Za-z]):') {
@@ -42,18 +75,18 @@ $EnginePath = Join-Path $AppRoot 'WinTidy.ps1'
 if (-not $IsAdmin -and -not $NoElevate) {
     if ($NetDriveProblem) {
         Add-Type -AssemblyName PresentationFramework
-        [System.Windows.MessageBox]::Show("WinTidy liegt auf einem Netzlaufwerk. Mit Administratorrechten kann Windows es dort oft nicht finden.`n`nBitte den WinTidy-Ordner auf diesen PC kopieren (z. B. in Dokumente) und von dort starten.`n`nWinTidy startet jetzt eingeschränkt (nur Prüfen).", 'WinTidy', 'OK', 'Information') | Out-Null
+        [System.Windows.MessageBox]::Show((T "WinTidy is on a network drive. With administrator rights Windows often cannot find it there.`n`nPlease copy the WinTidy folder to this PC (e.g. into Documents) and start it from there.`n`nWinTidy now starts with limited functions (check only)."), 'WinTidy', 'OK', 'Information') | Out-Null
     } else {
         try {
             Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate') -ErrorAction Stop
             return
-        } catch { }   # UAC abgelehnt -> ohne Adminrechte weiter (eingeschraenkt)
+        } catch { }   # UAC declined -> continue without admin rights (limited)
     }
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
-# Nur eine Instanz (zwei gleichzeitige Optimierungen waeren gefaehrlich)
+# Only one instance (two simultaneous optimizations would be dangerous)
 $Script:Mutex = $null
 $gotMutex = $false
 try {
@@ -62,18 +95,18 @@ try {
 } catch { $gotMutex = $false }
 if (-not $gotMutex) {
     $Script:Mutex = $null
-    [System.Windows.MessageBox]::Show('WinTidy ist bereits geöffnet. Bitte das vorhandene Fenster verwenden (ggf. in der Taskleiste).', 'WinTidy', 'OK', 'Information') | Out-Null
+    [System.Windows.MessageBox]::Show((T 'WinTidy is already open. Please use the existing window (check the taskbar).'), 'WinTidy', 'OK', 'Information') | Out-Null
     return
 }
-if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Show("WinTidy.ps1 wurde nicht gefunden:`n$EnginePath`n`nBitte den kompletten WinTidy-Ordner kopieren.", 'WinTidy', 'OK', 'Error') | Out-Null; $Script:Mutex.ReleaseMutex(); return }
+if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Show((T "WinTidy.ps1 was not found:`n{0}`n`nPlease copy the complete WinTidy folder." $EnginePath), 'WinTidy', 'OK', 'Error') | Out-Null; $Script:Mutex.ReleaseMutex(); return }
 
 # =============================================================================
-#  Oberflaeche (XAML)
+#  Interface (XAML)
 # =============================================================================
 [xml]$Xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="WinTidy – PC-Pflege" Width="1180" Height="780" MinWidth="860" MinHeight="520"
+        Title="WinTidy – PC care" Width="1180" Height="780" MinWidth="860" MinHeight="520"
         WindowStartupLocation="CenterScreen" Background="{DynamicResource Bg}" FontFamily="Segoe UI" FontSize="14"
         TextOptions.TextFormattingMode="Display" UseLayoutRounding="True">
   <Window.Resources>
@@ -287,33 +320,33 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           </Border>
           <StackPanel x:Name="BrandText" Margin="12,0,0,0" VerticalAlignment="Center">
             <TextBlock Text="WinTidy" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource Ink}"/>
-            <TextBlock Text="PC-Pflege mit Beleg" FontSize="12" Foreground="{DynamicResource Muted}"/>
+            <TextBlock Text="PC care with proof" FontSize="12" Foreground="{DynamicResource Muted}"/>
           </StackPanel>
         </StackPanel>
         <StackPanel DockPanel.Dock="Bottom">
           <TextBlock x:Name="VersionText" FontSize="12" Foreground="{DynamicResource Muted}" Margin="6,0" TextWrapping="Wrap"/>
         </StackPanel>
         <StackPanel>
-          <RadioButton x:Name="NavHome" AutomationProperties.Name="Übersicht" Style="{StaticResource Nav}" IsChecked="True" ToolTip="Übersicht"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT1" Text="Übersicht"/></StackPanel></RadioButton>
-          <RadioButton x:Name="NavRecs" AutomationProperties.Name="Empfehlungen" Style="{StaticResource Nav}" ToolTip="Empfehlungen"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE82F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT2" Text="Empfehlungen"/><Border x:Name="RecsBadge" Background="{DynamicResource Accent}" CornerRadius="9" Padding="7,0" Margin="8,0,0,0" Visibility="Collapsed"><TextBlock x:Name="RecsBadgeText" Foreground="{DynamicResource OnAccent}" FontSize="12"/></Border></StackPanel></RadioButton>
-          <RadioButton x:Name="NavHistory" AutomationProperties.Name="Verlauf" Style="{StaticResource Nav}" ToolTip="Verlauf"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT3" Text="Verlauf"/></StackPanel></RadioButton>
-          <RadioButton x:Name="NavSettings" AutomationProperties.Name="Einstellungen" Style="{StaticResource Nav}" ToolTip="Einstellungen"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT4" Text="Einstellungen"/></StackPanel></RadioButton>
-          <RadioButton x:Name="NavHelp" AutomationProperties.Name="Hilfe" Style="{StaticResource Nav}" ToolTip="Hilfe"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE897;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT5" Text="Hilfe"/></StackPanel></RadioButton>
+          <RadioButton x:Name="NavHome" AutomationProperties.Name="Overview" Style="{StaticResource Nav}" IsChecked="True" ToolTip="Overview"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT1" Text="Overview"/></StackPanel></RadioButton>
+          <RadioButton x:Name="NavRecs" AutomationProperties.Name="Recommendations" Style="{StaticResource Nav}" ToolTip="Recommendations"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE82F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT2" Text="Recommendations"/><Border x:Name="RecsBadge" Background="{DynamicResource Accent}" CornerRadius="9" Padding="7,0" Margin="8,0,0,0" Visibility="Collapsed"><TextBlock x:Name="RecsBadgeText" Foreground="{DynamicResource OnAccent}" FontSize="12"/></Border></StackPanel></RadioButton>
+          <RadioButton x:Name="NavHistory" AutomationProperties.Name="History" Style="{StaticResource Nav}" ToolTip="History"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT3" Text="History"/></StackPanel></RadioButton>
+          <RadioButton x:Name="NavSettings" AutomationProperties.Name="Settings" Style="{StaticResource Nav}" ToolTip="Settings"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT4" Text="Settings"/></StackPanel></RadioButton>
+          <RadioButton x:Name="NavHelp" AutomationProperties.Name="Help" Style="{StaticResource Nav}" ToolTip="Help"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE897;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT5" Text="Help"/></StackPanel></RadioButton>
         </StackPanel>
       </DockPanel>
     </Border>
 
-    <!-- Inhalt -->
+    <!-- Content -->
     <Grid Grid.Column="1">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
       <StackPanel x:Name="BannerPanel" Grid.Row="0" Margin="36,16,36,0"/>
 
       <Grid Grid.Row="1">
-      <!-- Übersicht -->
+      <!-- Overview -->
       <ScrollViewer x:Name="PageHome" VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="36,22,36,30" MaxWidth="980">
-          <TextBlock Text="Übersicht" Style="{StaticResource H1}"/>
-          <TextBlock x:Name="HomeSub" Style="{StaticResource Sub}" Margin="0,4,0,22" Text="Lass WinTidy deinen PC prüfen. Dabei wird nichts verändert."/>
+          <TextBlock Text="Overview" Style="{StaticResource H1}"/>
+          <TextBlock x:Name="HomeSub" Style="{StaticResource Sub}" Margin="0,4,0,22" Text="Let WinTidy check your PC. Nothing is changed in the process."/>
           <Border Style="{StaticResource Card}" Padding="26">
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -323,27 +356,27 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
                   <Path x:Name="ScoreArc" StrokeThickness="14" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stroke="{DynamicResource Accent}"/>
                   <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                     <TextBlock x:Name="ScoreText" Text="–" FontSize="46" FontWeight="Bold" HorizontalAlignment="Center" Foreground="{DynamicResource Ink}"/>
-                    <TextBlock Text="von 100" FontSize="12" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}"/>
+                    <TextBlock Text="of 100" FontSize="12" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}"/>
                   </StackPanel>
                 </Grid>
               </StackPanel>
               <StackPanel Grid.Column="1" Margin="30,6,0,0" VerticalAlignment="Center">
-                <TextBlock x:Name="ScoreHeadline" Text="Noch nicht geprüft" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource Ink}" TextWrapping="Wrap"/>
-                <TextBlock x:Name="ScoreDetail" Style="{StaticResource Sub}" Margin="0,6,0,6" Text="Die Prüfung dauert meist ein bis drei Minuten. Danach siehst du, was sich verbessern lässt – in verständlichen Worten."/>
-                <TextBlock x:Name="ScoreLimited" FontSize="12" Foreground="{DynamicResource Warn}" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="Collapsed" Text="Eingeschränkte Prüfung ohne Administratorrechte – der Wert ist nur bedingt aussagekräftig."/>
+                <TextBlock x:Name="ScoreHeadline" Text="Not checked yet" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource Ink}" TextWrapping="Wrap"/>
+                <TextBlock x:Name="ScoreDetail" Style="{StaticResource Sub}" Margin="0,6,0,6" Text="The check usually takes one to three minutes. Afterwards you see what can be improved – in plain words."/>
+                <TextBlock x:Name="ScoreLimited" FontSize="12" Foreground="{DynamicResource Warn}" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="Collapsed" Text="Limited check without administrator rights – the value is only partly meaningful."/>
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                  <Button x:Name="BtnScan" Style="{StaticResource Primary}" Content="_Jetzt prüfen"/>
-                  <Button x:Name="BtnToRecs" Style="{StaticResource Secondary}" Content="Empfehlungen an_sehen" Margin="12,0,0,0" Visibility="Collapsed"/>
+                  <Button x:Name="BtnScan" Style="{StaticResource Primary}" Content="_Check now"/>
+                  <Button x:Name="BtnToRecs" Style="{StaticResource Secondary}" Content="_View recommendations" Margin="12,0,0,0" Visibility="Collapsed"/>
                 </StackPanel>
                 <TextBlock x:Name="LastScanText" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,12,0,0" TextWrapping="Wrap"/>
               </StackPanel>
             </Grid>
           </Border>
-          <Expander x:Name="ScoreWhy" Header="Warum nicht 100?" Margin="4,-4,0,14" Visibility="Collapsed">
+          <Expander x:Name="ScoreWhy" Header="Why not 100?" Margin="4,-4,0,14" Visibility="Collapsed">
             <Border Style="{StaticResource Card}" Margin="0,8,0,0">
               <StackPanel>
                 <StackPanel x:Name="ScoreWhyList"/>
-                <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,10,0,0" Text="Der Wert beschreibt den Zustand deines PCs, nicht wie viel WinTidy aufgeräumt hat. Manche Punkte kann WinTidy nicht selbst beheben (z. B. Einstellungen im BIOS), andere bessern sich erst nach einigen Tagen (z. B. Fehler im Ereignisprotokoll)."/>
+                <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,10,0,0" Text="The value describes the state of your PC, not how much WinTidy cleaned up. Some points WinTidy cannot fix itself (e.g. settings in the BIOS), others only improve after a few days (e.g. errors in the event log)."/>
               </StackPanel>
             </Border>
           </Expander>
@@ -352,46 +385,46 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
             <StackPanel>
               <StackPanel Orientation="Horizontal">
                 <TextBlock Text="Hardware" Style="{StaticResource H2}"/>
-                <Border Background="{DynamicResource InfoBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center"><TextBlock Text="Für Fachleute" FontSize="12" Foreground="{DynamicResource InfoFg}"/></Border>
+                <Border Background="{DynamicResource InfoBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center"><TextBlock Text="For experts" FontSize="12" Foreground="{DynamicResource InfoFg}"/></Border>
               </StackPanel>
-              <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,12" Text="Kühlung, Laufwerke, Arbeitsspeicher und Bildschirm. WinTidy ändert hier nichts. Lass Änderungen (z. B. im BIOS) bei Bedarf von jemandem erledigen, der sich auskennt."/>
-              <TextBlock Style="{StaticResource Sub}" FontSize="13" Margin="0,0,0,10" Text="✓ in Ordnung   ·   ! im Auge behalten   ·   ✗ bald darum kümmern"/>
+              <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,12" Text="Cooling, drives, memory and monitor. WinTidy changes nothing here. If needed, have changes (e.g. in the BIOS) done by someone who knows what they are doing."/>
+              <TextBlock Style="{StaticResource Sub}" FontSize="13" Margin="0,0,0,10" Text="✓ fine   ·   ! keep an eye on it   ·   ✗ take care of it soon"/>
               <StackPanel x:Name="HwPanel"/>
               <StackPanel x:Name="CoolTestPanel" Margin="0,4,0,0"/>
               <WrapPanel Margin="0,8,0,0">
-                <Button x:Name="BtnCoolTest" Style="{StaticResource Secondary}" Content="Kühlung testen (ca. 1 Minute)" AutomationProperties.Name="Kühlung testen, dauert etwa eine Minute"/>
+                <Button x:Name="BtnCoolTest" Style="{StaticResource Secondary}" Content="Test cooling (about 1 minute)" AutomationProperties.Name="Test cooling, takes about one minute"/>
               </WrapPanel>
-              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap" Text="Der Test belastet den Prozessor kurz voll und prüft, ob die Kühlung mithält. Die Lüfter werden dabei hörbar lauter. Lüfterkurven selbst stehen im BIOS – WinTidy misst nur ihre Wirkung."/>
+              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap" Text="The test briefly puts the processor under full load and checks whether the cooling keeps up. The fans get audibly louder. Fan curves themselves are set in the BIOS – WinTidy only measures their effect."/>
             </StackPanel>
           </Border>
           <Border x:Name="HintsCard" Style="{StaticResource Card}" Margin="0,14,0,0" Visibility="Collapsed">
             <StackPanel>
-              <TextBlock Text="Gut zu wissen" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,12" Text="Diese Punkte kann WinTidy nicht selbst erledigen."/>
+              <TextBlock Text="Good to know" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,12" Text="WinTidy cannot take care of these points itself."/>
               <StackPanel x:Name="HintsPanel"/>
             </StackPanel>
           </Border>
         </StackPanel>
       </ScrollViewer>
 
-      <!-- Empfehlungen -->
+      <!-- Recommendations -->
       <Grid x:Name="PageRecs" Visibility="Collapsed">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <StackPanel Margin="36,22,36,10">
-          <TextBlock Text="Empfehlungen" Style="{StaticResource H1}"/>
-          <TextBlock x:Name="RecsSub" Style="{StaticResource Sub}" Margin="0,4,0,10" Text="Noch keine Prüfung durchgeführt."/>
+          <TextBlock Text="Recommendations" Style="{StaticResource H1}"/>
+          <TextBlock x:Name="RecsSub" Style="{StaticResource Sub}" Margin="0,4,0,10" Text="No check carried out yet."/>
           <WrapPanel x:Name="RecsLegend" Margin="0,0,0,8">
-            <Border Background="{DynamicResource LowBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="8,2" Margin="0,0,6,4"><TextBlock Text="Sicher" FontSize="12" Foreground="{DynamicResource LowFg}"/></Border>
-            <TextBlock Text="Datenmüll, umkehrbar oder Windows-eigene Pflege" FontSize="13" Foreground="{DynamicResource Muted}" Margin="0,2,18,4"/>
-            <Border Background="{DynamicResource MidBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="8,2" Margin="0,0,6,4"><TextBlock Text="Kurz prüfen" FontSize="12" Foreground="{DynamicResource MidFg}"/></Border>
-            <TextBlock Text="bitte ansehen, ob du das noch brauchst" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,2,18,4"/>
-            <Border Background="{DynamicResource HighBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="8,2" Margin="0,0,6,4"><TextBlock Text="Nur für Profis" FontSize="12" Foreground="{DynamicResource HighFg}"/></Border>
-            <TextBlock Text="kann Fehltreffer enthalten, jeden Eintrag einzeln wählen" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,2,0,4"/>
+            <Border Background="{DynamicResource LowBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="8,2" Margin="0,0,6,4"><TextBlock Text="Safe" FontSize="12" Foreground="{DynamicResource LowFg}"/></Border>
+            <TextBlock Text="Junk data, reversible or Windows' own maintenance" FontSize="13" Foreground="{DynamicResource Muted}" Margin="0,2,18,4"/>
+            <Border Background="{DynamicResource MidBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="8,2" Margin="0,0,6,4"><TextBlock Text="Check briefly" FontSize="12" Foreground="{DynamicResource MidFg}"/></Border>
+            <TextBlock Text="please check whether you still need it" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,2,18,4"/>
+            <Border Background="{DynamicResource HighBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="8,2" Margin="0,0,6,4"><TextBlock Text="Experts only" FontSize="12" Foreground="{DynamicResource HighFg}"/></Border>
+            <TextBlock Text="may contain false positives, select each entry individually" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,2,0,4"/>
           </WrapPanel>
           <StackPanel Orientation="Horizontal">
-            <Button x:Name="BtnSelRecommended" Style="{StaticResource LinkBtn}" Content="Empfohlene auswählen"/>
+            <Button x:Name="BtnSelRecommended" Style="{StaticResource LinkBtn}" Content="Select recommended"/>
             <TextBlock Text="  ·  " Foreground="{DynamicResource Muted}"/>
-            <Button x:Name="BtnSelNone" Style="{StaticResource LinkBtn}" Content="Nichts auswählen"/>
+            <Button x:Name="BtnSelNone" Style="{StaticResource LinkBtn}" Content="Select nothing"/>
           </StackPanel>
         </StackPanel>
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
@@ -400,23 +433,23 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
         <Border Grid.Row="2" Background="{DynamicResource CardBg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="36,14">
           <DockPanel>
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-              <Button x:Name="BtnElevate2" Style="{StaticResource Secondary}" Content="Mit _Administratorrechten neu starten" Margin="0,0,12,0" Visibility="Collapsed"/>
-              <Button x:Name="BtnApply" Style="{StaticResource Primary}" Content="Ausgewählte _umsetzen"/>
+              <Button x:Name="BtnElevate2" Style="{StaticResource Secondary}" Content="Restart with _administrator rights" Margin="0,0,12,0" Visibility="Collapsed"/>
+              <Button x:Name="BtnApply" Style="{StaticResource Primary}" Content="_Apply selected"/>
             </StackPanel>
             <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
               <TextBlock x:Name="SelSummary" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource Ink}" TextWrapping="Wrap"/>
-              <TextBlock x:Name="SelNote" FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Text="Vorher wird ein Wiederherstellungspunkt angelegt. Jede Änderung wird protokolliert."/>
+              <TextBlock x:Name="SelNote" FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Text="A restore point is created first. Every change is logged."/>
             </StackPanel>
           </DockPanel>
         </Border>
       </Grid>
 
-      <!-- Arbeit läuft -->
+      <!-- Work in progress -->
       <ScrollViewer x:Name="PageBusy" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
         <Border Style="{StaticResource Card}" MaxWidth="660" Margin="36,30" VerticalAlignment="Center" Padding="30">
           <StackPanel>
-            <TextBlock x:Name="BusyTitle" Text="Prüfe deinen PC …" Style="{StaticResource H2}" FontSize="22"/>
-            <TextBlock x:Name="BusyStep" Style="{StaticResource Sub}" Margin="0,8,0,16" Text="Einen Moment bitte."/>
+            <TextBlock x:Name="BusyTitle" Text="Checking your PC …" Style="{StaticResource H2}" FontSize="22"/>
+            <TextBlock x:Name="BusyStep" Style="{StaticResource Sub}" Margin="0,8,0,16" Text="One moment please."/>
             <ProgressBar x:Name="BusyBar" Height="10" Minimum="0" Maximum="100" Foreground="{DynamicResource Accent}" Background="{DynamicResource Track}" BorderThickness="0" IsIndeterminate="True"/>
             <DockPanel Margin="0,8,0,0">
               <TextBlock x:Name="BusyElapsed" DockPanel.Dock="Right" FontSize="12" Foreground="{DynamicResource Muted}"/>
@@ -424,25 +457,25 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
             </DockPanel>
             <TextBlock x:Name="BusyHint" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,12,0,0" TextWrapping="Wrap"/>
             <Border x:Name="BusyUninstall" Background="{DynamicResource MidBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="10" Padding="14,10" Margin="0,14,0,0" Visibility="Collapsed">
-              <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource MidFg}" FontWeight="SemiBold" Text="Jetzt öffnet sich ein Deinstallationsfenster. Bitte dort durchklicken – es kann hinter diesem Fenster liegen (Taskleiste prüfen)."/>
+              <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource MidFg}" FontWeight="SemiBold" Text="An uninstall window opens now. Please click through it – it may be behind this window (check the taskbar)."/>
             </Border>
             <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
-              <Button x:Name="BtnCancel" Style="{StaticResource Secondary}" Content="Abbre_chen" IsCancel="True"/>
+              <Button x:Name="BtnCancel" Style="{StaticResource Secondary}" Content="_Cancel" IsCancel="True"/>
               <TextBlock x:Name="CancelNote" FontSize="12" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap"/>
             </StackPanel>
-            <Expander Header="Details anzeigen" Margin="0,16,0,0">
+            <Expander Header="Show details" Margin="0,16,0,0">
               <TextBox x:Name="BusyLog" Height="220" Margin="0,8,0,0" IsReadOnly="True" FontFamily="Consolas" FontSize="12" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto" Background="{DynamicResource LogBg}" Foreground="{DynamicResource LogFg}" BorderThickness="0" Padding="8"/>
             </Expander>
           </StackPanel>
         </Border>
       </ScrollViewer>
 
-      <!-- Ergebnis -->
+      <!-- Result -->
       <ScrollViewer x:Name="PageResult" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="36,22,36,30" MaxWidth="980">
           <DockPanel>
             <Border x:Name="ResultIconBg" Width="44" Height="44" CornerRadius="22" Background="{DynamicResource LowBg}" DockPanel.Dock="Left" VerticalAlignment="Top"><TextBlock x:Name="ResultIcon" Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="{DynamicResource Good}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-            <TextBlock x:Name="ResultTitle" Text="Fertig!" Style="{StaticResource H1}" Margin="14,0,0,0" VerticalAlignment="Center"/>
+            <TextBlock x:Name="ResultTitle" Text="Done!" Style="{StaticResource H1}" Margin="14,0,0,0" VerticalAlignment="Center"/>
           </DockPanel>
           <TextBlock x:Name="ResultSub" Style="{StaticResource Sub}" Margin="0,8,0,20"/>
           <UniformGrid x:Name="ResultGrid" Columns="3" Margin="-7,0,-7,0"/>
@@ -451,23 +484,23 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Was genau passiert ist" Style="{StaticResource H2}"/>
+              <TextBlock Text="What exactly happened" Style="{StaticResource H2}"/>
               <StackPanel x:Name="ResultDetails" Margin="0,10,0,0"/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}" Background="{DynamicResource TipBg}" BorderBrush="{DynamicResource TipLine}">
-            <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource InfoFg}" Text="Tipp: Die Wirkung auf die Startzeit zeigt sich erst nach ein paar Neustarts. Starte den PC in den nächsten Tagen ganz normal und prüfe dann erneut. Unter Verlauf siehst du die Entwicklung."/>
+            <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource InfoFg}" Text="Tip: the effect on the boot time only shows after a few restarts. Start the PC normally over the next days and then check again. Under History you see the trend."/>
           </Border>
           <WrapPanel>
-            <Button x:Name="BtnRestartNow" Style="{StaticResource Primary}" Content="PC jetzt _neu starten" Margin="0,0,12,10"/>
-            <Button x:Name="BtnResultReport" Style="{StaticResource Secondary}" Content="Ausführlichen _Bericht öffnen" Margin="0,0,12,10"/>
-            <Button x:Name="BtnResultHome" Style="{StaticResource Secondary}" Content="Zur _Übersicht" Margin="0,0,12,10"/>
+            <Button x:Name="BtnRestartNow" Style="{StaticResource Primary}" Content="_Restart PC now" Margin="0,0,12,10"/>
+            <Button x:Name="BtnResultReport" Style="{StaticResource Secondary}" Content="Open detailed _report" Margin="0,0,12,10"/>
+            <Button x:Name="BtnResultHome" Style="{StaticResource Secondary}" Content="To the _overview" Margin="0,0,12,10"/>
           </WrapPanel>
-          <Button x:Name="BtnResultUndo" Style="{StaticResource LinkBtn}" Content="Änderungen rückgängig machen …" Margin="0,8,0,0" HorizontalAlignment="Left"/>
+          <Button x:Name="BtnResultUndo" Style="{StaticResource LinkBtn}" Content="Undo changes …" Margin="0,8,0,0" HorizontalAlignment="Left"/>
         </StackPanel>
       </ScrollViewer>
 
-      <!-- Fehler -->
+      <!-- Error -->
       <ScrollViewer x:Name="PageError" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
         <Border Style="{StaticResource Card}" MaxWidth="660" Margin="36,30" VerticalAlignment="Center" Padding="30">
           <StackPanel>
@@ -477,87 +510,98 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
             </DockPanel>
             <TextBlock x:Name="ErrText" Style="{StaticResource Body}" Margin="0,14,0,0"/>
             <WrapPanel Margin="0,20,0,0">
-              <Button x:Name="BtnErrRetry" Style="{StaticResource Primary}" Content="_Erneut versuchen" Margin="0,0,12,10"/>
-              <Button x:Name="BtnErrCopy" Style="{StaticResource Secondary}" Content="Fehlerbericht _kopieren" Margin="0,0,12,10"/>
-              <Button x:Name="BtnErrHome" Style="{StaticResource Secondary}" Content="Zur _Übersicht" Margin="0,0,12,10"/>
+              <Button x:Name="BtnErrRetry" Style="{StaticResource Primary}" Content="_Try again" Margin="0,0,12,10"/>
+              <Button x:Name="BtnErrCopy" Style="{StaticResource Secondary}" Content="_Copy error report" Margin="0,0,12,10"/>
+              <Button x:Name="BtnErrHome" Style="{StaticResource Secondary}" Content="To the _overview" Margin="0,0,12,10"/>
             </WrapPanel>
-            <TextBlock x:Name="ErrCopied" FontSize="12" Foreground="{DynamicResource Good}" Visibility="Collapsed" Text="Fehlerbericht ist in der Zwischenablage. Du kannst ihn z. B. in eine E-Mail einfügen."/>
-            <Expander Header="Technische Details" Margin="0,12,0,0">
+            <TextBlock x:Name="ErrCopied" FontSize="12" Foreground="{DynamicResource Good}" Visibility="Collapsed" Text="The error report is on the clipboard. You can paste it into an e-mail, for example."/>
+            <Expander Header="Technical details" Margin="0,12,0,0">
               <TextBox x:Name="ErrDetail" Height="140" Margin="0,8,0,0" IsReadOnly="True" FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Background="{DynamicResource LogBg}" Foreground="{DynamicResource LogFg}" BorderThickness="0" Padding="8"/>
             </Expander>
           </StackPanel>
         </Border>
       </ScrollViewer>
 
-      <!-- Verlauf -->
+      <!-- History -->
       <ScrollViewer x:Name="PageHistory" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="36,22,36,30" MaxWidth="980">
-          <TextBlock Text="Verlauf" Style="{StaticResource H1}"/>
-          <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,20" Text="So hat sich dein PC entwickelt. Grüne Linien markieren Optimierungen."/>
+          <TextBlock Text="History" Style="{StaticResource H1}"/>
+          <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,20" Text="This is how your PC has developed. Green lines mark optimizations."/>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Windows-Start bis bereit" Style="{StaticResource H2}"/>
+              <TextBlock Text="Windows boot until ready" Style="{StaticResource H2}"/>
               <Canvas x:Name="BootCanvas" Height="240" Margin="0,14,0,0" ClipToBounds="True"/>
               <TextBlock x:Name="BootNote" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Prüfungen und Optimierungen" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,4,0,0" Text="Bei Optimierungen kannst du Einstellungen (Autostart, geplante Aufgaben, Dienste) einzeln pro Lauf zurücksetzen."/>
+              <TextBlock Text="Checks and optimizations" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,4,0,0" Text="For optimizations you can reset settings (startup, scheduled tasks, services) per run."/>
               <StackPanel x:Name="HistoryList" Margin="0,12,0,0"/>
             </StackPanel>
           </Border>
           <WrapPanel>
-            <Button x:Name="BtnHistReport" Style="{StaticResource Secondary}" Content="Ausführlichen _Bericht öffnen" Margin="0,0,12,10"/>
-            <Button x:Name="BtnHistFolder" Style="{StaticResource Secondary}" Content="_Protokoll-Ordner öffnen" Margin="0,0,12,10"/>
-            <Button x:Name="BtnHistRstrui" Style="{StaticResource Secondary}" Content="_Systemwiederherstellung öffnen" Margin="0,0,12,10"/>
+            <Button x:Name="BtnHistReport" Style="{StaticResource Secondary}" Content="Open detailed _report" Margin="0,0,12,10"/>
+            <Button x:Name="BtnHistFolder" Style="{StaticResource Secondary}" Content="Open _log folder" Margin="0,0,12,10"/>
+            <Button x:Name="BtnHistRstrui" Style="{StaticResource Secondary}" Content="Open _System Restore" Margin="0,0,12,10"/>
           </WrapPanel>
         </StackPanel>
       </ScrollViewer>
 
-      <!-- Einstellungen -->
+      <!-- Settings -->
       <ScrollViewer x:Name="PageSettings" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="36,22,36,30" MaxWidth="980">
-          <TextBlock Text="Einstellungen" Style="{StaticResource H1}"/>
-          <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,20" Text="Die Standardeinstellungen passen für fast alle."/>
+          <TextBlock Text="Settings" Style="{StaticResource H1}"/>
+          <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,20" Text="The default settings suit almost everyone."/>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Darstellung" Style="{StaticResource H2}" Margin="0,0,0,10"/>
+              <TextBlock Text="Appearance" Style="{StaticResource H2}" Margin="0,0,0,10"/>
               <WrapPanel>
-                <RadioButton x:Name="OptThemeAuto" GroupName="Theme" Style="{StaticResource Choice}" Margin="0,4,10,4" Content="Wie Windows" AutomationProperties.Name="Darstellung wie Windows"/>
-                <RadioButton x:Name="OptThemeLight" GroupName="Theme" Style="{StaticResource Choice}" Margin="0,4,10,4" Content="Hell" AutomationProperties.Name="Helle Darstellung"/>
-                <RadioButton x:Name="OptThemeDark" GroupName="Theme" Style="{StaticResource Choice}" Margin="0,4,10,4" Content="Dunkel" AutomationProperties.Name="Dunkle Darstellung"/>
+                <RadioButton x:Name="OptThemeAuto" GroupName="Theme" Style="{StaticResource Choice}" Margin="0,4,10,4" Content="Same as Windows" AutomationProperties.Name="Appearance same as Windows"/>
+                <RadioButton x:Name="OptThemeLight" GroupName="Theme" Style="{StaticResource Choice}" Margin="0,4,10,4" Content="Light" AutomationProperties.Name="Light appearance"/>
+                <RadioButton x:Name="OptThemeDark" GroupName="Theme" Style="{StaticResource Choice}" Margin="0,4,10,4" Content="Dark" AutomationProperties.Name="Dark appearance"/>
               </WrapPanel>
-              <TextBlock x:Name="ThemeNote" Style="{StaticResource Sub}" FontSize="13" Margin="0,6,0,0" Text="„Wie Windows“ folgt der Einstellung unter Einstellungen › Personalisierung › Farben."/>
+              <TextBlock x:Name="ThemeNote" Style="{StaticResource Sub}" FontSize="13" Margin="0,6,0,0" Text="&quot;Same as Windows&quot; follows the setting under Settings › Personalization › Colors."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Sicherheit" Style="{StaticResource H2}" Margin="0,0,0,10"/>
-              <CheckBox x:Name="OptRestorePoint" IsChecked="True" Margin="0,4"><TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Ink}">Vor Änderungen einen Wiederherstellungspunkt anlegen <Run Foreground="{DynamicResource Muted}">(dringend empfohlen)</Run></TextBlock></CheckBox>
-              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="24,2,0,0" Text="Ein Wiederherstellungspunkt kann Einstellungen, Treiber und Systemdateien zurücksetzen. Gelöschte Dateien und entfernte Programme holt er nicht zurück."/>
+              <TextBlock Text="Language" Style="{StaticResource H2}" Margin="0,0,0,10"/>
+              <WrapPanel>
+                <RadioButton x:Name="OptLangAuto" GroupName="Lang" Style="{StaticResource Choice}" Margin="0,4,10,4" Content="Same as Windows" AutomationProperties.Name="Language same as Windows"/>
+                <RadioButton x:Name="OptLangDe" GroupName="Lang" Style="{StaticResource Choice}" Margin="0,4,10,4" Content="Deutsch"/>
+                <RadioButton x:Name="OptLangEn" GroupName="Lang" Style="{StaticResource Choice}" Margin="0,4,10,4" Content="English"/>
+              </WrapPanel>
+              <TextBlock x:Name="LangNote" Style="{StaticResource Sub}" FontSize="13" Margin="0,6,0,0" TextWrapping="Wrap" Text="Takes effect after WinTidy restarts."/>
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
+              <TextBlock Text="Safety" Style="{StaticResource H2}" Margin="0,0,0,10"/>
+              <CheckBox x:Name="OptRestorePoint" IsChecked="True" Margin="0,4"><TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Ink}">Create a restore point before changes <Run Foreground="{DynamicResource Muted}">(strongly recommended)</Run></TextBlock></CheckBox>
+              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="24,2,0,0" Text="A restore point can reset settings, drivers and system files. It does not bring back deleted files and removed programs."/>
               <WrapPanel Margin="0,14,0,0">
-                <Button x:Name="BtnUndo" Style="{StaticResource Secondary}" Content="Letzte Optimierung _rückgängig machen …" Margin="0,0,12,6"/>
-                <Button x:Name="BtnRstrui" Style="{StaticResource Secondary}" Content="_Systemwiederherstellung öffnen" Margin="0,0,12,6"/>
+                <Button x:Name="BtnUndo" Style="{StaticResource Secondary}" Content="_Undo last optimization …" Margin="0,0,12,6"/>
+                <Button x:Name="BtnRstrui" Style="{StaticResource Secondary}" Content="Open _System Restore" Margin="0,0,12,6"/>
               </WrapPanel>
-              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,6,0,0" Text="WinTidy setzt Autostart-Einstellungen, geplante Aufgaben, Dienste und einige Windows-Einstellungen selbst zurück. Gelöschte Dateien kommen nicht zurück – auch nicht über die Systemwiederherstellung. Einzelne Läufe findest du unter Verlauf."/>
+              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,6,0,0" Text="WinTidy itself resets startup settings, scheduled tasks, services and some Windows settings. Deleted files do not come back – not even via System Restore. You find individual runs under History."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Prüfung" Style="{StaticResource H2}" Margin="0,0,0,10"/>
-              <CheckBox x:Name="OptDeep" Margin="0,4"><TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Ink}">Gründliche Prüfung <Run Foreground="{DynamicResource Muted}">(prüft zusätzlich Laufwerke und Systemdateien, dauert bis zu 30 Minuten)</Run></TextBlock></CheckBox>
-              <CheckBox x:Name="OptExpert" Margin="0,4"><TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Ink}">Expertenmodus <Run Foreground="{DynamicResource Muted}">(zeigt technische Details und Empfehlungen mit Fehltreffer-Risiko – wirkt ab der nächsten Prüfung)</Run></TextBlock></CheckBox>
+              <TextBlock Text="Check" Style="{StaticResource H2}" Margin="0,0,0,10"/>
+              <CheckBox x:Name="OptDeep" Margin="0,4"><TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Ink}">Thorough check <Run Foreground="{DynamicResource Muted}">(additionally checks drives and system files, takes up to 30 minutes)</Run></TextBlock></CheckBox>
+              <CheckBox x:Name="OptExpert" Margin="0,4"><TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Ink}">Expert mode <Run Foreground="{DynamicResource Muted}">(shows technical details and recommendations with a risk of false positives – takes effect from the next check)</Run></TextBlock></CheckBox>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Programm" Style="{StaticResource H2}" Margin="0,0,0,10"/>
+              <TextBlock Text="Program" Style="{StaticResource H2}" Margin="0,0,0,10"/>
               <WrapPanel>
-                <Button x:Name="BtnShortcut" Style="{StaticResource Secondary}" Content="_Verknüpfung auf dem Desktop anlegen" Margin="0,0,12,10"/>
-                <Button x:Name="BtnDataFolder" Style="{StaticResource Secondary}" Content="_Datenordner öffnen" Margin="0,0,12,10"/>
-                <Button x:Name="BtnConfig" Style="{StaticResource Secondary}" Content="_Konfiguration bearbeiten" Margin="0,0,12,10" Visibility="Collapsed"/>
+                <Button x:Name="BtnShortcut" Style="{StaticResource Secondary}" Content="Create _desktop shortcut" Margin="0,0,12,10"/>
+                <Button x:Name="BtnDataFolder" Style="{StaticResource Secondary}" Content="Open _data folder" Margin="0,0,12,10"/>
+                <Button x:Name="BtnConfig" Style="{StaticResource Secondary}" Content="Edit _configuration" Margin="0,0,12,10" Visibility="Collapsed"/>
               </WrapPanel>
               <TextBlock x:Name="AboutText" Style="{StaticResource Sub}" FontSize="12" Margin="0,6,0,0"/>
             </StackPanel>
@@ -565,63 +609,63 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
         </StackPanel>
       </ScrollViewer>
 
-      <!-- Hilfe -->
+      <!-- Help -->
       <ScrollViewer x:Name="PageHelp" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="36,22,36,30" MaxWidth="980">
-          <TextBlock Text="Hilfe" Style="{StaticResource H1}"/>
-          <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,20" Text="Die häufigsten Fragen in Kürze."/>
+          <TextBlock Text="Help" Style="{StaticResource H1}"/>
+          <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,20" Text="The most common questions in brief."/>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Was macht WinTidy?" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="WinTidy prüft deinen PC (Speicherplatz, Autostart, Altlasten, Sicherheit, Hardware) und schlägt Verbesserungen vor. Beim Prüfen wird nichts verändert. Umgesetzt wird nur, was du auswählst – vorher und nachher wird gemessen, damit du den Unterschied siehst."/>
+              <TextBlock Text="What does WinTidy do?" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="WinTidy checks your PC (storage space, startup, leftovers, security, hardware) and suggests improvements. Nothing is changed while checking. Only what you select is applied – it is measured before and after so that you see the difference."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Ist das sicher?" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="WinTidy nutzt nur Windows-eigene Werkzeuge, schaltet keine Schutzfunktionen ab und legt vor Änderungen einen Wiederherstellungspunkt an. Einstellungen (Autostart, Aufgaben, Dienste) kann WinTidy selbst zurücksetzen. Auf Firmen-PCs zeigt WinTidy nur sichere Punkte – frag im Zweifel deine IT."/>
+              <TextBlock Text="Is it safe?" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="WinTidy only uses Windows' own tools, never turns off protection features and creates a restore point before changes. WinTidy can reset settings (startup, tasks, services) itself. On company PCs WinTidy only shows safe points – if in doubt, ask your IT department."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Was passiert mit meinen Dateien?" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Deine Dokumente, Bilder und Downloads fasst WinTidy nicht an. Gelöscht werden nur Dinge wie alte temporäre Dateien, Update-Reste und Einträge, die schon lange im Papierkorb liegen. Was gelöscht ist, kommt nicht zurück – deshalb siehst du vorher genau, was betroffen ist."/>
+              <TextBlock Text="What happens to my files?" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="WinTidy does not touch your documents, pictures and downloads. Only things like old temporary files, update leftovers and items that have been in the recycle bin for a long time are deleted. What is deleted does not come back – that is why you see exactly what is affected beforehand."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Was bedeuten die Farben?" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Grün (Sicher): Datenmüll, umkehrbar oder Windows-eigene Pflege – ist vorausgewählt. Gelb (Kurz prüfen): bitte kurz ansehen, ob du das noch brauchst. Rot (Nur für Profis): kann Fehltreffer enthalten, nur im Expertenmodus sichtbar und nur einzeln auswählbar."/>
+              <TextBlock Text="What do the colors mean?" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Green (Safe): junk data, reversible or Windows' own maintenance – preselected. Yellow (Check briefly): please take a quick look whether you still need it. Red (Experts only): may contain false positives, only visible in expert mode and only selectable individually."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Warum ändert sich die Startzeit erst später?" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Windows misst die Startzeit bei jedem Hochfahren selbst. Die Wirkung einer Optimierung sieht man deshalb erst nach einigen normalen Neustarts. Einzelne langsame Starts (z. B. nach Updates) sind normal – entscheidend ist der Durchschnitt im Verlauf."/>
+              <TextBlock Text="Why does the boot time only change later?" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Windows measures the boot time itself at every startup. So the effect of an optimization only shows after a few normal restarts. Single slow starts (e.g. after updates) are normal – what matters is the average in the history."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Kann WinTidy die Lüfter einstellen?" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Nein. Lüfterkurven stehen im BIOS oder in Hersteller-Programmen. WinTidy liest aus, was Windows zuverlässig meldet (z. B. Temperaturen von Grafikkarte und Laufwerken, Drosselung des Prozessors) und weist auf Auffälligkeiten hin. Viele Mainboards geben Lüfterdaten ohne Zusatzprogramm gar nicht an Windows weiter."/>
+              <TextBlock Text="Can WinTidy adjust the fans?" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="No. Fan curves are set in the BIOS or in manufacturer programs. WinTidy reads what Windows reliably reports (e.g. temperatures of the graphics card and drives, throttling of the processor) and points out irregularities. Many motherboards do not pass fan data to Windows at all without an additional program."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Was macht der Kühlungstest?" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Er lässt den Prozessor etwa eine Minute lang voll arbeiten und beobachtet, ob er dabei wegen Hitze langsamer wird, wie warm er wird und ob die Lüfter hochdrehen. Die Lüfter werden dabei laut – das ist gewollt. Wird es zu heiß oder ziehst du beim Laptop das Netzteil, hört der Test sofort auf. Am PC wird nichts verändert."/>
+              <TextBlock Text="What does the cooling test do?" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="It runs the processor at full load for about a minute and watches whether it slows down due to heat, how warm it gets and whether the fans speed up. The fans get loud – this is intended. If it gets too hot or you unplug the laptop's power adapter, the test stops immediately. Nothing is changed on the PC."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Was tun bei einer roten Hardware-Warnung?" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Meldet ein Laufwerk Probleme, sichere zuerst deine Fotos und Dokumente (USB-Stick, externe Festplatte oder Cloud). Bei Warnungen zur Kühlung hilft meist, den PC von innen von Staub zu befreien. In beiden Fällen: lass den PC von jemandem prüfen, der sich auskennt. WinTidy selbst ändert an der Hardware nichts."/>
+              <TextBlock Text="What to do about a red hardware warning?" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="If a drive reports problems, first back up your photos and documents (USB stick, external hard drive or cloud). For cooling warnings, cleaning the dust out of the PC usually helps. In both cases: have the PC checked by someone who knows what they are doing. WinTidy itself changes nothing on the hardware."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Nach der Optimierung funktioniert etwas nicht – was tun?" Style="{StaticResource H2}"/>
-              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Unter Verlauf findest du bei jeder Optimierung „Rückgängig …“. Damit setzt WinTidy Autostart, geplante Aufgaben, Dienste und Einstellungen zurück. Reicht das nicht, nutze unter Verlauf „Systemwiederherstellung öffnen“ und wähle den Punkt „WinTidy …“ vom Tag der Optimierung."/>
+              <TextBlock Text="Something does not work after the optimization – what to do?" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="Under History you find &quot;Undo …&quot; for every optimization. WinTidy uses it to reset startup, scheduled tasks, services and settings. If that is not enough, use &quot;Open System Restore&quot; under History and choose the point &quot;WinTidy …&quot; from the day of the optimization."/>
             </StackPanel>
           </Border>
         </StackPanel>
@@ -632,13 +676,28 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
 </Window>
 '@
 
+# Translate the XAML texts before loading (only when German is active)
+function Convert-XamlLanguage([xml]$Doc) {
+    if ($Script:Lang -ne 'de' -or $null -eq $Script:De) { return }
+    foreach ($node in $Doc.SelectNodes('//*')) {
+        foreach ($at in @($node.Attributes)) {
+            if ($at.LocalName -in 'Text', 'Content', 'ToolTip', 'Header', 'Title' -or $at.Name -eq 'AutomationProperties.Name') {
+                $v = $null; if ($at.Value -match '[A-Za-z]' -and $at.Value -notmatch '^\{' -and $Script:De.TryGetValue($at.Value, [ref]$v)) { $at.Value = $v }
+            }
+        }
+        foreach ($tn in @($node.ChildNodes)) {
+            $v = $null; if ($tn.NodeType -eq 'Text' -and $tn.Value.Trim() -match '[A-Za-z]' -and $Script:De.TryGetValue(($tn.Value -replace '\s+', ' ').Trim(), [ref]$v)) { $tn.Value = $v }
+        }
+    }
+}
+Convert-XamlLanguage $Xaml
 $reader = New-Object System.Xml.XmlNodeReader $Xaml
 $Win = [Windows.Markup.XamlReader]::Load($reader)
 $UI = @{}
 $Xaml.SelectNodes('//*[@*[local-name()="Name"]]') | ForEach-Object { $n = $_.Attributes | Where-Object { $_.LocalName -eq 'Name' } | Select-Object -First 1; if ($n) { $UI[$n.Value] = $Win.FindName($n.Value) } }
 
 # =============================================================================
-#  Farben (inkl. Kontrastdesign) und Hilfsfunktionen
+#  Colors (incl. high contrast) and helper functions
 # =============================================================================
 $HighContrast = [System.Windows.SystemParameters]::HighContrast
 if ($HighContrast) {
@@ -655,16 +714,16 @@ if ($HighContrast) {
     foreach ($k in $map.Keys) { $Win.Resources[$k] = $map[$k] }
 }
 function B([string]$key) { $Win.Resources[$key] }
-# Farbe als Ressourcen-Verweis setzen (nicht als feste Farbe), damit sich das Element beim Umschalten Hell/Dunkel mitaendert
+# Set a color as a resource reference (not as a fixed color) so that the element follows a light/dark switch
 function Set-Brush($el, [string]$prop, [string]$key) {
     $f = $el.GetType().GetField($prop + 'Property', [Reflection.BindingFlags]'Public, Static, FlattenHierarchy')
     if ($f) { $el.SetResourceReference($f.GetValue($null), $key) } else { $el.$prop = $Win.Resources[$key] }
 }
 
 # =============================================================================
-#  Hell / Dunkel
-#  Die Farben sind Pinsel in den Fenster-Ressourcen. Beim Umschalten werden sie ersetzt; XAML (DynamicResource) und
-#  Code (Set-Brush = SetResourceReference) verweisen nur auf den Schluessel und passen sich dadurch sofort an.
+#  Light / dark
+#  The colors are brushes in the window resources. Switching replaces them; XAML (DynamicResource) and
+#  code (Set-Brush = SetResourceReference) only refer to the key and therefore adapt immediately.
 # =============================================================================
 $ThemeDark = @{
     Bg = '#0B1220'; CardBg = '#141C2B'; Accent = '#2563EB'; AccentDark = '#1D4ED8'; OnAccent = '#FFFFFF'; Link = '#7AAAFB'
@@ -674,7 +733,6 @@ $ThemeDark = @{
     InfoBg = '#172554'; InfoFg = '#BFDBFE'; TipBg = '#111F3A'; TipLine = '#1E3A8A'; LogBg = '#020617'; LogFg = '#CBD5E1'; Track = '#243042'
 }
 $ThemeLight = @{}
-$AppSettingsFile = Join-Path $env:APPDATA 'WinTidy\app-einstellungen.json'
 $Script:ThemeMode = 'Auto'; $Script:IsDark = $false
 if (-not $HighContrast) {
     foreach ($k in @($ThemeDark.Keys)) {
@@ -694,7 +752,7 @@ using System;
 using System.Runtime.InteropServices;
 public static class WtDwm {
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
-    // Titelleiste dunkel/hell (Windows 10 20H1+: Attribut 20, aeltere Builds: 19)
+    // Title bar dark/light (Windows 10 20H1+: attribute 20, older builds: 19)
     public static void SetDark(IntPtr hwnd, bool dark) { int v = dark ? 1 : 0; if (DwmSetWindowAttribute(hwnd, 20, ref v, 4) != 0) { DwmSetWindowAttribute(hwnd, 19, ref v, 4); } }
 }
 '@ -ErrorAction Stop
@@ -707,10 +765,10 @@ function Apply-Theme {
     if ($HighContrast) { return }
     $dark = switch ($Script:ThemeMode) { 'Dunkel' { $true } 'Hell' { $false } default { Get-WindowsDarkMode } }
     $pal = if ($dark) { $ThemeDark } else { $ThemeLight }
-    # Pinsel ersetzen (WPF friert Pinsel ein, die von Styles/Vorlagen benutzt werden - aendern ginge dann nicht).
-    # Alle Verweise (DynamicResource im XAML, Set-Brush im Code) holen sich den neuen Pinsel automatisch.
+    # Replace brushes (WPF freezes brushes used by styles/templates - changing them would not work).
+    # All references (DynamicResource in XAML, Set-Brush in code) pick up the new brush automatically.
     foreach ($k in @($pal.Keys)) {
-        # .psobject.BaseObject: New-Object liefert ein PowerShell-Huellobjekt - WPF braucht den echten Brush
+        # .psobject.BaseObject: New-Object returns a PowerShell wrapper object - WPF needs the real brush
         try { $nb = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($pal[$k])); $nb.Freeze(); $Win.Resources[$k] = $nb.psobject.BaseObject } catch { }
     }
     $Script:IsDark = $dark
@@ -719,15 +777,15 @@ function Apply-Theme {
 function Save-AppSettings {
     try {
         $d = Split-Path $AppSettingsFile; if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
-        [ordered]@{ Darstellung = $Script:ThemeMode } | ConvertTo-Json | Out-File -LiteralPath $AppSettingsFile -Encoding utf8
+        [ordered]@{ Darstellung = $Script:ThemeMode; Sprache = $Script:LangMode } | ConvertTo-Json | Out-File -LiteralPath $AppSettingsFile -Encoding utf8
     } catch { }
 }
 try { if (Test-Path -LiteralPath $AppSettingsFile) { $st = Get-Content -LiteralPath $AppSettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json; if ([string]$st.Darstellung -in 'Auto', 'Hell', 'Dunkel') { $Script:ThemeMode = [string]$st.Darstellung } } } catch { }
 Apply-Theme
-# Einstellungen: Auswahl anzeigen und umschalten
+# Settings: show the selection and switch
 if ($HighContrast) {
     foreach ($n in 'OptThemeAuto', 'OptThemeLight', 'OptThemeDark') { $UI[$n].IsEnabled = $false }
-    $UI.ThemeNote.Text = 'Windows nutzt gerade ein Kontrastdesign – WinTidy übernimmt dessen Farben.'
+    $UI.ThemeNote.Text = (T 'Windows currently uses a contrast theme – WinTidy follows its colors.')
 } else {
     $UI[$(switch ($Script:ThemeMode) { 'Hell' { 'OptThemeLight' } 'Dunkel' { 'OptThemeDark' } default { 'OptThemeAuto' } })].IsChecked = $true
 }
@@ -735,8 +793,14 @@ foreach ($pair in @(@('OptThemeAuto', 'Auto'), @('OptThemeLight', 'Hell'), @('Op
     $UI[$pair[0]].Tag = $pair[1]
     $UI[$pair[0]].Add_Checked({ param($s, $e) if ($Script:ThemeMode -ne [string]$s.Tag) { $Script:ThemeMode = [string]$s.Tag; Apply-Theme; Save-AppSettings } })
 }
+# Language: save the choice; it takes effect after a restart of the app
+$UI[$(switch ($Script:LangMode) { 'de' { 'OptLangDe' } 'en' { 'OptLangEn' } default { 'OptLangAuto' } })].IsChecked = $true
+foreach ($pair in @(@('OptLangAuto', 'Auto'), @('OptLangDe', 'de'), @('OptLangEn', 'en'))) {
+    $UI[$pair[0]].Tag = $pair[1]
+    $UI[$pair[0]].Add_Checked({ param($s, $e) if ($Script:LangMode -ne [string]$s.Tag) { $Script:LangMode = [string]$s.Tag; Save-AppSettings; Restart-ForLanguage } })
+}
 $Win.Add_SourceInitialized({ Set-TitleBarDark $Script:IsDark })
-# "Wie Windows": Wechsel in Windows auch bei offenem Fenster uebernehmen
+# "Same as Windows": also follow a change in Windows while the window is open
 $ThemeTimer = New-Object System.Windows.Threading.DispatcherTimer
 $ThemeTimer.Interval = [TimeSpan]::FromSeconds(5)
 $ThemeTimer.Add_Tick({ try { if ($Script:ThemeMode -eq 'Auto' -and (Get-WindowsDarkMode) -ne $Script:IsDark) { Apply-Theme } } catch { } })
@@ -756,9 +820,9 @@ function Set-A11y($el, [string]$name, [string]$help = '') {
 function Show-Msg([string]$text, [string]$buttons = 'OK', [string]$icon = 'Information') { [System.Windows.MessageBox]::Show($Win, $text, 'WinTidy', $buttons, $icon) }
 
 # =============================================================================
-#  Hintergrund-Runspace mit der WinTidy-Engine
+#  Background runspace with the WinTidy engine
 # =============================================================================
-$Sync = [hashtable]::Synchronized(@{ Log = New-Object System.Collections.Concurrent.ConcurrentQueue[string]; Progress = $null; Selection = $null; Expert = $false; Deep = $false; RestorePoint = $true; OhneRP = $false; Lauf = $null })
+$Sync = [hashtable]::Synchronized(@{ Log = New-Object System.Collections.Concurrent.ConcurrentQueue[string]; Progress = $null; Selection = $null; Expert = $false; Deep = $false; RestorePoint = $true; OhneRP = $false; Lauf = $null; Lang = $Script:Lang })
 $Control = [hashtable]::Synchronized(@{ Cancel = $false })
 $RS = [runspacefactory]::CreateRunspace()
 $RS.ApartmentState = 'STA'; $RS.ThreadOptions = 'ReuseThread'; $RS.Open()
@@ -768,15 +832,15 @@ $RS.SessionStateProxy.SetVariable('EnginePath', $EnginePath)
 $State = @{ CoolTest = $null; Op = $null; Findings = @(); InfoFindings = @(); Snapshot = $null; ScanTime = $null; History = $null; LastResult = $null; Busy = $false; Version = ''; DataDir = $null; Context = $null; Locked = ''; EngineOk = $false; ForceClose = $false; Narrow = $false; Retry = $null; ErrReport = '' }
 $Stopwatch = New-Object System.Diagnostics.Stopwatch
 
-# Kind: init | scan | fix | undo | silent (Hintergrund, ohne Fortschrittsseite)
-function Start-Op([string]$Kind, [string]$Script, [scriptblock]$OnDone, [string]$Title = 'Einen Moment …', [string]$Hint = '', [switch]$Silent) {
+# Kind: init | scan | fix | undo | silent (background, without progress page)
+function Start-Op([string]$Kind, [string]$Script, [scriptblock]$OnDone, [string]$Title = (T 'One moment …'), [string]$Hint = '', [switch]$Silent) {
     if ($State.Busy) { return $false }
     $State.Busy = $true
     $Control.Cancel = $false
     $Sync.Progress = $null
     if (-not $Silent) {
         Set-Nav $false
-        $UI.BusyTitle.Text = $Title; $UI.BusyStep.Text = 'Einen Moment bitte.'; $UI.BusyBar.IsIndeterminate = $true; $UI.BusyBar.Value = 0; $UI.BusyLog.Clear()
+        $UI.BusyTitle.Text = $Title; $UI.BusyStep.Text = (T 'One moment please.'); $UI.BusyBar.IsIndeterminate = $true; $UI.BusyBar.Value = 0; $UI.BusyLog.Clear()
         $UI.BusyHint.Text = $Hint
         $UI.BusyCount.Text = ''; $UI.BusyElapsed.Text = ''; $UI.BusyUninstall.Visibility = 'Collapsed'
         $UI.BtnCancel.IsEnabled = ($Kind -eq 'scan' -or $Kind -eq 'fix' -or $Kind -eq 'cooltest'); $UI.BtnCancel.Visibility = $(if ($UI.BtnCancel.IsEnabled) { 'Visible' } else { 'Collapsed' }); $UI.CancelNote.Text = ''
@@ -801,13 +865,13 @@ $Timer.Add_Tick({
         if ($op -and -not $op.Silent) {
             $p = $Sync.Progress
             if ($p) {
-                if ($p.N -gt 0) { $UI.BusyBar.IsIndeterminate = $false; $UI.BusyBar.Value = [math]::Min(97, 100 * $p.I / $p.N); $UI.BusyCount.Text = $(if ($op.Kind -eq 'cooltest' -or $p.Id -eq 'CORE' -or $p.I -lt 1) { '' } else { 'Schritt {0} von {1}' -f $p.I, $p.N }) }
+                if ($p.N -gt 0) { $UI.BusyBar.IsIndeterminate = $false; $UI.BusyBar.Value = [math]::Min(97, 100 * $p.I / $p.N); $UI.BusyCount.Text = $(if ($op.Kind -eq 'cooltest' -or $p.Id -eq 'CORE' -or $p.I -lt 1) { '' } else { (T 'Step {0} of {1}') -f $p.I, $p.N }) }
                 if ($p.Text) { $UI.BusyStep.Text = [string]$p.Text }
-                $uninst = ($p.Id -eq 'APP-SIDEBYSIDE') -or ($op.Kind -eq 'fix' -and [string]$p.Text -match '(?i)deinstall|doppelt installiert')
+                $uninst = ($p.Id -eq 'APP-SIDEBYSIDE') -or ($op.Kind -eq 'fix' -and [string]$p.Text -match '(?i)deinstall|doppelt installiert|uninstall|installed twice')
                 $UI.BusyUninstall.Visibility = $(if ($uninst) { 'Visible' } else { 'Collapsed' })
             }
             $e = $Stopwatch.Elapsed
-            $UI.BusyElapsed.Text = ('Läuft seit {0}:{1:00} Min.' -f [int][math]::Floor($e.TotalMinutes), $e.Seconds)
+            $UI.BusyElapsed.Text = ((T 'Running for {0}:{1:00} min.') -f [int][math]::Floor($e.TotalMinutes), $e.Seconds)
         }
         if ($op -and $op.Handle.IsCompleted) { Complete-Op $op }
         elseif (-not $op) { $Timer.Stop() }
@@ -830,21 +894,21 @@ function Complete-Op($op) {
     try { & $op.OnDone $r $err $cancelled }
     catch {
         Write-ErrLog "OnDone($($op.Kind)): $($_.Exception.Message) $($_.ScriptStackTrace)"
-        Show-ErrorPage 'Die Ergebnisse konnten nicht angezeigt werden' 'Die Arbeit selbst ist abgeschlossen. Was passiert ist, steht im Verlauf und im ausführlichen Bericht.' $_.Exception.Message $null
+        Show-ErrorPage (T 'The results could not be displayed') (T 'The work itself is finished. What happened is shown in the history and in the detailed report.') $_.Exception.Message $null
     }
-    # Verlauf nachladen, wenn er waehrend des Vorgangs angefordert wurde
+    # Reload the history if it was requested during the operation
     if ($State.HistoryPending -and -not $State.Busy -and $UI.PageHistory.Visibility -eq 'Visible') { $State.HistoryPending = $false; try { Load-History } catch { } }
 }
 
 # =============================================================================
-#  Navigation, Seiten, Layout
+#  Navigation, pages, layout
 # =============================================================================
 $Pages = 'PageHome', 'PageRecs', 'PageBusy', 'PageResult', 'PageError', 'PageHistory', 'PageSettings', 'PageHelp'
 $NavItems = 'NavHome', 'NavRecs', 'NavHistory', 'NavSettings', 'NavHelp'
-# Laeuft gerade etwas (auch unsichtbar, z. B. Laden)? Dann Bescheid sagen statt still nichts zu tun.
-# Dateien (Bericht) ueber den Explorer oeffnen, damit der Browser nicht mit Adminrechten startet
+# Is something running right now (also invisible, e.g. loading)? Then say so instead of silently doing nothing.
+# Open files (report) via Explorer so that the browser does not start with admin rights
 function Open-AsUser([string]$Path) { try { Start-Process -FilePath (Join-Path $env:windir 'explorer.exe') -ArgumentList ('"{0}"' -f $Path) } catch { try { Start-Process -FilePath $Path } catch { } } }
-function Test-Busy { if ($State.Busy) { Show-Msg 'WinTidy ist gerade noch beschäftigt. Bitte versuch es in ein paar Sekunden noch einmal.' | Out-Null; return $true }; return $false }
+function Test-Busy { if ($State.Busy) { Show-Msg (T 'WinTidy is still busy. Please try again in a few seconds.') | Out-Null; return $true }; return $false }
 function Show-Page([string]$name) { foreach ($p in $Pages) { $UI[$p].Visibility = $(if ($p -eq $name) { 'Visible' } else { 'Collapsed' }) } }
 function Set-Nav([bool]$on) { foreach ($n in $NavItems) { $UI[$n].IsEnabled = $on } }
 function Clear-NavSelection { foreach ($n in $NavItems) { $UI[$n].IsChecked = $false } }
@@ -863,7 +927,7 @@ function Set-Narrow([bool]$narrow) {
     $UI.NavDock.Margin = $(if ($narrow) { '10,22,10,16' } else { '16,22,16,16' })
     foreach ($n in 'BrandText', 'NavT1', 'NavT2', 'NavT3', 'NavT4', 'NavT5', 'VersionText') { $UI[$n].Visibility = $vis }
 }
-# Fenster nie groesser als die Arbeitsflaeche (Laptops mit Skalierung)
+# Window never larger than the work area (laptops with scaling)
 $Win.Add_SourceInitialized({
     try {
         $wa = [System.Windows.SystemParameters]::WorkArea
@@ -876,7 +940,7 @@ $Win.Add_SourceInitialized({
 $Win.Add_SizeChanged({ Set-Narrow ($Win.ActualWidth -lt 1000) })
 
 # =============================================================================
-#  Hinweis-Banner (Adminrechte, Firmen-PC, Akku, Neustart, anderes Konto)
+#  Notice banners (admin rights, company PC, battery, restart, other account)
 # =============================================================================
 function Restart-Elevated {
     if ($State.Busy) { return }
@@ -884,7 +948,16 @@ function Restart-Elevated {
         Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate', '-Restarted') -ErrorAction Stop
         $State.ForceClose = $true
         $Win.Close()
-    } catch { Show-Msg 'Windows hat keine Administratorrechte erteilt. WinTidy läuft weiter eingeschränkt (nur Prüfen).' | Out-Null }
+    } catch { Show-Msg (T 'Windows did not grant administrator rights. WinTidy keeps running with limited functions (check only).') | Out-Null }
+}
+function Restart-ForLanguage {
+    if ($State.Busy -or $State.Op) { return }
+    if ((Show-Msg (T 'Restart WinTidy now so that the new language takes effect?') 'YesNo' 'Question') -ne 'Yes') { return }
+    try {
+        Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate', '-Restarted') -ErrorAction Stop
+        $State.ForceClose = $true
+        $Win.Close()
+    } catch { }
 }
 function Add-Banner([string]$text, [string]$kind = 'warn', [string]$button = '', [scriptblock]$action = $null) {
     $b = New-Object System.Windows.Controls.Border; $b.CornerRadius = 10; $b.Padding = '14,10'; $b.Margin = '0,0,0,8'; $b.BorderThickness = 1; Set-Brush $b 'BorderBrush' 'Line'
@@ -905,32 +978,32 @@ function Add-Banner([string]$text, [string]$kind = 'warn', [string]$button = '',
 function Update-Banners {
     $UI.BannerPanel.Children.Clear()
     if (-not $IsAdmin) {
-        $txt = 'WinTidy läuft ohne Administratorrechte. Prüfen geht nur eingeschränkt, Änderungen sind nicht möglich.'
-        if ($NetDriveProblem) { $txt += ' WinTidy liegt auf einem Netzlaufwerk – bitte zuerst auf diesen PC kopieren.'; Add-Banner $txt }
-        else { Add-Banner $txt 'warn' 'Mit Administratorrechten neu starten' { Restart-Elevated } }
+        $txt = (T 'WinTidy runs without administrator rights. Checking is only possible to a limited extent, changes are not possible.')
+        if ($NetDriveProblem) { $txt += (T ' WinTidy is on a network drive – please copy it to this PC first.'); Add-Banner $txt }
+        else { Add-Banner $txt 'warn' (T 'Restart with administrator rights') { Restart-Elevated } }
     }
     $c = $State.Context
     if ($c) {
         $hs = @($c.Hinweise | Where-Object { $_ })
         if ($hs.Count) { foreach ($h in $hs) { Add-Banner ([string]$h) } }
         else {
-            if ($c.Server) { Add-Banner 'Windows Server erkannt: WinTidy prüft hier nur, Änderungen sind gesperrt.' }
-            if ($c.Verwaltet) { Add-Banner 'Firmen-PC erkannt: WinTidy zeigt nur sichere Aufräum-Punkte. Bei Fragen wende dich bitte an deine IT-Abteilung.' }
-            if ($c.AnderesKonto) { Add-Banner ("WinTidy läuft unter dem Konto {0}, angemeldet ist aber {1}. Programme im Autostart, temporäre Dateien und Apps von {1} werden deshalb nicht geprüft." -f $c.ProzessBenutzer, $c.SitzungsBenutzer) }
-            if ($c.NeustartAusstehend) { Add-Banner 'Windows möchte nach Updates neu starten. Am besten startest du den PC zuerst neu und prüfst danach – dann sind die Ergebnisse genauer.' 'info' }
-            if ($c.Akku) { Add-Banner 'Der PC läuft gerade auf Akku. Bitte das Netzteil anschließen – lange Schritte werden sonst übersprungen.' 'info' }
+            if ($c.Server) { Add-Banner (T 'Windows Server detected: WinTidy only checks here, changes are blocked.') }
+            if ($c.Verwaltet) { Add-Banner (T 'Company PC detected: WinTidy only shows safe cleanup points. If you have questions, please contact your IT department.') }
+            if ($c.AnderesKonto) { Add-Banner ((T 'WinTidy runs under the account {0}, but {1} is signed in. Startup programs, temporary files and apps of {1} are therefore not checked.') -f $c.ProzessBenutzer, $c.SitzungsBenutzer) }
+            if ($c.NeustartAusstehend) { Add-Banner (T 'Windows wants to restart after updates. Best restart the PC first and check afterwards – then the results are more accurate.') 'info' }
+            if ($c.Akku) { Add-Banner (T 'The PC is currently running on battery. Please connect the power adapter – otherwise long steps are skipped.') 'info' }
         }
-        $State.Locked = $(if ($c.Server) { 'Auf Windows Server prüft WinTidy nur. Änderungen sind gesperrt.' } else { '' })
+        $State.Locked = $(if ($c.Server) { (T 'On Windows Server WinTidy only checks. Changes are blocked.') } else { '' })
     }
-    # Drohender Datenverlust gehoert ganz nach oben, nicht in die Karte fuer Fachleute
+    # An imminent data loss belongs at the very top, not in the card for experts
     $krit = @(@($State.Findings) + @($State.InfoFindings) | Where-Object { $_ -and "$($_.Id)" -eq 'HW-COOLING' } | ForEach-Object { @($_.Items) } | Where-Object { (Get-ItemLevel $_) -eq 'krit' -and (Get-ItemArea $_) -in 'Laufwerke', 'Speicher' -and (Get-ItemRating $_) -ne 'moment' })
-    if ($krit.Count) { Add-Banner ('Wichtig: Dein PC meldet ein Problem mit einem Laufwerk oder dem Arbeitsspeicher. Sichere deine Fotos und Dokumente bald auf einen USB-Stick oder in die Cloud und lass den PC prüfen. (' + [string]$krit[0].Label + ')') 'bad' }
+    if ($krit.Count) { Add-Banner ((T 'Important: your PC reports a problem with a drive or the RAM. Back up your photos and documents to a USB stick or the cloud soon and have the PC checked. (') + [string]$krit[0].Label + ')') 'bad' }
     $UI.BannerPanel.Visibility = $(if ($UI.BannerPanel.Children.Count) { 'Visible' } else { 'Collapsed' })
 }
 $UI.BtnElevate2.Add_Click({ Restart-Elevated })
 
 # =============================================================================
-#  Übersicht
+#  Overview
 # =============================================================================
 function Set-Score([int]$score) {
     $UI.ScoreText.Text = "$score"
@@ -946,10 +1019,10 @@ function Set-Score([int]$score) {
     [void]$fig.Segments.Add($arc)
     $geo = New-Object System.Windows.Media.PathGeometry; [void]$geo.Figures.Add($fig)
     $UI.ScoreArc.Data = $geo
-    if ($score -ge 85) { $UI.ScoreHeadline.Text = 'Dein PC ist in gutem Zustand' }
-    elseif ($score -ge 65) { $UI.ScoreHeadline.Text = 'Dein PC läuft – es gibt aber einiges zu verbessern' }
-    else { $UI.ScoreHeadline.Text = 'Dein PC braucht etwas Pflege' }
-    Set-A11y $UI.ScoreText ("Gesundheitswert {0} von 100" -f $score)
+    if ($score -ge 85) { $UI.ScoreHeadline.Text = (T 'Your PC is in good shape') }
+    elseif ($score -ge 65) { $UI.ScoreHeadline.Text = (T 'Your PC runs – but there is a lot to improve') }
+    else { $UI.ScoreHeadline.Text = (T 'Your PC needs some care') }
+    Set-A11y $UI.ScoreText ((T 'Health score {0} of 100') -f $score)
 }
 function New-Kpi([string]$label, [string]$value, [string]$note) {
     $b = New-Object System.Windows.Controls.Border; $b.Style = $Win.FindResource('Card'); $b.Margin = '7,0,7,0'; $b.Padding = '18,16'
@@ -963,13 +1036,17 @@ function Get-Group($f) {
     if ("$($f.Id)" -like 'HW-*') { return 'Hardware' }
     switch ("$($f.Kategorie)") { 'Speicher' { 'Aufräumen' } 'Autostart' { 'Schneller starten' } 'Aufgaben' { 'Aufräumen' } 'Dienste' { 'Aufräumen' } 'Programme' { 'Programme' } 'System' { 'Windows pflegen' } 'Sicherheit' { 'Sicherheit' } 'Hardware' { 'Hardware' } default { 'Hinweise' } }
 }
+# Group names are internal keys (German, also used for sorting) - this is the display text
+function Get-GroupText([string]$g) {
+    switch ($g) { 'Aufräumen' { T 'Clean up' } 'Schneller starten' { T 'Start faster' } 'Programme' { T 'Programs' } 'Windows pflegen' { T 'Maintain Windows' } 'Sicherheit' { T 'Security' } 'Hardware' { T 'Hardware' } 'Hinweise' { T 'Notes' } default { $g } }
+}
 function Get-ItemLevel($it) {
     foreach ($v in @($it.Stufe, $it.Raw.Stufe, $it.Raw.Data.Stufe)) { if ($v) { return ([string]$v).ToLower() } }
     return ''
 }
 function Get-ItemArea($it) { foreach ($v in @($it.Bereich, $it.Raw.Data.Bereich)) { if ($v) { return [string]$v } }; return '' }
 function Get-ItemRating($it) { foreach ($v in @($it.Wertung, $it.Raw.Data.Wertung)) { if ($v) { return [string]$v } }; return '' }
-# Info-Befunde aus dem letzten Snapshot (wenn seit dem App-Start noch nicht geprueft wurde)
+# Info findings from the last snapshot (if no check was run since the app started)
 function Get-InfoFromSnapshot($s) {
     @(foreach ($b in @($s.Befunde)) {
         if ($b -and $b.Risiko -eq 'Info') {
@@ -989,16 +1066,16 @@ function Add-InfoRow($panel, $f, $it, [switch]$NoTitle) {
     elseif ($lvl -match 'warn') { $code = 0xE7BA; $col = 'Warn' }
     elseif ("$($f.Id)" -eq 'SEC-CHECKS') { $code = 0xE72E; $col = 'Warn' }
     elseif ("$($f.Id)" -eq 'EVT-HEALTH') { $code = 0xE7BA; $col = 'Warn' }
-    elseif ((Get-Group $f) -eq 'Hardware') { $code = 0xE82F }   # Gluehbirne = Hinweis (E950 sah aus wie ein leeres Kaestchen)
+    elseif ((Get-Group $f) -eq 'Hardware') { $code = 0xE82F }   # light bulb = hint (E950 looked like an empty checkbox)
     $ic = New-Icon $code $col 16; $ic.Margin = '0,2,12,0'
     [System.Windows.Controls.DockPanel]::SetDock($ic, 'Left')
     $tx = New-Object System.Windows.Controls.TextBlock; $tx.TextWrapping = 'Wrap'; Set-Brush $tx 'Foreground' 'Text'
-    $vor = if ($lvl -match 'krit') { 'Wichtig: ' } else { '' }
+    $vor = if ($lvl -match 'krit') { (T 'Important: ') } else { '' }
     if (-not $NoTitle) { $r1 = New-Object System.Windows.Documents.Run ([string]$f.Titel + ': '); $r1.FontWeight = 'SemiBold'; $tx.Inlines.Add($r1) }
     if ($vor) { $r0 = New-Object System.Windows.Documents.Run $vor; $r0.FontWeight = 'SemiBold'; $tx.Inlines.Add($r0) }
     $tx.Inlines.Add((New-Object System.Windows.Documents.Run ([string]$it.Label)))
     [void]$row.Children.Add($ic); [void]$row.Children.Add($tx)
-    Set-A11y $row ("{0}{1}: {2}" -f $(if ($lvl -match 'krit') { 'Kritisch, ' } elseif ($lvl -match 'warn') { 'Warnung, ' } elseif ($lvl -eq 'ok') { 'In Ordnung, ' } else { '' }), $f.Titel, $it.Label)
+    Set-A11y $row ("{0}{1}: {2}" -f $(if ($lvl -match 'krit') { (T 'Critical, ') } elseif ($lvl -match 'warn') { (T 'Warning, ') } elseif ($lvl -eq 'ok') { (T 'OK, ') } else { '' }), $f.Titel, $it.Label)
     [void]$panel.Children.Add($row)
 }
 function Update-Home {
@@ -1009,13 +1086,13 @@ function Update-Home {
         $fix = @($State.Findings | Where-Object Fixbar)
         $cnt = [int](@($fix | ForEach-Object { @($_.Items).Count }) | Measure-Object -Sum).Sum
         if ($State.Findings.Count -or $State.ScanTime) {
-            $UI.ScoreDetail.Text = $(if ($cnt) { "WinTidy hat $(Plural $cnt 'mögliche Verbesserung' 'mögliche Verbesserungen') gefunden. Sieh sie dir in Ruhe an – nichts passiert ohne deine Zustimmung." } elseif ([int]$s.Score.Wert -ge 85) { 'Alles in Ordnung – es gibt nichts aufzuräumen.' } else { 'WinTidy kann hier nichts automatisch verbessern. Unter "Warum nicht 100?" und "Gut zu wissen" steht, was sonst noch hilft.' })
+            $UI.ScoreDetail.Text = $(if ($cnt) { (T 'WinTidy found {0}. Take your time to look at them – nothing happens without your consent.' (Plural $cnt (T 'possible improvement') (T 'possible improvements'))) } elseif ([int]$s.Score.Wert -ge 85) { (T 'Everything is fine – there is nothing to clean up.') } else { (T 'WinTidy cannot improve anything automatically here. "Why not 100?" and "Good to know" show what else helps.') })
         }
-        $UI.BtnScan.Content = '_Erneut prüfen'
+        $UI.BtnScan.Content = (T '_Check again')
         $UI.BtnToRecs.Visibility = $(if ($cnt) { 'Visible' } else { 'Collapsed' })
-        $UI.LastScanText.Text = 'Zuletzt geprüft: ' + ([datetime]$s.Zeit).ToString('dd.MM.yyyy, HH:mm') + ' Uhr'
+        $UI.LastScanText.Text = (T 'Last checked: ') + ([datetime]$s.Zeit).ToString((T 'yyyy-MM-dd, HH:mm')) + ''
         $UI.ScoreLimited.Visibility = $(if ($s.Admin -eq $false) { 'Visible' } else { 'Collapsed' })
-        # Warum nicht 100?
+        # Why not 100?
         $UI.ScoreWhyList.Children.Clear()
         foreach ($z in @($s.Score.Abzuege)) {
             if (-not $z) { continue }
@@ -1025,18 +1102,18 @@ function Update-Home {
             [void]$UI.ScoreWhyList.Children.Add($row)
         }
         $UI.ScoreWhy.Visibility = $(if ($UI.ScoreWhyList.Children.Count) { 'Visible' } else { 'Collapsed' })
-        # Kennzahlen
+        # Key figures
         $sys = @($s.Laufwerke) | Where-Object { $_.LW -eq $env:SystemDrive.Substring(0, 1) } | Select-Object -First 1
         $boot = if ($s.Boot.Mittel5) { '{0:N0} s' -f ($s.Boot.Mittel5 / 1000) } else { '–' }
-        $bootNote = if ($s.Boot.Mittel5) { if ($s.Boot.Mittel5 -gt 60000) { 'eher langsam' } elseif ($s.Boot.Mittel5 -gt 35000) { 'im Mittelfeld' } else { 'schnell' } } else { 'wird mit Adminrechten gemessen' }
-        [void]$UI.KpiGrid.Children.Add((New-Kpi 'Windows-Start (Durchschnitt)' $boot $bootNote))
-        [void]$UI.KpiGrid.Children.Add((New-Kpi "Frei auf Laufwerk $($env:SystemDrive)" $(if ($sys) { '{0:N0} GB' -f [double]$sys.FreiGB } else { '–' }) $(if ($sys) { '{0:N0} % von {1:N0} GB' -f [double]$sys.FreiProzent, [double]$sys.GroesseGB } else { '' })))
-        [void]$UI.KpiGrid.Children.Add((New-Kpi 'Programme im Autostart' ('{0:N0}' -f [double]$s.Autostart.Aktiv) $(if ($s.Autostart.Aktiv -gt 10) { 'viele – bremst den Start' } else { 'in Ordnung' })))
+        $bootNote = if ($s.Boot.Mittel5) { if ($s.Boot.Mittel5 -gt 60000) { (T 'rather slow') } elseif ($s.Boot.Mittel5 -gt 35000) { (T 'average') } else { (T 'fast') } } else { (T 'measured with admin rights') }
+        [void]$UI.KpiGrid.Children.Add((New-Kpi (T 'Windows boot (average)') $boot $bootNote))
+        [void]$UI.KpiGrid.Children.Add((New-Kpi (T 'Free on drive {0}' $env:SystemDrive) $(if ($sys) { '{0:N0} GB' -f [double]$sys.FreiGB } else { '–' }) $(if ($sys) { (T '{0:N0} % of {1:N0} GB') -f [double]$sys.FreiProzent, [double]$sys.GroesseGB } else { '' })))
+        [void]$UI.KpiGrid.Children.Add((New-Kpi (T 'Startup programs') ('{0:N0}' -f [double]$s.Autostart.Aktiv) $(if ($s.Autostart.Aktiv -gt 10) { (T 'many – slows down the boot') } else { (T 'fine') })))
         $bytes = ($fix | Measure-Object Bytes -Sum).Sum
-        [void]$UI.KpiGrid.Children.Add((New-Kpi 'Möglicher Platzgewinn' $(if ($bytes) { Fmt-Bytes $bytes } else { '–' }) $(if ($fix.Count) { 'geschätzt' } else { 'nach der Prüfung' })))
-        $UI.HomeSub.Text = 'Hier siehst du auf einen Blick, wie es deinem PC geht.'
+        [void]$UI.KpiGrid.Children.Add((New-Kpi (T 'Possible space gain') $(if ($bytes) { Fmt-Bytes $bytes } else { '–' }) $(if ($fix.Count) { (T 'estimated') } else { (T 'after the check') })))
+        $UI.HomeSub.Text = (T 'See at a glance how your PC is doing.')
     }
-    # Hinweise und Hardware (nicht automatisch loesbar)
+    # Hints and hardware (cannot be fixed automatically)
     $UI.HintsPanel.Children.Clear(); $UI.HwPanel.Children.Clear()
     $info = @($State.Findings | Where-Object { -not $_.Fixbar })
     if (-not $info.Count) { $info = @($State.InfoFindings) }
@@ -1047,80 +1124,80 @@ function Update-Home {
         } else { foreach ($it in @($f.Items)) { if ($it) { Add-InfoRow $UI.HintsPanel $f $it } } }
     }
     $schlimm = @($info | Where-Object { (Get-Group $_) -eq 'Hardware' } | ForEach-Object { @($_.Items) } | Where-Object { (Get-ItemLevel $_) -in 'warn', 'krit' })
-    if ($schlimm.Count) { $wt = New-Tb 'Was tun? Bei Warnungen zur Kühlung hilft meist, den PC von innen von Staub zu befreien und die Lüfter prüfen zu lassen. WinTidy selbst ändert an der Hardware nichts.' 'Muted' 13; $wt.Margin = '0,6,0,4'; $wt.TextWrapping = 'Wrap'; [void]$UI.HwPanel.Children.Add($wt) }
+    if ($schlimm.Count) { $wt = New-Tb (T 'What to do? For cooling warnings, cleaning the dust out of the PC and having the fans checked usually helps. WinTidy itself changes nothing on the hardware.') 'Muted' 13; $wt.Margin = '0,6,0,4'; $wt.TextWrapping = 'Wrap'; [void]$UI.HwPanel.Children.Add($wt) }
     $UI.HintsCard.Visibility = $(if ($UI.HintsPanel.Children.Count) { 'Visible' } else { 'Collapsed' })
     Show-CoolTest
     $UI.HwCard.Visibility = $(if ($UI.HwPanel.Children.Count -or $State.CoolTest) { 'Visible' } else { 'Collapsed' })
 }
 
-# Kuehlungstest: Ergebnis unter den Hardware-Punkten anzeigen
+# Cooling test: show the result below the hardware points
 function Show-CoolTest {
     $UI.CoolTestPanel.Children.Clear()
     $r = $State.CoolTest
     if (-not $r) { return }
-    $zeit = ''; try { $zeit = ([datetime]$r.Zeit).ToString('dd.MM.yyyy, HH:mm') + ' Uhr' } catch { }
-    $f = [pscustomobject]@{ Id = 'HW-COOLTEST'; Kategorie = 'Hardware'; Titel = ('Kühlungstest ' + $zeit).Trim() }
+    $zeit = ''; try { $zeit = ([datetime]$r.Zeit).ToString((T 'yyyy-MM-dd, HH:mm')) + '' } catch { }
+    $f = [pscustomobject]@{ Id = 'HW-COOLTEST'; Kategorie = 'Hardware'; Titel = ((T 'Cooling test ') + $zeit).Trim() }
     foreach ($p in @($r.Punkte | Where-Object { $_ })) { Add-InfoRow $UI.CoolTestPanel $f ([pscustomobject]@{ Label = [string]$p.Text; Stufe = [string]$p.Stufe }) }
 }
 function Start-CoolTest {
     if (Test-Busy) { return }
     $c = $State.Context
-    if ($c -and $c.Akku) { Show-Msg 'Der Kühlungstest geht nur mit angeschlossenem Netzteil. Bitte das Netzteil anschließen und es dann noch einmal versuchen.' | Out-Null; return }
-    if ($c -and ($c.Server -or $c.VM)) { Show-Msg 'Auf Servern und in virtuellen Maschinen ist der Kühlungstest nicht sinnvoll und deshalb gesperrt.' | Out-Null; return }
-    $q = "Kühlungstest starten?`n`nWinTidy belastet etwa eine Minute lang alle Prozessorkerne voll und beobachtet dabei Leistung, Temperatur und – falls ein Programm wie LibreHardwareMonitor läuft – die Lüfter.`n`nDie Lüfter werden hörbar lauter. Der PC bleibt bedienbar, wird aber langsamer. Am besten andere Programme vorher schließen. Am Ende ändert WinTidy nichts.$(if ($c -and $c.Laptop) { "`n`nBei Laptops: Lüftungsschlitze frei lassen – nicht auf Schoß, Bett oder Sofa." })`n`nJetzt starten?"
+    if ($c -and $c.Akku) { Show-Msg (T 'The cooling test only works with the power adapter connected. Please connect the power adapter and try again.') | Out-Null; return }
+    if ($c -and ($c.Server -or $c.VM)) { Show-Msg (T 'On servers and in virtual machines the cooling test makes no sense and is therefore blocked.') | Out-Null; return }
+    $q = (T "Start the cooling test?`n`nWinTidy fully loads all processor cores for about one minute and watches performance, temperature and – if a program such as LibreHardwareMonitor is running – the fans.`n`nThe fans get audibly louder. The PC stays usable but gets slower. Best close other programs beforehand. WinTidy changes nothing in the end.{0}`n`nStart now?" ($(if ($c -and $c.Laptop) { "`n`n" + (T 'For laptops: keep the vents clear – not on your lap, a bed or a sofa.') })))
     if ((Show-Msg $q 'YesNo' 'Question') -ne 'Yes') { return }
     [void](Start-Op 'cooltest' @'
 if (Get-Command Invoke-GuiCoolingTest -ErrorAction SilentlyContinue) { Invoke-GuiCoolingTest 0 { param($i, $n, $t, $id) $Sync.Progress = @{ I = $i; N = $n; Text = $t; Id = $id } } $Control }
-else { [pscustomobject]@{ Status = 'FEHLT'; Meldung = 'Diese WinTidy-Version kann den Kühlungstest noch nicht.'; Punkte = @() } }
+else { [pscustomobject]@{ Status = 'FEHLT'; Meldung = 'This WinTidy version cannot run the cooling test yet.'; Punkte = @() } }
 '@ {
         param($r, $err, $cancelled)
         Go 'NavHome'
-        if (-not $r) { Show-ErrorPage 'Der Kühlungstest hat nicht geklappt' 'Am PC wurde nichts verändert. Du kannst den Test später noch einmal starten.' $err $null; return }
+        if (-not $r) { Show-ErrorPage (T 'The cooling test did not work') (T 'Nothing was changed on the PC. You can start the test again later.') $err $null; return }
         if ($r.Status -in 'AKKU', 'FEHLT', 'GESPERRT') { Show-Msg ([string]$r.Meldung) | Out-Null; return }
         $pts = @($r.Punkte | Where-Object { $_ })
-        if ($r.Status -eq 'ABGEBROCHEN') { Show-Msg 'Der Kühlungstest wurde abgebrochen. Es wurde nichts gespeichert und nichts verändert.' | Out-Null; return }
+        if ($r.Status -eq 'ABGEBROCHEN') { Show-Msg (T 'The cooling test was cancelled. Nothing was saved and nothing was changed.') | Out-Null; return }
         $State.CoolTest = $r
         Update-Home
-        $kopf = if ($r.Status -eq 'GESTOPPT') { 'Der Test wurde zur Sicherheit vorzeitig beendet.' }
-                elseif ($pts | Where-Object { $_.Stufe -eq 'krit' }) { 'Die Kühlung reicht unter Last nicht aus. Lass den PC reinigen und die Lüfter prüfen.' }
-                elseif ($pts | Where-Object { $_.Stufe -eq 'warn' }) { 'Die Kühlung kommt an ihre Grenze. Lass den PC bei Gelegenheit reinigen und die Lüfter prüfen.' }
-                elseif (-not ($pts | Where-Object { $_.Stufe -eq 'ok' })) { 'Der Test ist durchgelaufen. Auf diesem PC ließ sich aber nicht genug messen, um die Kühlung sicher zu bewerten.' }
-                else { 'Die Kühlung hält unter Last mit.' }
+        $kopf = if ($r.Status -eq 'GESTOPPT') { (T 'The test was stopped early for safety.') }
+                elseif ($pts | Where-Object { $_.Stufe -eq 'krit' }) { (T 'The cooling is not sufficient under load. Have the PC cleaned and the fans checked.') }
+                elseif ($pts | Where-Object { $_.Stufe -eq 'warn' }) { (T 'The cooling is reaching its limit. Have the PC cleaned and the fans checked when you get the chance.') }
+                elseif (-not ($pts | Where-Object { $_.Stufe -eq 'ok' })) { (T 'The test ran through. But this PC did not report enough to judge the cooling reliably.') }
+                else { (T 'The cooling keeps up under load.') }
         $lines = @($pts | ForEach-Object { $sym = switch ($_.Stufe) { 'ok' { '✓' } 'warn' { '!' } 'krit' { '✗' } default { '•' } }; '{0}  {1}' -f $sym, $_.Text })
         $icon = if ($pts | Where-Object { $_.Stufe -eq 'krit' }) { 'Warning' } else { 'Information' }
-        Show-Msg ($kopf + "`n`n" + ($lines -join "`n") + "`n`nDas Ergebnis steht auch auf der Übersicht unter Hardware.") 'OK' $icon | Out-Null
-    } 'Kühlungstest läuft …' 'Die Lüfter werden jetzt lauter – das ist gewollt. Der Test dauert etwa eine Minute.')
+        Show-Msg ($kopf + "`n`n" + ($lines -join "`n") + (T "`n`nThe result is also shown on the overview under Hardware.")) 'OK' $icon | Out-Null
+    } (T 'Cooling test running …') (T 'The fans get louder now – that is intended. The test takes about one minute.'))
 }
 $UI.BtnCoolTest.Add_Click({ Start-CoolTest })
 
 # =============================================================================
-#  Empfehlungen
+#  Recommendations
 # =============================================================================
 $GroupOrder = @('Aufräumen', 'Schneller starten', 'Windows pflegen', 'Programme', 'Sicherheit', 'Hinweise', 'Hardware')
 $RiskUi = @{
-    'Niedrig' = @('Sicher', 'LowBg', 'LowFg')
-    'Mittel'  = @('Kurz prüfen', 'MidBg', 'MidFg')
-    'Hoch'    = @('Nur für Profis', 'HighBg', 'HighFg')
+    'Niedrig' = @((T 'Safe'), 'LowBg', 'LowFg')
+    'Mittel'  = @((T 'Check briefly'), 'MidBg', 'MidFg')
+    'Hoch'    = @((T 'Experts only'), 'HighBg', 'HighFg')
 }
 $EndgueltigIds = 'CLN-TEMP', 'CLN-WINCLEAN', 'CLN-WINOLD', 'CLN-WINSXS', 'CLN-DUMPS', 'CLN-RECYCLE', 'CLN-RECYCLE-ORPHAN', 'CLN-DRIVERSTORE', 'CLN-ORPHANDIR', 'APP-SIDEBYSIDE', 'APP-BLOAT', 'APP-UPDATES', 'SYS-GHOST'
 function Test-Endgueltig($f) { if ($null -ne $f.Endgueltig) { return [bool]$f.Endgueltig }; return ($EndgueltigIds -contains $f.Id) }
 function Test-Umkehrbar($f) { if ($null -ne $f.Umkehrbar) { return [bool]$f.Umkehrbar }; return ("$($f.Id)" -match '^(STA|TSK|SVC)-|^SYS-GAMEDVR$') }
 function Test-Einzeln($f) { return ([bool]$f.Einzeln -or $f.Risiko -eq 'Hoch') }
 function Get-CleanWhy([string]$t) {
-    # Kommandozeilen-Hinweise (-Rule, -Yes, -Deep) gehoeren nicht in die App
+    # Command line hints (-Rule, -Yes, -Deep) do not belong in the app
     (($t -split '(?<=[\.\!\?])\s+') | Where-Object { $_ -notmatch '(^|\s|\()-(Rule|Yes|Deep|IncludeMedium|NoRestorePoint)\b' }) -join ' '
 }
 
 function Update-SelSummary {
     $n = 0; $b = 0
     foreach ($f in $State.Findings) { foreach ($it in @($f.Items)) { if ($it.Selected) { $n++; $b += $it.Bytes } } }
-    $UI.SelSummary.Text = if ($n) { ('{0} ausgewählt' -f (Plural $n 'Änderung' 'Änderungen')) + $(if ($b) { " · ca. $(Fmt-Bytes $b) Platz" } else { '' }) } else { 'Nichts ausgewählt' }
+    $UI.SelSummary.Text = if ($n) { ((T '{0} selected') -f (Plural $n (T 'change') (T 'changes'))) + $(if ($b) { (T ' · approx. {0} of space' (Fmt-Bytes $b)) } else { '' }) } else { (T 'Nothing selected') }
     $UI.BtnApply.IsEnabled = ($n -gt 0 -and $IsAdmin -and -not $State.Locked)
     $UI.BtnElevate2.Visibility = $(if ($IsAdmin -or $NetDriveProblem) { 'Collapsed' } else { 'Visible' })
-    $UI.SelNote.Text = if (-not $IsAdmin) { 'Zum Umsetzen braucht WinTidy Administratorrechte.' } elseif ($State.Locked) { $State.Locked } elseif ($UI.OptRestorePoint.IsChecked) { 'Vorher wird ein Wiederherstellungspunkt angelegt. Jede Änderung wird protokolliert.' } else { 'Achtung: Es wird kein Wiederherstellungspunkt angelegt (siehe Einstellungen).' }
+    $UI.SelNote.Text = if (-not $IsAdmin) { (T 'WinTidy needs administrator rights to apply changes.') } elseif ($State.Locked) { $State.Locked } elseif ($UI.OptRestorePoint.IsChecked) { (T 'A restore point is created first. Every change is logged.') } else { (T 'Caution: no restore point is created (see Settings).') }
     $total = [int](@($State.Findings | Where-Object Fixbar | ForEach-Object { @($_.Items).Count }) | Measure-Object -Sum).Sum
     if ($total) { $UI.RecsBadge.Visibility = 'Visible'; $UI.RecsBadgeText.Text = "$total" } else { $UI.RecsBadge.Visibility = 'Collapsed' }
-    Set-A11y $UI.BtnApply ('Ausgewählte umsetzen: ' + $UI.SelSummary.Text)
+    Set-A11y $UI.BtnApply ((T 'Apply selected: ') + $UI.SelSummary.Text)
 }
 function New-Badge([string]$risk) {
     $m = $RiskUi[$risk]; if (-not $m) { return $null }
@@ -1138,7 +1215,7 @@ function New-RecCard($f) {
     $cb = $null
     if (-not $einzeln) {
         $cb = New-Object System.Windows.Controls.CheckBox; $cb.VerticalAlignment = 'Center'; $cb.Margin = '0,0,12,0'; $cb.IsThreeState = $false; $cb.IsEnabled = (-not $gesperrt)
-        Set-A11y $cb ("{0} – {1} – alle Einträge auswählen" -f $f.Titel, $riskName) ([string]$f.Text)
+        Set-A11y $cb ((T '{0} – {1} – select all entries') -f $f.Titel, $riskName) ([string]$f.Text)
         [System.Windows.Controls.DockPanel]::SetDock($cb, 'Left'); [void]$head.Children.Add($cb)
     } else {
         $sp0 = New-Object System.Windows.Controls.Border; $sp0.Width = 28; [System.Windows.Controls.DockPanel]::SetDock($sp0, 'Left'); [void]$head.Children.Add($sp0)
@@ -1148,26 +1225,26 @@ function New-RecCard($f) {
     $titleRow = New-Object System.Windows.Controls.WrapPanel
     $tt = New-Tb ([string]$f.Titel) 'Ink' 16 'SemiBold'; $tt.VerticalAlignment = 'Center'
     [void]$titleRow.Children.Add($tt); $bd = New-Badge $f.Risiko; if ($bd) { [void]$titleRow.Children.Add($bd) }
-    if ($einzeln) { $en = New-Tb 'jeden Eintrag einzeln auswählen' 'Muted' 12; $en.Margin = '10,0,0,0'; $en.VerticalAlignment = 'Center'; [void]$titleRow.Children.Add($en) }
+    if ($einzeln) { $en = New-Tb (T 'select each entry individually') 'Muted' 12; $en.Margin = '10,0,0,0'; $en.VerticalAlignment = 'Center'; [void]$titleRow.Children.Add($en) }
     [void]$head.Children.Add($titleRow)
     [void]$outer.Children.Add($head)
     $desc = New-Tb ([string]$f.Text) 'Text2' 14; $desc.Margin = '32,6,0,0'; [void]$outer.Children.Add($desc)
-    # Betroffen: bis zu drei Namen direkt nennen
+    # Affected: name up to three items directly
     $labels = @(@($f.Items) | ForEach-Object { $l = [string]$_.Label; if ($l.Length -gt 60) { $l.Substring(0, 57) + '…' } else { $l } })
     if ($labels.Count) {
         $more = $labels.Count - 3
-        $nm = New-Tb ('Betrifft: ' + (($labels | Select-Object -First 3) -join ', ') + $(if ($more -gt 0) { " und $more weitere" } else { '' })) 'Muted' 12; $nm.Margin = '32,4,0,0'
+        $nm = New-Tb ((T 'Affects: ') + (($labels | Select-Object -First 3) -join ', ') + $(if ($more -gt 0) { (T ' and {0} more' $more) } else { '' })) 'Muted' 12; $nm.Margin = '32,4,0,0'
         [void]$outer.Children.Add($nm)
     }
-    if ($f.Dauer) { $du = New-Tb ('Dauer: ' + [string]$f.Dauer) 'Muted' 12; $du.Margin = '32,2,0,0'; [void]$outer.Children.Add($du) }
+    if ($f.Dauer) { $du = New-Tb ((T 'Duration: ') + [string]$f.Dauer) 'Muted' 12; $du.Margin = '32,2,0,0'; [void]$outer.Children.Add($du) }
     if ($gesperrt) {
         $gp = New-Object System.Windows.Controls.DockPanel; $gp.Margin = '32,6,0,0'
         $gi = New-Icon 0xE72E 'Warn' 13; $gi.Margin = '0,1,8,0'; [System.Windows.Controls.DockPanel]::SetDock($gi, 'Left')
-        [void]$gp.Children.Add($gi); [void]$gp.Children.Add((New-Tb ('Gerade nicht möglich: ' + $gesperrt) 'Warn' 13))
+        [void]$gp.Children.Add($gi); [void]$gp.Children.Add((New-Tb ((T 'Not possible right now: ') + $gesperrt) 'Warn' 13))
         [void]$outer.Children.Add($gp)
     }
     $exp = New-Object System.Windows.Controls.Expander; $exp.Margin = '28,8,0,0'
-    $exp.Header = $(if ($einzeln) { "Einträge auswählen ($(@($f.Items).Count))" } elseif (@($f.Items).Count -eq 1) { 'Details' } else { "Details ($(@($f.Items).Count) Einträge)" })
+    $exp.Header = $(if ($einzeln) { (T 'Select entries ({0})' (@($f.Items).Count)) } elseif (@($f.Items).Count -eq 1) { 'Details' } else { (T 'Details ({0} entries)' (@($f.Items).Count)) })
     $exp.IsExpanded = ($einzeln -or $f.Risiko -eq 'Mittel')
     $list = New-Object System.Windows.Controls.StackPanel; $list.Margin = '4,8,0,0'
     $itemBoxes = New-Object System.Collections.ArrayList
@@ -1184,7 +1261,7 @@ function New-RecCard($f) {
     }
     if ($expert -and $f.Warum) {
         $w = Get-CleanWhy ([string]$f.Warum)
-        if ($w) { $why = New-Tb "Technisch: $w" 'Muted' 12; $why.Margin = '0,8,0,0'; [void]$list.Children.Add($why) }
+        if ($w) { $why = New-Tb (T 'Technical: {0}' $w) 'Muted' 12; $why.Margin = '0,8,0,0'; [void]$list.Children.Add($why) }
     }
     $exp.Content = $list
     $list.Tag = $cb
@@ -1201,11 +1278,11 @@ function Build-Recs {
     $UI.RecsPanel.Children.Clear()
     $fix = @($State.Findings | Where-Object Fixbar)
     $cnt = [int](@($fix | ForEach-Object { @($_.Items).Count }) | Measure-Object -Sum).Sum
-    $UI.RecsSub.Text = if ($cnt) { "WinTidy hat $(Plural $cnt 'mögliche Verbesserung' 'mögliche Verbesserungen') gefunden. Empfohlene Punkte sind schon ausgewählt. Mit Häkchen markierte Punkte werden umgesetzt." } elseif ($State.ScanTime) { 'Keine automatisch lösbaren Punkte gefunden.' } else { 'Noch keine Prüfung durchgeführt. Starte sie in der Übersicht.' }
+    $UI.RecsSub.Text = if ($cnt) { (T 'WinTidy found {0}. Recommended points are already selected. Points with a check mark are applied.' (Plural $cnt (T 'possible improvement') (T 'possible improvements'))) } elseif ($State.ScanTime) { (T 'No points found that can be fixed automatically.') } else { (T 'No check carried out yet. Start it on the overview.') }
     $UI.RecsLegend.Visibility = $(if ($cnt) { 'Visible' } else { 'Collapsed' })
     $groups = @($fix | Group-Object { Get-Group $_ } | Sort-Object @{ Expression = { $i = [array]::IndexOf($GroupOrder, $_.Name); if ($i -lt 0) { 99 } else { $i } } })
     foreach ($g in $groups) {
-        $h = New-Tb $g.Name 'Muted' 13 'SemiBold'; $h.Margin = '2,10,0,8'
+        $h = New-Tb (Get-GroupText $g.Name) 'Muted' 13 'SemiBold'; $h.Margin = '2,10,0,8'
         [void]$UI.RecsPanel.Children.Add($h)
         foreach ($f in ($g.Group | Sort-Object @{ Expression = { switch ($_.Risiko) { 'Niedrig' { 1 } 'Mittel' { 2 } default { 3 } } } }, @{ Expression = { $_.Bytes }; Descending = $true })) {
             [void]$UI.RecsPanel.Children.Add((New-RecCard $f))
@@ -1229,7 +1306,7 @@ $UI.BtnSelNone.Add_Click({ Set-AllSelection 'none' })
 $UI.BtnToRecs.Add_Click({ Go 'NavRecs' })
 
 # =============================================================================
-#  Fehlerseite (freundlich, mit "Erneut versuchen" und "Fehlerbericht kopieren")
+#  Error page (friendly, with "Try again" and "Copy error report")
 # =============================================================================
 function Show-ErrorPage([string]$title, [string]$text, [string]$detail, [scriptblock]$retry) {
     $UI.ErrTitle.Text = $title; $UI.ErrText.Text = $text; $UI.ErrDetail.Text = [string]$detail; $UI.ErrCopied.Visibility = 'Collapsed'
@@ -1238,41 +1315,41 @@ function Show-ErrorPage([string]$title, [string]$text, [string]$detail, [scriptb
     $tail = ''
     try { if (Test-Path -LiteralPath $ErrLog) { $tail = (Get-Content -LiteralPath $ErrLog -Tail 40 -Encoding UTF8) -join "`r`n" } } catch { }
     $os = ''; try { $os = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop | ForEach-Object { "$($_.Caption) $($_.Version)" }) } catch { }
-    $State.ErrReport = "WinTidy-Fehlerbericht`r`nVersion: $($State.Version)`r`nZeit: $(Get-Date -Format 's')`r`nSystem: $os`r`nAdmin: $IsAdmin`r`n`r`n$title`r`n$detail`r`n`r`n--- Protokoll ($ErrLog) ---`r`n$tail"
+    $State.ErrReport = "WinTidy error report`r`nVersion: $($State.Version)`r`nTime: $(Get-Date -Format 's')`r`nSystem: $os`r`nAdmin: $IsAdmin`r`n`r`n$title`r`n$detail`r`n`r`n--- Log ($ErrLog) ---`r`n$tail"
     Clear-NavSelection
     Show-Page 'PageError'
 }
 $UI.BtnErrRetry.Add_Click({ $r = $State.Retry; if ($r) { & $r } })
-$UI.BtnErrCopy.Add_Click({ try { [System.Windows.Clipboard]::SetText($State.ErrReport); $UI.ErrCopied.Visibility = 'Visible' } catch { Show-Msg "Kopieren nicht möglich. Die Fehlerdatei liegt hier:`n$ErrLog" | Out-Null } })
+$UI.BtnErrCopy.Add_Click({ try { [System.Windows.Clipboard]::SetText($State.ErrReport); $UI.ErrCopied.Visibility = 'Visible' } catch { Show-Msg (T "Copying is not possible. The error file is here:`n{0}" $ErrLog) | Out-Null } })
 $UI.BtnErrHome.Add_Click({ Go 'NavHome' })
 
 # =============================================================================
-#  Prüfen
+#  Check
 # =============================================================================
 function Start-Scan {
     if (Test-Busy) { return }
     $Sync.Expert = [bool]$UI.OptExpert.IsChecked; $Sync.Deep = [bool]$UI.OptDeep.IsChecked
-    $hint = if ($Sync.Deep) { 'Es wird nichts verändert. Die gründliche Prüfung kann bis zu 30 Minuten dauern.' } else { 'Es wird nichts verändert. Das dauert meist ein bis drei Minuten. Am besten nebenbei nicht viel arbeiten – sonst werden die Messwerte ungenauer.' }
+    $hint = if ($Sync.Deep) { (T 'Nothing is changed. The thorough check can take up to 30 minutes.') } else { (T 'Nothing is changed. This usually takes one to three minutes. Best not to do much else in the meantime – otherwise the measurements get less accurate.') }
     [void](Start-Op 'scan' @'
 $r = Invoke-GuiScan $Sync.Expert $Sync.Deep { param($i, $n, $t) $Sync.Progress = @{ I = $i; N = $n; Text = $t } }
 $r
 '@ {
         param($r, $err, $cancelled)
-        if ($cancelled) { Go 'NavHome'; $UI.LastScanText.Text = 'Prüfung abgebrochen. An deinem PC wurde nichts verändert.'; return }
+        if ($cancelled) { Go 'NavHome'; $UI.LastScanText.Text = (T 'Check cancelled. Nothing was changed on your PC.'); return }
         if (-not $r -or -not $r.Snapshot) {
             Write-ErrLog "Scan: $err"
-            Show-ErrorPage 'Die Prüfung konnte nicht abgeschlossen werden' 'An deinem PC wurde nichts verändert. Versuch es bitte noch einmal. Wenn es wieder passiert, kopiere den Fehlerbericht und schick ihn an die Person, die dir WinTidy gegeben hat.' $err { Start-Scan }
+            Show-ErrorPage (T 'The check could not be completed') (T 'Nothing was changed on your PC. Please try again. If it happens again, copy the error report and send it to the person who gave you WinTidy.') $err { Start-Scan }
             return
         }
         $State.Findings = @($r.Findings); $State.Snapshot = $r.Snapshot; $State.ScanTime = Get-Date; $State.InfoFindings = @()
         if ($r.Context) { $State.Context = $r.Context; Update-Banners }
         Update-Home; Build-Recs; Go 'NavHome'
-    } 'Prüfe deinen PC …' $hint)
+    } (T 'Checking your PC …') $hint)
 }
 $UI.BtnScan.Add_Click({ Start-Scan })
 
 # =============================================================================
-#  Umsetzen
+#  Apply
 # =============================================================================
 function Get-SelectedJobs {
     $jobs = @()
@@ -1291,28 +1368,28 @@ $r
         param($r, $err, $cancelled)
         if (-not $r) {
             Write-ErrLog "Fix: $err"
-            Show-ErrorPage 'Beim Umsetzen ist etwas schiefgelaufen' 'WinTidy hat die Arbeit abgebrochen. Was bis dahin erledigt wurde, steht im Verlauf und im Bericht. Falls danach etwas nicht mehr funktioniert: unter Verlauf die Optimierung rückgängig machen oder die Windows-Systemwiederherstellung nutzen.' $err $null
+            Show-ErrorPage (T 'Something went wrong while applying') (T 'WinTidy stopped the work. What was done up to then is shown in the history and in the report. If something no longer works afterwards: undo the optimization under History or use Windows System Restore.') $err $null
             return
         }
         if ($r.Status -eq 'RP-FEHLT') {
-            $q = "Windows konnte keinen Wiederherstellungspunkt anlegen.`n" + $(if ($r.Meldung) { "(Grund: $($r.Meldung))`n" } else { '' }) + "`nAn deinen Dateien und Einstellungen wurde bisher nichts verändert." + $(if ($r.ComputerschutzEingeschaltet) { " Nur die Windows-Systemwiederherstellung für Laufwerk $env:SystemDrive hat WinTidy dafür eingeschaltet." } else { '' }) + "`n`nOhne Wiederherstellungspunkt lassen sich Änderungen an Treibern und Windows schwerer zurücknehmen. Autostart, Aufgaben und Dienste kann WinTidy trotzdem selbst zurücksetzen.`n`nTrotzdem fortfahren? (Empfohlen: Nein)"
+            $q = (T "Windows could not create a restore point.`n") + $(if ($r.Meldung) { (T "(Reason: {0})`n" ($r.Meldung)) } else { '' }) + (T "`nNothing has been changed in your files and settings so far.") + $(if ($r.ComputerschutzEingeschaltet) { (T ' WinTidy only switched on Windows System Restore for drive {0} for this.' $env:SystemDrive) } else { '' }) + (T "`n`nWithout a restore point, changes to drivers and Windows are harder to undo. WinTidy can still reset startup, tasks and services itself.`n`nContinue anyway? (Recommended: No)")
             if ([System.Windows.MessageBox]::Show($Win, $q, 'WinTidy', 'YesNo', 'Warning', 'No') -eq 'Yes') { Start-Fix $true } else { Go 'NavRecs' }
             return
         }
-        if ($r.Status -eq 'GESPERRT') { Show-Msg ("Änderungen sind auf diesem PC gesperrt.`n`n" + [string]$r.Meldung) | Out-Null; Go 'NavRecs'; return }
+        if ($r.Status -eq 'GESPERRT') { Show-Msg ((T "Changes are blocked on this PC.`n`n") + [string]$r.Meldung) | Out-Null; Go 'NavRecs'; return }
         $State.LastResult = $r; if ($r.Nachher) { $State.Snapshot = $r.Nachher }
         Show-Result $r
-    } 'Optimiere deinen PC …' 'Bitte den PC eingeschaltet lassen. Abbrechen ist jederzeit möglich – WinTidy hört dann nach dem aktuellen Schritt auf.')
+    } (T 'Optimizing your PC …') (T 'Please keep the PC switched on. You can cancel at any time – WinTidy then stops after the current step.'))
 }
 $UI.BtnApply.Add_Click({
     if (Test-Busy) { return }
     $jobs = @(Get-SelectedJobs)
     $n = $jobs.Count
     if (-not $n) { return }
-    # Veraltete Pruefung?
+    # Outdated check?
     if ($State.ScanTime -and ((Get-Date) - $State.ScanTime).TotalMinutes -gt 30) {
         $min = [int]((Get-Date) - $State.ScanTime).TotalMinutes
-        $a = Show-Msg ("Die Prüfung ist schon {0} Minuten alt. Seitdem kann sich etwas geändert haben.`n`nJa = erst neu prüfen (empfohlen)`nNein = mit der alten Prüfung fortfahren" -f $min) 'YesNoCancel' 'Question'
+        $a = Show-Msg ((T "The check is already {0} minutes old. Something may have changed since then.`n`nYes = check again first (recommended)`nNo = continue with the old check") -f $min) 'YesNoCancel' 'Question'
         if ($a -eq 'Yes') { Start-Scan; return }
         if ($a -ne 'No') { return }
     }
@@ -1321,24 +1398,24 @@ $UI.BtnApply.Add_Click({
     $einz = @($jobs | Where-Object { Test-Einzeln $_.F })
     $dauer = @($jobs | Where-Object { $_.F.Dauer } | ForEach-Object { [string]$_.F.Dauer } | Select-Object -Unique)
     $uninst = [bool]($jobs | Where-Object { $_.F.Id -eq 'APP-SIDEBYSIDE' })
-    $msg = $(if ($n -eq 1) { "Es wird 1 Änderung umgesetzt.`n" } else { "Es werden $n Änderungen umgesetzt.`n" })
-    if ($nUm) { $msg += "  • $nUm davon kann WinTidy später rückgängig machen.`n" }
-    if ($nEnd) { $msg += "  • $nEnd $(if ($nEnd -eq 1) { 'davon ist' } else { 'davon sind' }) endgültig (Dateien löschen, Programme oder Apps entfernen).`n" }
-    if ($einz.Count) { $msg += "`nEinzeln ausgewählt (Nur für Profis):`n" + ((@($einz | Select-Object -First 10) | ForEach-Object { '  – ' + [string]$_.It.Label }) -join "`n") + $(if ($einz.Count -gt 10) { "`n  … und $($einz.Count - 10) weitere" } else { '' }) + "`n" }
-    if ($dauer.Count) { $msg += "`nEinige Schritte dauern länger ($($dauer -join ', ')). Bitte den PC so lange eingeschaltet lassen.`n" }
-    if ($UI.OptRestorePoint.IsChecked) { $msg += "`nVorher legt WinTidy einen Wiederherstellungspunkt an. Damit lassen sich Einstellungen, Treiber und Systemdateien zurücksetzen. Gelöschte Dateien und entfernte Programme kommen damit nicht zurück.`n" }
-    else { $msg += "`nACHTUNG: Es wird KEIN Wiederherstellungspunkt angelegt.`n" }
-    if ($uninst) { $msg += "`nFür doppelt installierte Programme öffnet sich jeweils das Deinstallationsprogramm. Es kann hinter dem WinTidy-Fenster liegen.`n" }
-    if ($jobs | Where-Object { $_.F.Id -eq 'APP-UPDATES' }) { $msg += "`nBitte vorher alle Programme schließen und speichern – Updates können offene Programme beenden.`n" }
-    $msg += "`nJetzt starten?"
+    $msg = $(if ($n -eq 1) { (T "1 change will be applied.`n") } else { (T "{0} changes will be applied.`n" $n) })
+    if ($nUm) { $msg += (T "  • WinTidy can undo {0} of them later.`n" $nUm) }
+    if ($nEnd) { $msg += (T "  • {0} {1} permanent (deleting files, removing programs or apps).`n" $nEnd ($(if ($nEnd -eq 1) { T 'of them is' } else { T 'of them are' }))) }
+    if ($einz.Count) { $msg += (T "`nSelected individually (Experts only):`n") + ((@($einz | Select-Object -First 10) | ForEach-Object { '  – ' + [string]$_.It.Label }) -join "`n") + $(if ($einz.Count -gt 10) { (T "`n  … and {0} more" ($einz.Count - 10)) } else { '' }) + "`n" }
+    if ($dauer.Count) { $msg += (T "`nSome steps take longer ({0}). Please keep the PC switched on until then.`n" ($dauer -join ', ')) }
+    if ($UI.OptRestorePoint.IsChecked) { $msg += (T "`nWinTidy creates a restore point first. It can reset settings, drivers and system files. Deleted files and removed programs do not come back with it.`n") }
+    else { $msg += (T "`nCAUTION: NO restore point is created.`n") }
+    if ($uninst) { $msg += (T "`nFor programs installed twice, the uninstaller opens for each one. It may be behind the WinTidy window.`n") }
+    if ($jobs | Where-Object { $_.F.Id -eq 'APP-UPDATES' }) { $msg += (T "`nPlease save and close all programs beforehand – updates can close open programs.`n") }
+    $msg += (T "`nStart now?")
     if ((Show-Msg $msg 'YesNo' 'Question') -ne 'Yes') { return }
     Start-Fix $false
 })
 $UI.BtnCancel.Add_Click({
     $op = $State.Op; if (-not $op) { return }
-    if ($op.Kind -eq 'scan') { $op.Cancelled = $true; $UI.BtnCancel.IsEnabled = $false; $UI.CancelNote.Text = 'Wird abgebrochen …'; try { [void]$op.PS.BeginStop($null, $null) } catch { } }
-    elseif ($op.Kind -eq 'cooltest') { $Control.Cancel = $true; $op.Cancelled = $true; $UI.BtnCancel.IsEnabled = $false; $UI.CancelNote.Text = 'Wird abgebrochen …' }
-    elseif ($op.Kind -eq 'fix') { $Control.Cancel = $true; $op.Cancelled = $true; $UI.BtnCancel.IsEnabled = $false; $UI.CancelNote.Text = 'WinTidy hört nach dem aktuellen Schritt auf. Das kann bei langen Schritten etwas dauern.' }
+    if ($op.Kind -eq 'scan') { $op.Cancelled = $true; $UI.BtnCancel.IsEnabled = $false; $UI.CancelNote.Text = (T 'Cancelling …'); try { [void]$op.PS.BeginStop($null, $null) } catch { } }
+    elseif ($op.Kind -eq 'cooltest') { $Control.Cancel = $true; $op.Cancelled = $true; $UI.BtnCancel.IsEnabled = $false; $UI.CancelNote.Text = (T 'Cancelling …') }
+    elseif ($op.Kind -eq 'fix') { $Control.Cancel = $true; $op.Cancelled = $true; $UI.BtnCancel.IsEnabled = $false; $UI.CancelNote.Text = (T 'WinTidy stops after the current step. With long steps this can take a while.') }
 })
 
 function New-ResultTile([string]$label, $before, $after, [string]$unit, [string]$better, [int]$dec = 0) {
@@ -1348,7 +1425,7 @@ function New-ResultTile([string]$label, $before, $after, [string]$unit, [string]
     $b = New-Object System.Windows.Controls.Border; $b.Style = $Win.FindResource('Card'); $b.Margin = '7,0,7,14'
     $sp = New-Object System.Windows.Controls.StackPanel
     $t2 = New-Tb ((Fmt-Num $after $dec) + ' ' + $unit).Trim() 'Ink' 24 'SemiBold'; $t2.Margin = '0,4,0,2'
-    $t3txt = if ($null -eq $d -or $d -eq 0) { 'vorher {0} {1} · unverändert' -f (Fmt-Num $before $dec), $unit } else { 'vorher {0} {1} · {2}{3} {1}' -f (Fmt-Num $before $dec), $unit, $(if ($d -gt 0) { '+' } else { '' }), (Fmt-Num $d $dec) }
+    $t3txt = if ($null -eq $d -or $d -eq 0) { (T 'before {0} {1} · unchanged') -f (Fmt-Num $before $dec), $unit } else { (T 'before {0} {1} · {2}{3} {1}') -f (Fmt-Num $before $dec), $unit, $(if ($d -gt 0) { '+' } else { '' }), (Fmt-Num $d $dec) }
     $t3 = New-Tb $t3txt $(if ($good) { 'Good' } elseif ($bad) { 'Bad' } else { 'Muted' }) 13
     [void]$sp.Children.Add((New-Tb $label 'Muted' 12)); [void]$sp.Children.Add($t2); [void]$sp.Children.Add($t3); $b.Child = $sp
     Set-A11y $b "$label $($t2.Text), $t3txt"; $b
@@ -1366,74 +1443,74 @@ function Add-ResultGroup([string]$title, [string]$fg, [int]$icon, $rows) {
         if ($d.Meldung -and $d.Status -ne 'OK') { $r3 = New-Object System.Windows.Documents.Run (' – ' + [string]$d.Meldung); Set-Brush $r3 'Foreground' 'Muted'; $t.Inlines.Add($r3) }
         [void]$UI.ResultDetails.Children.Add($t)
     }
-    if (@($rows).Count -gt 100) { [void]$UI.ResultDetails.Children.Add((New-Tb ("… und {0} weitere (siehe Bericht)" -f (@($rows).Count - 100)) 'Muted' 12)) }
+    if (@($rows).Count -gt 100) { [void]$UI.ResultDetails.Children.Add((New-Tb ((T '… and {0} more (see report)') -f (@($rows).Count - 100)) 'Muted' 12)) }
 }
 function Show-Result($r) {
     $fail = [int]$r.Fehler; $ok = [int]$r.OK; $tot = [int]$r.Aktionen
     $abgebrochen = ($r.Status -eq 'ABGEBROCHEN')
     if ($abgebrochen) {
-        $UI.ResultTitle.Text = 'Abgebrochen'
-        $UI.ResultSub.Text = ('Abgebrochen nach {0} von {1} Schritten. Der Rest wurde nicht ausgeführt.' -f $ok, $tot)
+        $UI.ResultTitle.Text = (T 'Cancelled')
+        $UI.ResultSub.Text = ((T 'Cancelled after {0} of {1} steps. The rest was not carried out.') -f $ok, $tot)
         $UI.ResultIcon.Text = [string][char]0xE7BA; Set-Brush $UI.ResultIcon 'Foreground' 'MidFg'; Set-Brush $UI.ResultIconBg 'Background' 'MidBg'
     } elseif ($ok -eq 0 -and -not $fail) {
-        $UI.ResultTitle.Text = 'Nichts umgesetzt'
-        $UI.ResultSub.Text = 'Alle ausgewählten Schritte wurden übersprungen – die Gründe stehen unten.'
+        $UI.ResultTitle.Text = (T 'Nothing applied')
+        $UI.ResultSub.Text = (T 'All selected steps were skipped – the reasons are below.')
         $UI.ResultIcon.Text = [string][char]0xE7BA; Set-Brush $UI.ResultIcon 'Foreground' 'MidFg'; Set-Brush $UI.ResultIconBg 'Background' 'MidBg'
     } elseif ($fail) {
-        $UI.ResultTitle.Text = 'Fertig – einige Punkte konnten nicht umgesetzt werden'
-        $UI.ResultSub.Text = ('{0} von {1} erfolgreich umgesetzt, {2} nicht möglich. Die Gründe stehen unten.' -f $ok, (Plural $tot 'Änderung' 'Änderungen'), $fail)
+        $UI.ResultTitle.Text = (T 'Done – some points could not be applied')
+        $UI.ResultSub.Text = ((T '{0} of {1} applied successfully, {2} not possible. The reasons are below.') -f $ok, (Plural $tot (T 'change') (T 'changes')), $fail)
         $UI.ResultIcon.Text = [string][char]0xE7BA; Set-Brush $UI.ResultIcon 'Foreground' 'MidFg'; Set-Brush $UI.ResultIconBg 'Background' 'MidBg'
     } else {
-        $UI.ResultTitle.Text = 'Fertig!'
-        $UI.ResultSub.Text = ('{0} erfolgreich umgesetzt.' -f (Plural $ok 'Änderung' 'Änderungen'))
+        $UI.ResultTitle.Text = (T 'Done!')
+        $UI.ResultSub.Text = ((T '{0} applied successfully.') -f (Plural $ok (T 'change') (T 'changes')))
         $UI.ResultIcon.Text = [string][char]0xE73E; Set-Brush $UI.ResultIcon 'Foreground' 'Good'; Set-Brush $UI.ResultIconBg 'Background' 'LowBg'
     }
     $notes = @()
-    if ($r.Wiederherstellungspunkt -eq $false) { $notes += 'Es wurde kein Wiederherstellungspunkt angelegt.' }
-    if ($r.ComputerschutzEingeschaltet) { $notes += 'Hinweis: Die Windows-Systemwiederherstellung war ausgeschaltet. WinTidy hat sie für Laufwerk ' + $env:SystemDrive + ' eingeschaltet, damit ein Wiederherstellungspunkt angelegt werden konnte.' }
+    if ($r.Wiederherstellungspunkt -eq $false) { $notes += (T 'No restore point was created.') }
+    if ($r.ComputerschutzEingeschaltet) { $notes += (T 'Note: Windows System Restore was switched off. WinTidy switched it on for drive ') + $env:SystemDrive + (T ' so that a restore point could be created.') }
     $UI.ResultNote.Text = ($notes -join "`n"); $UI.ResultNoteCard.Visibility = $(if ($notes.Count) { 'Visible' } else { 'Collapsed' })
-    # Kacheln
+    # Tiles
     $UI.ResultGrid.Children.Clear()
     $m = @{}; foreach ($x in @($r.Vergleich)) { if ($x) { $m[$x.Kennzahl] = $x } }
     $pick = @(
-        @('Health-Score', 'Gesundheitswert', '', 'higher', 0),
-        @('Aktive Autostarts', 'Programme im Autostart', '', 'lower', 0),
-        @('Treiberpakete', 'Treiberpakete', '', 'lower', 0),
-        @('Geistergeraete', 'Alte Geräte-Einträge', '', 'lower', 0),
-        @('Store-Apps', 'Store-Apps', '', 'lower', 0)
+        @('Health-Score', (T 'Health score'), '', 'higher', 0),
+        @('Aktive Autostarts', (T 'Startup programs'), '', 'lower', 0),
+        @('Treiberpakete', (T 'Driver packages'), '', 'lower', 0),
+        @('Geistergeraete', (T 'Old device entries'), '', 'lower', 0),
+        @('Store-Apps', (T 'Store apps'), '', 'lower', 0)
     )
     $fa = $null; $fb = $null
     if ($r.Vorher -and $r.Nachher) { $fa = (@($r.Vorher.Laufwerke) | Measure-Object FreiGB -Sum).Sum; $fb = (@($r.Nachher.Laufwerke) | Measure-Object FreiGB -Sum).Sum }
     if ($null -ne $fa -and $null -ne $fb) {
-        $t = New-ResultTile 'Freier Speicher (gemessen, alle Laufwerke)' ([math]::Round($fa, 1)) ([math]::Round($fb, 1)) 'GB' 'neutral' 1
+        $t = New-ResultTile (T 'Free space (measured, all drives)') ([math]::Round($fa, 1)) ([math]::Round($fb, 1)) 'GB' 'neutral' 1
         $t.Child.Children[1].Text = ('{0:+0.0;-0.0;0.0} GB' -f ($fb - $fa))
-        $t.Child.Children[2].Text = $(if (($fb - $fa) -lt 0) { 'Der Wiederherstellungspunkt belegt selbst etwas Platz. Der Gewinn zeigt sich oft erst nach einem Neustart.' } elseif ($r.Bytes) { "geschätzt waren $(Fmt-Bytes $r.Bytes) – manches gibt Windows erst nach einem Neustart frei" } else { 'Differenz vorher/nachher' })
+        $t.Child.Children[2].Text = $(if (($fb - $fa) -lt 0) { (T 'The restore point itself takes up some space. The gain often only shows after a restart.') } elseif ($r.Bytes) { (T 'estimate was {0} – Windows only releases some of it after a restart' (Fmt-Bytes $r.Bytes)) } else { (T 'Difference before/after') })
         Set-Brush $t.Child.Children[2] 'Foreground' 'Muted'
         [void]$UI.ResultGrid.Children.Add($t)
     }
     foreach ($p in $pick) { $x = $m[$p[0]]; if ($x) { [void]$UI.ResultGrid.Children.Add((New-ResultTile $p[1] $x.Vorher $x.Nachher $p[2] $p[3] $p[4])) } }
-    # Was genau passiert ist
+    # What exactly happened
     $UI.ResultDetails.Children.Clear()
     $det = @($r.Details | Where-Object { $_ })
     if ($det.Count) {
-        Add-ResultGroup 'Erledigt' 'Good' 0xE73E @($det | Where-Object { $_.Status -eq 'OK' })
-        Add-ResultGroup 'Nicht möglich' 'Bad' 0xE7BA @($det | Where-Object { $_.Status -eq 'Fehler' })
-        Add-ResultGroup 'Übersprungen' 'Muted' 0xE711 @($det | Where-Object { $_.Status -eq 'Uebersprungen' })
-        Add-ResultGroup 'Nicht ausgeführt' 'Muted' 0xE711 @($det | Where-Object { $_.Status -notin 'OK', 'Fehler', 'Uebersprungen' })
-    } else { [void]$UI.ResultDetails.Children.Add((New-Tb 'Die Einzelheiten stehen im ausführlichen Bericht.' 'Muted' 13)) }
-    # Umgesetzte Empfehlungen sind erledigt: nur Hinweise behalten, fuer neue Empfehlungen erneut pruefen
+        Add-ResultGroup (T 'Done') 'Good' 0xE73E @($det | Where-Object { $_.Status -eq 'OK' })
+        Add-ResultGroup (T 'Not possible') 'Bad' 0xE7BA @($det | Where-Object { $_.Status -eq 'Fehler' })
+        Add-ResultGroup (T 'Skipped') 'Muted' 0xE711 @($det | Where-Object { $_.Status -eq 'Uebersprungen' })
+        Add-ResultGroup (T 'Not carried out') 'Muted' 0xE711 @($det | Where-Object { $_.Status -notin 'OK', 'Fehler', 'Uebersprungen' })
+    } else { [void]$UI.ResultDetails.Children.Add((New-Tb (T 'The details are in the detailed report.') 'Muted' 13)) }
+    # Applied recommendations are done: keep only hints, check again for new recommendations
     $State.Findings = @($State.Findings | Where-Object { -not $_.Fixbar }); $State.ScanTime = $null
     Update-Home; Build-Recs
-    $UI.RecsSub.Text = 'Die ausgewählten Empfehlungen wurden bearbeitet. Prüfe erneut, um den aktuellen Stand zu sehen.'
-    $UI.ScoreDetail.Text = 'Optimierung abgeschlossen. Für neue Empfehlungen bitte erneut prüfen.'
+    $UI.RecsSub.Text = (T 'The selected recommendations have been processed. Check again to see the current state.')
+    $UI.ScoreDetail.Text = (T 'Optimization complete. Please check again for new recommendations.')
     Clear-NavSelection; Show-Page 'PageResult'
 }
 $UI.BtnResultHome.Add_Click({ Go 'NavHome' })
-$UI.BtnResultReport.Add_Click({ $p = if ($State.LastResult) { $State.LastResult.Report } else { $null }; if ($p -and (Test-Path -LiteralPath $p)) { Open-AsUser $p } else { Show-Msg 'Der Bericht wurde nicht gefunden.' | Out-Null } })
-$UI.BtnRestartNow.Add_Click({ if ((Show-Msg 'Der PC wird jetzt neu gestartet. Bitte vorher alles speichern.' 'OKCancel' 'Information') -eq 'OK') { Start-Process shutdown.exe -ArgumentList '/r /t 5 /c "WinTidy: Neustart nach Optimierung"' } })
+$UI.BtnResultReport.Add_Click({ $p = if ($State.LastResult) { $State.LastResult.Report } else { $null }; if ($p -and (Test-Path -LiteralPath $p)) { Open-AsUser $p } else { Show-Msg (T 'The report was not found.') | Out-Null } })
+$UI.BtnRestartNow.Add_Click({ if ((Show-Msg (T 'The PC will now restart. Please save everything first.') 'OKCancel' 'Information') -eq 'OK') { Start-Process shutdown.exe -ArgumentList '/r /t 5 /c "WinTidy: restart after optimization"' } })
 
 # =============================================================================
-#  Rückgängig machen
+#  Undo
 # =============================================================================
 function Start-Undo([string]$lauf) {
     if (Test-Busy) { return }
@@ -1445,15 +1522,15 @@ $p = @(); if ($l -and (Get-Command Get-RestorePreview -ErrorAction SilentlyConti
 [pscustomobject]@{ Lauf = $l; Items = $p; HatVorschau = [bool](Get-Command Get-RestorePreview -ErrorAction SilentlyContinue) }
 '@ {
         param($r, $err, $cancelled)
-        if (-not $r -or -not $r.Lauf) { Show-Msg 'Es gibt noch keine Optimierung, die man rückgängig machen könnte.' | Out-Null; return }
-        $zeit = ''; try { $zeit = [datetime]::ParseExact($r.Lauf.Substring(0, 15), 'yyyyMMdd-HHmmss', $null).ToString('dd.MM.yyyy, HH:mm') + ' Uhr' } catch { $zeit = $r.Lauf }
+        if (-not $r -or -not $r.Lauf) { Show-Msg (T 'There is no optimization yet that could be undone.') | Out-Null; return }
+        $zeit = ''; try { $zeit = [datetime]::ParseExact($r.Lauf.Substring(0, 15), 'yyyyMMdd-HHmmss', $null).ToString((T 'yyyy-MM-dd, HH:mm')) + '' } catch { $zeit = $r.Lauf }
         $items = @($r.Items | Where-Object { $_ })
         if ($r.HatVorschau -and -not $items.Count) {
-            if ((Show-Msg "Für die Optimierung vom $zeit gibt es nichts, was WinTidy selbst zurücksetzen kann.`n`nGelöschte Dateien und entfernte Programme kommen nicht zurück. Treiber und Systemänderungen lassen sich mit der Windows-Systemwiederherstellung zurücksetzen.`n`nSystemwiederherstellung jetzt öffnen?" 'YesNo' 'Information') -eq 'Yes') { Open-Rstrui }
+            if ((Show-Msg (T "There is nothing WinTidy can reset itself for the optimization of {0}.`n`nDeleted files and removed programs do not come back. Drivers and system changes can be reset with Windows System Restore.`n`nOpen System Restore now?" $zeit) 'YesNo' 'Information') -eq 'Yes') { Open-Rstrui }
             return
         }
-        $liste = if ($items.Count) { "`n" + ((@($items | Select-Object -First 15) | ForEach-Object { '  – {0}: {1}' -f $_.Art, $_.Objekt }) -join "`n") + $(if ($items.Count -gt 15) { "`n  … und $($items.Count - 15) weitere" } else { '' }) + "`n" } else { "`nAutostart-Einstellungen, geplante Aufgaben und Dienste dieses Laufs.`n" }
-        $q = "Optimierung vom $zeit rückgängig machen?`n`nWinTidy setzt zurück:$liste`nGelöschte Dateien und entfernte Programme kommen nicht zurück – auch nicht über die Systemwiederherstellung.`n`nFortfahren?"
+        $liste = if ($items.Count) { "`n" + ((@($items | Select-Object -First 15) | ForEach-Object { '  – {0}: {1}' -f $_.Art, $_.Objekt }) -join "`n") + $(if ($items.Count -gt 15) { (T "`n  … and {0} more" ($items.Count - 15)) } else { '' }) + "`n" } else { (T "`nStartup settings, scheduled tasks and services of this run.`n") }
+        $q = (T "Undo the optimization of {0}?`n`nWinTidy resets:{1}`nDeleted files and removed programs do not come back – not even via System Restore.`n`nContinue?" $zeit $liste)
         if ((Show-Msg $q 'YesNo' 'Question') -ne 'Yes') { return }
         $Sync.Lauf = $r.Lauf
         [void](Start-Op 'undo' @'
@@ -1461,31 +1538,31 @@ $x = Invoke-GuiRestore $Sync.Lauf
 if ($null -eq $x) { [pscustomobject]@{ Wiederhergestellt = $null; Fehler = 0; Details = @() } } else { $x }
 '@ {
                 param($x, $err2, $c2)
-                if (-not $x) { Show-ErrorPage 'Rückgängig machen hat nicht geklappt' 'WinTidy konnte die Einstellungen nicht zurücksetzen. Du kannst die Windows-Systemwiederherstellung nutzen (Verlauf → Systemwiederherstellung öffnen).' $err2 $null; return }
+                if (-not $x) { Show-ErrorPage (T 'Undo did not work') (T 'WinTidy could not reset the settings. You can use Windows System Restore (History → Open System Restore).') $err2 $null; return }
                 if ($x.Status -eq 'GESPERRT') { Show-Msg ([string]$x.Meldung) 'OK' 'Warning' | Out-Null; return }
-                if ($x.Status -eq 'NICHT-GEFUNDEN') { Show-Msg 'Diese Optimierung wurde nicht gefunden. Es wurde nichts zurückgesetzt.' 'OK' 'Warning' | Out-Null; return }
-                if ($null -eq $x.Wiederhergestellt) { $t = 'Erledigt.' }
+                if ($x.Status -eq 'NICHT-GEFUNDEN') { Show-Msg (T 'This optimization was not found. Nothing was reset.') 'OK' 'Warning' | Out-Null; return }
+                if ($null -eq $x.Wiederhergestellt) { $t = (T 'Done.') }
                 else {
-                    $t = ('{0} wiederhergestellt.' -f (Plural ([int]$x.Wiederhergestellt) 'Einstellung' 'Einstellungen'))
-                    if ([int]$x.Fehler) { $t += ("`n{0} konnten nicht wiederhergestellt werden:`n" -f [int]$x.Fehler) + ((@($x.Details | Where-Object { $_.Status -ne 'OK' } | Select-Object -First 10) | ForEach-Object { '  – {0}: {1}' -f $_.Objekt, $_.Meldung }) -join "`n") }
+                    $t = ((T '{0} restored.') -f (Plural ([int]$x.Wiederhergestellt) (T 'entry') (T 'entries')))
+                    if ([int]$x.Fehler) { $t += ((T "`n{0} could not be restored:`n") -f [int]$x.Fehler) + ((@($x.Details | Where-Object { $_.Status -ne 'OK' } | Select-Object -First 10) | ForEach-Object { '  – {0}: {1}' -f $_.Objekt, $_.Meldung }) -join "`n") }
                 }
-                Show-Msg ($t + "`n`nBitte den PC neu starten, damit alles wirkt.") 'OK' $(if ([int]$x.Fehler) { 'Warning' } else { 'Information' }) | Out-Null
+                Show-Msg ($t + (T "`n`nPlease restart the PC so that everything takes effect.")) 'OK' $(if ([int]$x.Fehler) { 'Warning' } else { 'Information' }) | Out-Null
                 Go 'NavHistory'
-            } 'Mache Änderungen rückgängig …' 'Das dauert meist nur wenige Sekunden.')
-    } 'Lade die Änderungen …' '' -Silent)
+            } (T 'Undoing changes …') (T 'This usually only takes a few seconds.'))
+    } (T 'Loading the changes …') '' -Silent)
 }
-function Open-Rstrui { try { Start-Process -FilePath (Join-Path $env:windir 'System32\rstrui.exe') } catch { Show-Msg 'Die Systemwiederherstellung konnte nicht geöffnet werden.' | Out-Null } }
+function Open-Rstrui { try { Start-Process -FilePath (Join-Path $env:windir 'System32\rstrui.exe') } catch { Show-Msg (T 'System Restore could not be opened.') | Out-Null } }
 $UI.BtnResultUndo.Add_Click({ Start-Undo $(if ($State.LastResult) { [string]$State.LastResult.RunId } else { '' }) })
 $UI.BtnUndo.Add_Click({ Start-Undo '' })
 $UI.BtnRstrui.Add_Click({ Open-Rstrui })
 $UI.BtnHistRstrui.Add_Click({ Open-Rstrui })
 
 # =============================================================================
-#  Verlauf (asynchron)
+#  History (asynchronous)
 # =============================================================================
 function Load-History {
     $UI.HistoryList.Children.Clear()
-    [void]$UI.HistoryList.Children.Add((New-Tb 'Lade den Verlauf …' 'Muted' 13))
+    [void]$UI.HistoryList.Children.Add((New-Tb (T 'Loading the history …') 'Muted' 13))
     $started = Start-Op 'silent' @'
 if (Get-Command Get-HistoryLight -ErrorAction SilentlyContinue) { Get-HistoryLight } else { Get-HistoryData }
 '@ {
@@ -1495,42 +1572,42 @@ if (Get-Command Get-HistoryLight -ErrorAction SilentlyContinue) { Get-HistoryLig
         Draw-Boot $h
         Show-HistoryList $h
     } -Silent
-    if (-not $started) { $State.HistoryPending = $true; $UI.HistoryList.Children.Clear(); [void]$UI.HistoryList.Children.Add((New-Tb 'WinTidy arbeitet gerade. Der Verlauf wird danach angezeigt.' 'Muted' 13)) }
+    if (-not $started) { $State.HistoryPending = $true; $UI.HistoryList.Children.Clear(); [void]$UI.HistoryList.Children.Add((New-Tb (T 'WinTidy is busy right now. The history is shown afterwards.') 'Muted' 13)) }
 }
 function Show-HistoryList($h) {
     $UI.HistoryList.Children.Clear()
-    if (-not $h) { [void]$UI.HistoryList.Children.Add((New-Tb 'Der Verlauf konnte nicht geladen werden.' 'Muted' 13)); return }
+    if (-not $h) { [void]$UI.HistoryList.Children.Add((New-Tb (T 'The history could not be loaded.') 'Muted' 13)); return }
     $entries = @()
     $scores = @(); if ($h.Scores) { $scores = @($h.Scores) } else { $scores = @($h.Snapshots | Where-Object { $_ } | ForEach-Object { [pscustomobject]@{ Zeit = $_.Zeit; Label = $_.Label; Wert = $_.Score.Wert } }) }
-    foreach ($s in $scores) { if ($s.Label -eq 'scan') { $entries += [pscustomobject]@{ Zeit = [datetime]$s.Zeit; Text = ('Prüfung – Gesundheitswert {0}' -f $s.Wert); Icon = 0xE721; Col = 'Accent'; Lauf = $null; Umk = 0 } } }
+    foreach ($s in $scores) { if ($s.Label -eq 'scan') { $entries += [pscustomobject]@{ Zeit = [datetime]$s.Zeit; Text = ((T 'Check – health score {0}') -f $s.Wert); Icon = 0xE721; Col = 'Accent'; Lauf = $null; Umk = 0 } } }
     foreach ($l in @($h.Laeufe | Where-Object { $_ })) {
         $z = $l.Zusammenfassung
-        $txt = if ($z) { 'Optimierung – {0}, Wert {1} → {2}' -f (Plural ([int]$z.OK) 'Änderung' 'Änderungen'), $z.ScoreVorher, $z.ScoreNachher } else { 'Optimierung' }
-        if ($l.RueckgaengigAm) { try { $txt += (' · rückgängig gemacht am {0:dd.MM.yyyy}' -f [datetime]$l.RueckgaengigAm) } catch { } }
+        $txt = if ($z) { (T 'Optimization – {0}, score {1} → {2}') -f (Plural ([int]$z.OK) (T 'change') (T 'changes')), $z.ScoreVorher, $z.ScoreNachher } else { (T 'Optimization') }
+        if ($l.RueckgaengigAm) { try { $txt += ((T ' · undone on {0:yyyy-MM-dd}') -f [datetime]$l.RueckgaengigAm) } catch { } }
         $umk = if ($null -ne $l.Umkehrbar) { [int]$l.Umkehrbar } else { -1 }
         $entries += [pscustomobject]@{ Zeit = [datetime]$l.Zeit; Text = $txt; Icon = 0xE73E; Col = 'Good'; Lauf = [string]$l.Lauf; Umk = $umk }
     }
     foreach ($e in ($entries | Sort-Object Zeit -Descending | Select-Object -First 40)) {
         $row = New-Object System.Windows.Controls.DockPanel; $row.Margin = '0,0,0,10'
         $ic = New-Icon $e.Icon $e.Col 14; $ic.Margin = '0,2,12,0'; [System.Windows.Controls.DockPanel]::SetDock($ic, 'Left')
-        $dt = New-Tb $e.Zeit.ToString('dd.MM.yyyy HH:mm') 'Muted' 14; $dt.Width = 140; $dt.TextWrapping = 'NoWrap'; [System.Windows.Controls.DockPanel]::SetDock($dt, 'Left')
+        $dt = New-Tb $e.Zeit.ToString((T 'yyyy-MM-dd HH:mm')) 'Muted' 14; $dt.Width = 140; $dt.TextWrapping = 'NoWrap'; [System.Windows.Controls.DockPanel]::SetDock($dt, 'Left')
         [void]$row.Children.Add($ic); [void]$row.Children.Add($dt)
         if ($e.Lauf -and $e.Umk -ne 0) {
-            $btn = New-Object System.Windows.Controls.Button; $btn.Style = $Win.FindResource('LinkBtn'); $btn.Content = 'Rückgängig …'; $btn.Tag = $e.Lauf; $btn.Margin = '12,0,0,0'; $btn.VerticalAlignment = 'Center'
-            Set-A11y $btn ('Optimierung vom {0} rückgängig machen' -f $e.Zeit.ToString('dd.MM.yyyy HH:mm'))
+            $btn = New-Object System.Windows.Controls.Button; $btn.Style = $Win.FindResource('LinkBtn'); $btn.Content = (T 'Undo …'); $btn.Tag = $e.Lauf; $btn.Margin = '12,0,0,0'; $btn.VerticalAlignment = 'Center'
+            Set-A11y $btn ((T 'Undo the optimization of {0}') -f $e.Zeit.ToString((T 'yyyy-MM-dd HH:mm')))
             $btn.Add_Click({ param($s, $ev) Start-Undo ([string]$s.Tag) })
             [System.Windows.Controls.DockPanel]::SetDock($btn, 'Right'); [void]$row.Children.Add($btn)
         }
         [void]$row.Children.Add((New-Tb $e.Text 'Ink' 14))
         [void]$UI.HistoryList.Children.Add($row)
     }
-    if (-not $entries.Count) { [void]$UI.HistoryList.Children.Add((New-Tb 'Noch keine Einträge.' 'Muted' 13)) }
+    if (-not $entries.Count) { [void]$UI.HistoryList.Children.Add((New-Tb (T 'No entries yet.') 'Muted' 13)) }
 }
 function Draw-Boot($h) {
     $c = $UI.BootCanvas; $c.Children.Clear()
     $pts = @(); if ($h) { $pts = @($h.Boots | Where-Object { $_ -and $_.GesamtMs -gt 0 } | Sort-Object { [datetime]$_.Zeit }) }
-    if ($pts.Count -lt 2) { $UI.BootNote.Text = 'Noch zu wenige Startzeiten gemessen. Windows erfasst sie bei jedem Hochfahren (sichtbar mit Administratorrechten).'; return }
-    $W = $c.ActualWidth; if ($W -lt 200) { return }   # Layout noch nicht fertig -> SizeChanged zeichnet neu
+    if ($pts.Count -lt 2) { $UI.BootNote.Text = (T 'Not enough boot times measured yet. Windows records them at every startup (visible with administrator rights).'); return }
+    $W = $c.ActualWidth; if ($W -lt 200) { return }   # Layout not finished yet -> SizeChanged redraws
     $H = 240; $pl = 44; $pb = 24; $pt = 10
     $t0 = ([datetime]$pts[0].Zeit).Ticks; $t1 = ([datetime]$pts[-1].Zeit).Ticks; if ($t1 -eq $t0) { $t1 = $t0 + 1 }
     $max = [math]::Max(10, [math]::Ceiling((($pts | Measure-Object GesamtMs -Maximum).Maximum) / 10000) * 10)
@@ -1552,21 +1629,21 @@ function Draw-Boot($h) {
     [void]$c.Children.Add($poly)
     foreach ($p in $pts) {
         $e = New-Object System.Windows.Shapes.Ellipse; $e.Width = 8; $e.Height = 8; Set-Brush $e 'Fill' 'Accent'
-        $e.ToolTip = ('{0:dd.MM.yyyy HH:mm}: {1:N1} s' -f [datetime]$p.Zeit, ($p.GesamtMs / 1000))
+        $e.ToolTip = ((T '{0:yyyy-MM-dd HH:mm}: {1:N1} s') -f [datetime]$p.Zeit, ($p.GesamtMs / 1000))
         [System.Windows.Controls.Canvas]::SetLeft($e, (& $X ([datetime]$p.Zeit).Ticks) - 4); [System.Windows.Controls.Canvas]::SetTop($e, (& $Y $p.GesamtMs) - 4); [void]$c.Children.Add($e)
     }
     $first = ($pts | Select-Object -First 5 | Measure-Object GesamtMs -Average).Average / 1000
     $last = ($pts | Select-Object -Last 3 | Measure-Object GesamtMs -Average).Average / 1000
-    $UI.BootNote.Text = ('Anfangs im Schnitt {0:N1} s, zuletzt {1:N1} s ({2} Starts seit {3:dd.MM.yyyy}). Einzelne Ausreißer sind normal, z. B. nach Updates.' -f $first, $last, $pts.Count, [datetime]$pts[0].Zeit)
+    $UI.BootNote.Text = ((T 'Initially {0:N1} s on average, most recently {1:N1} s ({2} boots since {3:yyyy-MM-dd}). Single outliers are normal, e.g. after updates.') -f $first, $last, $pts.Count, [datetime]$pts[0].Zeit)
     Set-A11y $c $UI.BootNote.Text
 }
 $UI.BootCanvas.Add_SizeChanged({ if ($State.History) { Draw-Boot $State.History } })
-$UI.BtnHistReport.Add_Click({ $p = $null; if ($State.History) { $p = [string]$State.History.Report }; if ($p -and (Test-Path -LiteralPath $p)) { Open-AsUser $p } else { Show-Msg 'Noch kein Bericht vorhanden – bitte zuerst prüfen.' | Out-Null } })
+$UI.BtnHistReport.Add_Click({ $p = $null; if ($State.History) { $p = [string]$State.History.Report }; if ($p -and (Test-Path -LiteralPath $p)) { Open-AsUser $p } else { Show-Msg (T 'No report yet – please run a check first.') | Out-Null } })
 function Open-Folder([string]$d) { if ($d -and (Test-Path -LiteralPath $d)) { Start-Process -FilePath explorer.exe -ArgumentList ('"{0}"' -f $d) } else { Start-Process -FilePath explorer.exe -ArgumentList ('"{0}"' -f $AppRoot) } }
 $UI.BtnHistFolder.Add_Click({ $d = $State.DataDir; if ($State.History -and $State.History.DataDir) { $d = [string]$State.History.DataDir }; Open-Folder $d })
 
 # =============================================================================
-#  Einstellungen
+#  Settings
 # =============================================================================
 $UI.BtnDataFolder.Add_Click({ $d = $State.DataDir; if (-not $d) { $d = Join-Path $AppRoot "WinTidy-Daten\$env:COMPUTERNAME" }; Open-Folder $d })
 $UI.BtnConfig.Add_Click({ $p = Join-Path $AppRoot 'WinTidy.config.json'; Start-Process -FilePath notepad.exe -ArgumentList ('"{0}"' -f $p) })
@@ -1578,31 +1655,31 @@ $UI.BtnShortcut.Add_Click({
         $sh = New-Object -ComObject WScript.Shell; $s = $sh.CreateShortcut($lnk)
         $s.TargetPath = "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe"
         $s.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$AppPath`""
-        $s.WorkingDirectory = $AppRoot; $s.IconLocation = "$env:windir\System32\cleanmgr.exe,0"; $s.Description = 'WinTidy – PC-Pflege'; $s.WindowStyle = 7
+        $s.WorkingDirectory = $AppRoot; $s.IconLocation = "$env:windir\System32\cleanmgr.exe,0"; $s.Description = (T 'WinTidy – PC care'); $s.WindowStyle = 7
         $s.Save()
-        $bytes = [IO.File]::ReadAllBytes($lnk); $bytes[0x15] = $bytes[0x15] -bor 0x20; [IO.File]::WriteAllBytes($lnk, $bytes)   # "Als Administrator ausfuehren"
-        Show-Msg 'Die Verknüpfung "WinTidy" liegt jetzt auf dem Desktop.' | Out-Null
-    } catch { Show-Msg "Die Verknüpfung konnte nicht angelegt werden: $($_.Exception.Message)" 'OK' 'Warning' | Out-Null }
+        $bytes = [IO.File]::ReadAllBytes($lnk); $bytes[0x15] = $bytes[0x15] -bor 0x20; [IO.File]::WriteAllBytes($lnk, $bytes)   # "Run as administrator"
+        Show-Msg (T 'The shortcut "WinTidy" is now on the desktop.') | Out-Null
+    } catch { Show-Msg (T 'The shortcut could not be created: {0}' ($_.Exception.Message)) 'OK' 'Warning' | Out-Null }
 })
 
 # =============================================================================
-#  Start, Beenden, globale Fehlerbehandlung
+#  Start, exit, global error handling
 # =============================================================================
 $Win.Dispatcher.Add_UnhandledException({
     param($s, $e)
     Write-ErrLog ("UI: " + $e.Exception.ToString())
     $e.Handled = $true
-    try { Show-Msg ("Da ist etwas schiefgelaufen. Dein PC wurde dadurch nicht verändert.`n`n$($e.Exception.Message)`n`nFehlerprotokoll: $ErrLog") 'OK' 'Warning' | Out-Null } catch { }
+    try { Show-Msg ((T "Something went wrong. Your PC was not changed by this.`n`n{0}`n`nError log: {1}" ($e.Exception.Message) $ErrLog)) 'OK' 'Warning' | Out-Null } catch { }
 })
 
 $Win.Add_Loaded({
-    $UI.VersionText.Text = 'Lade …'
-    $UI.BtnScan.IsEnabled = $false; $UI.BtnScan.Content = 'Wird vorbereitet …'
+    $UI.VersionText.Text = (T 'Loading …')
+    $UI.BtnScan.IsEnabled = $false; $UI.BtnScan.Content = (T 'Preparing …')
     Update-Banners
     Update-SelSummary
     Build-Recs
     [void](Start-Op 'init' @'
-. $EnginePath
+. $EnginePath -Language $Sync.Lang
 $Script:UiSink = { param($t, $c) $Sync.Log.Enqueue([string]$t) }
 $last = Get-Snapshots | Select-Object -Last 1
 $ctx = $null; if (Get-Command Get-WtContext -ErrorAction SilentlyContinue) { try { $ctx = Get-WtContext } catch { } }
@@ -1611,24 +1688,24 @@ $ctx = $null; if (Get-Command Get-WtContext -ErrorAction SilentlyContinue) { try
         param($init, $err, $c)
         if (-not $init -or -not $init.Ok -or -not $init.Version) {
             Write-ErrLog "Init: $err"
-            Show-Msg ("WinTidy.ps1 konnte nicht geladen werden. Bitte den kompletten WinTidy-Ordner neu kopieren.`n`n$err`n`nFehlerprotokoll: $ErrLog") 'OK' 'Error' | Out-Null
+            Show-Msg ((T "WinTidy.ps1 could not be loaded. Please copy the complete WinTidy folder again.`n`n{0}`n`nError log: {1}" $err $ErrLog)) 'OK' 'Error' | Out-Null
             $State.ForceClose = $true; $Win.Close(); return
         }
         $State.EngineOk = $true
         $State.Friendly = $init.Friendly
-        $UI.BtnScan.IsEnabled = $true; $UI.BtnScan.Content = '_Jetzt prüfen'
+        $UI.BtnScan.IsEnabled = $true; $UI.BtnScan.Content = (T '_Check now')
         $State.Version = $init.Version; $State.DataDir = [string]$init.DataDir
-        # Fehlerprotokoll ab jetzt im Datenordner (leichter zu finden als %TEMP%)
+        # Error log from now on in the data folder (easier to find than %TEMP%)
         if ($State.DataDir -and (Test-Path -LiteralPath $State.DataDir)) { $Script:ErrLog = Join-Path $State.DataDir 'WinTidy-App-Fehler.log' }
-        $UI.VersionText.Text = "Version $($init.Version)"
-        $UI.AboutText.Text = "WinTidy $($init.Version) · Daten: $($init.DataDir)`nOhne Installation, ohne Internetverbindung (außer für Programm-Updates). Jede Änderung wird protokolliert.`nFehlerprotokoll: $ErrLog"
+        $UI.VersionText.Text = (T 'Version {0}' ($init.Version))
+        $UI.AboutText.Text = (T "WinTidy {0} · Data: {1}`nNo installation, no internet connection (except for program updates). Every change is logged.`nError log: {2}" ($init.Version) ($init.DataDir) $ErrLog)
         $State.Context = $init.Context; Update-Banners
         if ($init.Last) {
             $State.Snapshot = $init.Last
             $State.Findings = @()
             $State.InfoFindings = @(Get-InfoFromSnapshot $init.Last)
             Update-Home
-            $UI.ScoreDetail.Text = 'Ergebnis der letzten Prüfung. Für aktuelle Empfehlungen bitte erneut prüfen.'
+            $UI.ScoreDetail.Text = (T 'Result of the last check. Please check again for current recommendations.')
             $UI.BtnToRecs.Visibility = 'Collapsed'
         }
         Update-SelSummary
@@ -1639,13 +1716,13 @@ $Win.Add_Closing({
     if ($State.ForceClose) { return }
     $op = $State.Op
     if ($op -and $op.Kind -eq 'fix') {
-        Show-Msg 'WinTidy setzt gerade Änderungen um. Bitte warte, bis es fertig ist – oder klicke auf Abbrechen. WinTidy hört dann nach dem aktuellen Schritt auf.' | Out-Null
+        Show-Msg (T 'WinTidy is applying changes right now. Please wait until it is done – or click Cancel. WinTidy then stops after the current step.') | Out-Null
         $e.Cancel = $true; return
     }
-    if ($op -and $op.Kind -eq 'undo' -and -not $op.Silent) { Show-Msg 'WinTidy setzt gerade Änderungen zurück. Bitte einen Moment warten.' | Out-Null; $e.Cancel = $true; return }
-    if ($op -and $op.Kind -eq 'cooltest') { if ((Show-Msg 'Der Kühlungstest läuft noch. Abbrechen und WinTidy beenden?' 'YesNo' 'Question') -ne 'Yes') { $e.Cancel = $true } else { $Control.Cancel = $true }; return }
+    if ($op -and $op.Kind -eq 'undo' -and -not $op.Silent) { Show-Msg (T 'WinTidy is undoing changes right now. Please wait a moment.') | Out-Null; $e.Cancel = $true; return }
+    if ($op -and $op.Kind -eq 'cooltest') { if ((Show-Msg (T 'The cooling test is still running. Cancel it and quit WinTidy?') 'YesNo' 'Question') -ne 'Yes') { $e.Cancel = $true } else { $Control.Cancel = $true }; return }
     if ($op -and $op.Kind -eq 'undo' -and $op.Silent) { return }
-    if ($op -and -not $op.Silent) { if ((Show-Msg 'Die Prüfung abbrechen und WinTidy beenden?' 'YesNo' 'Question') -ne 'Yes') { $e.Cancel = $true } }
+    if ($op -and -not $op.Silent) { if ((Show-Msg (T 'Cancel the check and quit WinTidy?') 'YesNo' 'Question') -ne 'Yes') { $e.Cancel = $true } }
 })
 $Win.Add_Closed({
     try { $Timer.Stop() } catch { }
@@ -1656,5 +1733,5 @@ $Win.Add_Closed({
 })
 
 try { [void]$Win.ShowDialog() }
-catch { Write-ErrLog "ShowDialog: $($_.Exception.Message) $($_.ScriptStackTrace)"; [System.Windows.MessageBox]::Show("Unerwarteter Fehler: $($_.Exception.Message)`n`nFehlerprotokoll: $ErrLog", 'WinTidy', 'OK', 'Error') | Out-Null }
+catch { Write-ErrLog "ShowDialog: $($_.Exception.Message) $($_.ScriptStackTrace)"; [System.Windows.MessageBox]::Show((T "Unexpected error: {0}`n`nError log: {1}" ($_.Exception.Message) $ErrLog), 'WinTidy', 'OK', 'Error') | Out-Null }
 finally { try { if ($Script:Mutex) { $Script:Mutex.ReleaseMutex() } } catch { } }

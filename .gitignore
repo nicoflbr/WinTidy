@@ -5,6 +5,9 @@ WinTidy-Daten/
 # Output of the diagnostic probes - contains hardware details of the PC it ran on
 tests/probe-*.json
 
+# Personal settings of this PC (see USAGE.md, "Configuration")
+WinTidy.config.local.json
+
 # Private notes and one-off scripts
 archiv/
 

@@ -1,6 +1,6 @@
 {
-  "_hinweis": "Eigene Einstellungen fuer WinTidy. Nur Schluessel eintragen, die vom Standard abweichen sollen - alle Schluessel und Standardwerte stehen in WinTidy.config.beispiel.json. Schluessel mit _ werden ignoriert.",
-  "_beispiel": {
+  "_note": "Shipped settings for WinTidy. Only keys that differ from the default belong here - all keys and default values are listed in WinTidy.config.example.json. For personal settings of this PC use WinTidy.config.local.json (same format, loaded after this file, never overwritten by an update). Keys starting with _ are ignored.",
+  "_example": {
     "TempAgeDays": 2,
     "WingetExclude": [
       "DaVinci",

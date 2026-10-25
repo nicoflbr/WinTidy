@@ -1,21 +1,22 @@
-# CLAUDE.md – Hinweise für KI-Assistenten
+# CLAUDE.md – Notes for AI assistants
 
-Projekt: **WinTidy**, ein allgemeingültiges Windows-Bereinigungs- und Optimierungstool (PowerShell 5.1). Engine + Kommandozeile: `WinTidy.ps1`. Grafische App: `WinTidy-App.ps1` (WPF, lädt die Engine in einen Hintergrund-Runspace).
+Project: **WinTidy**, a generic Windows cleanup and tuning tool (PowerShell 5.1). Engine + command line: `WinTidy.ps1`. Graphical app: `WinTidy-App.ps1` (WPF, loads the engine into a background runspace). English and German (`lang/de.psd1`).
 
-Vor jeder Änderung `ENTWICKLUNG.md` lesen. Dort stehen Grundsätze, Architektur, Regel-Vertrag, Datenformate, Tests und die Erkenntnisse aus dem ersten Einsatz.
+Read `DEVELOPMENT.md` before every change. It contains the principles, architecture, rule contract, languages, data formats, tests and the lessons from the first deployment.
 
-Kurzfassung der harten Regeln:
-- Keine festen Pfade, Benutzer oder Programme in der Logik. Gerätespezifisches gehört in `WinTidy.config.json` (nur Abweichungen; Standardwerte in `$Script:DefaultConfig`, Übersicht in `WinTidy.config.beispiel.json` – bei neuen Schlüsseln neu erzeugen).
-- Kein Snake Oil, keine Sicherheitsfunktionen abschalten, Treiber nie mit `/force` entfernen.
-- `Detect` ändert nie etwas. `Fix` sichert vorher und wirft bei Fehlern. Erwartbares „geht nicht“ als `throw 'SKIP:<Text>'` (wird als Übersprungen gewertet).
-- Registry-Änderungen nur über `Set-RegValueWithUndo` (Einzelwert-Undo); neue Schlüssel in `$Script:RestoreKeyAllow` aufnehmen. Ordner nur mit `Remove-TreeNoFollow`/`Get-OldFiles` löschen (folgen keinen Junctions).
-- Hardware-Punkte: `Stufe` ok|warn|krit|'' und `Wertung` dauer|moment (Momentaufnahmen zählen nicht im Score).
-- PowerShell-5.1-kompatibel bleiben: kein `?:`, `??`, keine Klassen, kein `-Parallel`.
-- Snapshot-Felder nur ergänzen, nie umbenennen.
-- Dateien als UTF-8 mit BOM speichern. Keine typografischen Anführungszeichen („ “) in PowerShell-Strings – sie beenden den String.
-- Neue Regel → auch Laien-Text in `$Script:Friendly` ergänzen.
-- Nach Änderungen ausführen: `pwsh ./tests/Test-Parse.ps1`, `pwsh ./tests/Test-Report.ps1`, `pwsh ./tests/Test-Hardware.ps1` und `pwsh ./tests/Test-GuiApi.ps1`.
-- Hardware: Lüfterkurven sind für Windows nicht lesbar – nur Wirkung messen, nichts am BIOS/an Lüftern ändern. Neue Datenquellen als eigene `Get-*`-Funktion, damit `Test-Hardware.ps1` sie ersetzen kann.
-- `$Script:Version` und `CHANGELOG.md` gemeinsam pflegen.
+Short version of the hard rules:
+- No fixed paths, users or programs in the logic. Device-specific settings belong in the configuration (`WinTidy.config.json` = shipped deviations, `WinTidy.config.local.json` = personal, git-ignored; defaults in `$Script:DefaultConfig`, overview in `WinTidy.config.example.json` – regenerate it when adding keys).
+- No snake oil, never switch off security features, never remove drivers with `/force`.
+- `Detect` never changes anything. `Fix` backs up first and throws on errors. Expected "not possible" as `throw 'SKIP:<text>'` (counted as skipped).
+- Registry changes only via `Set-RegValueWithUndo` (single-value undo); add new keys to `$Script:RestoreKeyAllow`. Delete folders only with `Remove-TreeNoFollow`/`Get-OldFiles` (they don't follow junctions).
+- Hardware points: `Stufe` ok|warn|krit|'' and `Wertung` dauer|moment (snapshots in time don't count in the score).
+- Stay compatible with PowerShell 5.1: no `?:`, `??`, no classes, no `-Parallel`.
+- Only add snapshot fields, never rename them. Internal values (categories, risk levels, status codes, snapshot labels, undo types) stay German – translate only for display.
+- User-facing texts in English with `T 'Text'` (literal first argument, placeholders `{0}`), German translation in `lang/de.psd1`. Keys must be unique ignoring case.
+- Save `.ps1` files as UTF-8 with BOM and CRLF. No typographic quotes (“ ” „ ‘ ’) in PowerShell strings – they end the string.
+- New rule → also add a plain-language text to `$Script:Friendly` (and its German translation).
+- After changes run: `pwsh ./tests/Test-Parse.ps1`, `pwsh ./tests/Test-Report.ps1`, `pwsh ./tests/Test-Hardware.ps1` and `pwsh ./tests/Test-GuiApi.ps1`.
+- Hardware: fan curves are not readable for Windows – only measure the effect, change nothing in the BIOS/on fans. New data sources as their own `Get-*` function so that `Test-Hardware.ps1` can replace them.
+- Keep `$Script:Version` and `CHANGELOG.md` in sync.
 
-Auf echten PCs Änderungen nur über das Tool mit Vorschau und Rückfragen ausführen, nie direkt.
+On real PCs apply changes only via the tool with preview and prompts, never directly.

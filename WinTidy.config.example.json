@@ -1,5 +1,5 @@
 {
-  "_hinweis": "BEISPIEL mit allen Standardwerten - wird NICHT geladen. Zum Anpassen nur die gewuenschten Schluessel nach WinTidy.config.json kopieren. Nicht aufgefuehrte Werte kommen aus WinTidy.ps1 (und werden mit Updates aktualisiert).",
+  "_hinweis": "EXAMPLE with all default values - this file is NOT loaded. To adjust, copy only the keys you want to change into WinTidy.config.local.json (personal, this PC) or WinTidy.config.json (shipped). Values not listed come from WinTidy.ps1 (and are updated with new versions). Lists replace the default list, tables are merged per key.",
   "TempAgeDays": 2,
   "RecycleBinAgeDays": 30,
   "CrashDumpAgeDays": 7,
@@ -224,13 +224,13 @@
   "GpuTempWarnC": 83,
   "GpuTempCritC": 90,
   "DiskTempWarnC": {
-    "HDD": 50,
     "SSD": 60,
+    "HDD": 50,
     "NVMe": 70
   },
   "DiskTempCritC": {
-    "HDD": 60,
     "SSD": 70,
+    "HDD": 60,
     "NVMe": 80
   },
   "CoolingTestSeconds": 60,

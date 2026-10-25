@@ -1,4 +1,4 @@
-name: Idea for a rule or check / Idee für eine Regel
+name: Idea for a rule or check
 description: Suggest something WinTidy should detect or fix.
 labels: [enhancement]
 body:

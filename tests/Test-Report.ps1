@@ -1,11 +1,12 @@
-﻿# Test-Report.ps1 - erzeugt zwei kuenstliche Snapshots + Aktionslog und baut daraus Vergleich und HTML-Bericht.
-# Laeuft ohne Windows-Abhaengigkeiten (auch mit pwsh unter Linux/macOS). Aufruf: pwsh ./tests/Test-Report.ps1
+﻿# Test-Report.ps1 - creates two synthetic snapshots + an action log and builds the comparison and the HTML report from them.
+# Runs without Windows dependencies (also with pwsh on Linux/macOS). Usage: pwsh ./tests/Test-Report.ps1
 $ErrorActionPreference = 'Stop'
 $TestData = Join-Path ([IO.Path]::GetTempPath()) 'wintidy-test'
 $t=$null;$e=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Join-Path $PSScriptRoot '..') 'WinTidy.ps1'),[ref]$t,[ref]$e)
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Parent.Parent.Parent -eq $null -or ($n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Parent -is [System.Management.Automation.Language.NamedBlockAst] -and $n.Parent.Parent -eq $ast) }, $false)
 foreach ($f in $funcs) { . ([scriptblock]::Create($f.Extent.Text)) }
+Set-WtLanguage 'en'
 $env:SystemDrive='C:'; $env:COMPUTERNAME='TESTPC'
 $Script:Version='1.0.0'; $Script:DataDir=$TestData; $Script:SnapDir=(Join-Path $TestData 'snapshots'); $Script:RunsDir=(Join-Path $TestData 'runs')
 Remove-Item $TestData -Recurse -Force -ErrorAction SilentlyContinue
@@ -21,7 +22,7 @@ function MkSnap($label,$time,$free,$bootBase,$aktiv,$err){
   Treiber=[ordered]@{Pakete=123;Duplikate=34;Geistergeraete=97}; Ereignisse=[ordered]@{FehlerSystem7T=$err;FehlerAnwendung7T=20;Top=@()}
   Leerlauf=[pscustomobject]@{CpuProzent=3.1;RamBelegtProzent=15;RamBelegtGB=9.8;Prozesse=214;Threads=4902;Handles=90000}
   Speicher=[ordered]@{PapierkorbBytes=0;TempBytes=1000;CrashDumpsBytes=0}; Sicherheit=[ordered]@{SecureBoot=$false;DefenderEchtzeit=$true;AusfuehrungsrichtlinieCU='Unrestricted'}
-  Hardware=[ordered]@{Laptop=$false;Sensorquelle=$null;CpuTempC=$null;Luefter=@();Gpu=[ordered]@{Name='NVIDIA GeForce RTX 4070 Ti';TempC=36;LuefterProzent=0;Gruende=1};Laufwerke=@([ordered]@{Name='Samsung <SSD>';Art='SSD';TempC=$null;Verschleiss=$null;Zustand='Healthy'});Drosselung30T=0;Thermalzonen=@();AkkuVerschleiss=$null;Punkte=@([ordered]@{Stufe='warn';Text='Testwarnung <Lüfter>'})}
+  Hardware=[ordered]@{Laptop=$false;Sensorquelle=$null;CpuTempC=$null;Luefter=@();Gpu=[ordered]@{Name='NVIDIA GeForce RTX 4070 Ti';TempC=36;LuefterProzent=0;Gruende=1};Laufwerke=@([ordered]@{Name='Samsung <SSD>';Art='SSD';TempC=$null;Verschleiss=$null;Zustand='Healthy'});Drosselung30T=0;Thermalzonen=@();AkkuVerschleiss=$null;Punkte=@([ordered]@{Stufe='warn';Text='Test warning <fan>'})}
   Stabilitaet=[ordered]@{Warnsignale=@([ordered]@{Text='TPM-Fehler';Anzahl=30})}
   Befunde=@([ordered]@{Regel='CLN-TEMP';Kategorie='Speicher';Titel='Temporaere Dateien';Risiko='Niedrig';Anzahl=2;Bytes=123456789;Objekte=@('C:\Temp (3 Dateien)','x <y>')},[ordered]@{Regel='EVT-HEALTH';Kategorie='Stabilitaet';Titel='Ereignisse';Risiko='Info';Anzahl=1;Bytes=0;Objekte=@('TPM-Fehler: 30x')})}
  $s.Score = Get-HealthScore $s
@@ -37,5 +38,18 @@ Show-Compare $a $b
 $r = New-Report
 "REPORT: $r"
 "Score a: $($a.Score.Wert) b: $($b.Score.Wert)"
+$fail = 0
+function Check([string]$Name, [bool]$Cond) { if ($Cond) { Write-Host "OK     $Name" -ForegroundColor Green } else { $script:fail++; Write-Host "FAILED $Name" -ForegroundColor Red } }
 $html = Get-Content $r -Raw -Encoding UTF8
-if ($html -notmatch 'K&uuml;hlung' -or $html -notmatch 'Testwarnung &lt;L' -or $html -match '<SSD>') { Write-Host 'FEHLER Hardware-Abschnitt im Bericht fehlt oder ist nicht maskiert' -ForegroundColor Red; exit 1 } else { Write-Host 'OK     Hardware-Abschnitt im Bericht' -ForegroundColor Green }
+Check 'Report: hardware section present and HTML-escaped' ($html -match 'Hardware &amp; cooling' -and $html -match 'Test warning &lt;fan&gt;' -and $html -notmatch '<SSD>')
+Check 'Report: English by default' ($html -match "<html lang='en'>" -and $html -match 'Findings \(last scan\)')
+# German report
+Set-WtLanguage 'de' (Join-Path $PSScriptRoot '..')
+$r = New-Report
+$html = Get-Content $r -Raw -Encoding UTF8
+Check 'Report: German with -Language de' ($html -match "<html lang='de'>" -and $html -match 'Befunde \(letzter Scan\)' -and $html -match 'Hardware &amp; K')
+Check 'Report: risk shown in German' ($html -match '>Niedrig</span>')
+Set-WtLanguage 'en'
+Remove-Item $TestData -Recurse -Force -ErrorAction SilentlyContinue
+if ($fail) { Write-Host "$fail test(s) failed" -ForegroundColor Red } else { Write-Host 'All report tests passed' -ForegroundColor Green }
+exit $fail

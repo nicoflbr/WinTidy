@@ -1,37 +1,41 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    WinTidy - evidenzbasierte Windows-Bereinigung und -Optimierung mit Vorher/Nachher-Statistik.
+    WinTidy - evidence-based Windows cleanup and optimization with before/after statistics.
 
 .DESCRIPTION
-    WinTidy misst zuerst (Snapshot), zeigt dann, was es tun wuerde (Vorschau), fuehrt nur
-    bestaetigte Aenderungen aus (Anwenden) und belegt das Ergebnis mit Zahlen (Vergleich, HTML-Bericht).
+    WinTidy measures first (snapshot), then shows what it would do (preview), only carries out
+    confirmed changes (apply) and backs the result with numbers (comparison, HTML report).
 
-    Grundsaetze:
-      * Nichts ohne Messung: jede Aenderung wird protokolliert (actions.jsonl) und vorher gesichert.
-      * Keine Registry-"Cleaner", keine Tweaks ohne Wirkungsnachweis, keine Sicherheitsfunktionen abschalten.
-      * Allgemeingueltig: keine festen Pfade, Benutzer oder Programme - nur Regeln.
-      * Risikostufen: Niedrig (automatisierbar), Mittel (Einzelbestaetigung), Hoch (nur explizit, nie mit -Yes).
+    Principles:
+      * Nothing without measurement: every change is logged (actions.jsonl) and backed up first.
+      * No registry "cleaners", no tweaks without proven effect, never disable security features.
+      * Generic: no hard-coded paths, users or programs - only rules.
+      * Risk levels: Low (can be automated), Medium (confirm each item), High (explicit only, never with -Yes).
 
 .PARAMETER Mode
-    Menu     Interaktives Menue (Standard)
-    Scan     Snapshot + alle Regeln pruefen + HTML-Bericht (aendert nichts)
-    Preview  Zeigt, was Apply tun wuerde (aendert nichts)
-    Apply    Fuehrt Regeln aus (Adminrechte, Wiederherstellungspunkt, Backup, Rueckfragen)
-    Compare  Vergleicht zwei Snapshots (Standard: letzter "vorher" mit letztem Snapshot)
-    Report   Erzeugt den HTML-Bericht aus allen gespeicherten Daten neu
-    Restore  Stellt Registry/Tasks/Dienste eines Laufs wieder her
-    Rules    Listet alle Regeln
+    Menu     Interactive menu (default)
+    Scan     Snapshot + check all rules + HTML report (changes nothing)
+    Preview  Shows what Apply would do (changes nothing)
+    Apply    Runs rules (admin rights, restore point, backup, confirmations)
+    Compare  Compares two snapshots (default: last "before" with the latest snapshot)
+    Report   Rebuilds the HTML report from all stored data
+    Restore  Restores registry/tasks/services of a run
+    Rules    Lists all rules
+
+.PARAMETER Language
+    auto (default: German if Windows is German, otherwise English), en or de
 
 .EXAMPLE
-    .\WinTidy.ps1                          # Menue
+    .\WinTidy.ps1                          # menu
     .\WinTidy.ps1 -Mode Scan -OpenReport
-    .\WinTidy.ps1 -Mode Apply              # interaktiv
-    .\WinTidy.ps1 -Mode Apply -Yes         # unbeaufsichtigt, nur Regeln mit Risiko "Niedrig"
+    .\WinTidy.ps1 -Mode Apply              # interactive
+    .\WinTidy.ps1 -Mode Apply -Yes         # unattended, only rules with risk "Low"
     .\WinTidy.ps1 -Mode Apply -Rule STA-HEAVY,APP-BLOAT
     .\WinTidy.ps1 -Mode Compare
-    .\WinTidy.ps1 -Mode Hardware                  # Kuehlung, Luefter, Temperaturen, Laufwerke (aendert nichts)
-    .\WinTidy.ps1 -Mode Hardware -CoolingTest -Seconds 90   # zusaetzlich Kuehlungstest unter Last
+    .\WinTidy.ps1 -Mode Hardware                  # cooling, fans, temperatures, drives (changes nothing)
+    .\WinTidy.ps1 -Mode Hardware -CoolingTest -Seconds 90   # additionally a cooling test under load
+    .\WinTidy.ps1 -Mode Scan -Language de         # German output
 #>
 [CmdletBinding()]
 param(
@@ -50,28 +54,79 @@ param(
     [switch]$NoRestorePoint,
     [switch]$OpenReport,
     [switch]$CoolingTest,
-    [int]$Seconds = 0
+    [int]$Seconds = 0,
+    [ValidateSet('auto', 'en', 'de')]
+    [string]$Language = 'auto'
 )
 
 Set-StrictMode -Off
-# Ueber WinTidy.cmd (-File) kommt "-Rule A,B" als eine Zeichenkette an
+# Via WinTidy.cmd (-File), "-Rule A,B" arrives as a single string
 if ($Rule) { $Rule = @($Rule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 if ($ExcludeRule) { $ExcludeRule = @($ExcludeRule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.3.4'
+$Script:Version = '1.4.0'
 
 # =============================================================================
-#  Kontext, Konfiguration, Pfade
+#  Language (English is the source language, German comes from lang\de.psd1)
+#  T 'English text' [args] returns the text in the current language; with arguments it is formatted like -f.
+# =============================================================================
+function Get-WtUiLanguage {
+    try { if ([Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName -eq 'de') { return 'de' } } catch { }
+    return 'en'
+}
+# Reads lang\<lang>.psd1 without executing it: only plain 'key' = 'value' string pairs are accepted.
+# (Import-PowerShellDataFile refuses files with several hundred entries.)
+function Read-WtLangFile([string]$Path) {
+    $dict = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $err = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$err)
+    if ($err -and $err.Count) { throw "$Path`: $($err[0].Message)" }
+    $h = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)
+    if (-not $h) { throw "$Path`: no table found" }
+    foreach ($kv in $h.KeyValuePairs) {
+        $v = $kv.Item2
+        if ($v -is [System.Management.Automation.Language.PipelineAst] -and $v.PipelineElements.Count -eq 1) { $v = $v.PipelineElements[0].Expression }
+        if ($kv.Item1 -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $v -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $dict[$kv.Item1.Value] = $v.Value }
+    }
+    return , $dict
+}
+function Set-WtLanguage([string]$Lang, [string]$Root) {
+    $Script:Lang = if ($Lang -in 'en', 'de') { $Lang } else { Get-WtUiLanguage }
+    $Script:De = $null
+    if ($Script:Lang -eq 'de') {
+        $root = if ($Root) { $Root } elseif ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+        try { $Script:De = Read-WtLangFile (Join-Path $root 'lang\de.psd1') } catch { $Script:Lang = 'en'; $Script:De = $null }
+    }
+}
+function T([string]$Text) {
+    $s = $Text
+    if ($Script:Lang -eq 'de' -and $null -ne $Script:De) { $v = $null; if ($Script:De.TryGetValue($Text, [ref]$v)) { $s = $v } }
+    if ($args.Count) { try { return ($s -f $args) } catch { return $s } }
+    return $s
+}
+# Display names for internal values (risk levels and rule categories stay German in data files)
+function Get-RiskText([string]$Risk) {
+    switch ($Risk) { 'Niedrig' { return (T 'Low') } 'Mittel' { return (T 'Medium') } 'Hoch' { return (T 'High') } 'Info' { return (T 'Info') } }
+    return $Risk
+}
+function Get-CategoryText([string]$Cat) {
+    switch ($Cat) { 'Speicher' { return (T 'Storage') } 'Autostart' { return (T 'Startup') } 'Aufgaben' { return (T 'Tasks') } 'Dienste' { return (T 'Services') } 'Programme' { return (T 'Programs') } 'System' { return (T 'System') } 'Sicherheit' { return (T 'Security') } 'Hardware' { return (T 'Hardware') } 'Stabilitaet' { return (T 'Stability') } }
+    return $Cat
+}
+Set-WtLanguage $Language
+
+# =============================================================================
+#  Context, configuration, paths
 # =============================================================================
 $Script:ToolRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $Script:IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $Script:Me = [Security.Principal.WindowsIdentity]::GetCurrent()
-# Mit Adminrechten nur Module aus Systemordnern laden (kein Unterschieben ueber Documents\WindowsPowerShell\Modules)
+# With admin rights, load modules only from system folders (no planting via Documents\WindowsPowerShell\Modules)
 if ($Script:IsAdmin -and $env:windir) { $env:PSModulePath = (@("$env:ProgramFiles\WindowsPowerShell\Modules", "$env:windir\system32\WindowsPowerShell\v1.0\Modules") -join ';') }
-# Datenordner: mit Adminrechten geschuetzt unter ProgramData (nur Administratoren/SYSTEM duerfen schreiben),
-# ohne Adminrechte im eigenen Profil. Sicherungen, die "Wiederherstellen" mit Adminrechten einspielt, liegen so nie
-# in einem Ordner, den Programme ohne Adminrechte veraendern koennen.
+# Data folder: with admin rights protected under ProgramData (only Administrators/SYSTEM may write),
+# without admin rights in the user's own profile. Backups that "Restore" applies with admin rights therefore never
+# live in a folder that programs without admin rights can modify.
 $Script:LegacyDataDir = Join-Path $Script:ToolRoot ("WinTidy-Daten\" + $env:COMPUTERNAME)
 $Script:DataDirIsDefault = -not $DataPath
 if (-not $DataPath) { $DataPath = if ($Script:IsAdmin) { Join-Path $env:ProgramData ("WinTidy\" + $env:COMPUTERNAME) } else { Join-Path $env:LOCALAPPDATA ("WinTidy\" + $env:COMPUTERNAME) } }
@@ -86,7 +141,7 @@ function Protect-WtDataRoot([string]$Path) {
         }
         try { $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544')); Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop }
         catch {
-            # Besitzer laesst sich nicht immer setzen - dann nur die Rechte
+            # Setting the owner does not always work - then only the permissions
             $acl2 = New-Object Security.AccessControl.DirectorySecurity; $acl2.SetAccessRuleProtection($true, $false)
             foreach ($r in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) { $acl2.AddAccessRule($r) }
             Set-Acl -LiteralPath $Path -AclObject $acl2 -ErrorAction Stop
@@ -94,7 +149,7 @@ function Protect-WtDataRoot([string]$Path) {
         return $true
     } catch { return $false }
 }
-# Prueft, dass der Ordner samt Inhalt nur SYSTEM/Administratoren gehoert und nur sie schreiben duerfen
+# Checks that the folder and its contents belong only to SYSTEM/Administrators and only they may write
 function Test-WtDataRootSafe([string]$Path) {
     try {
         $ok = 'S-1-5-18', 'S-1-5-32-544'
@@ -115,20 +170,20 @@ if ($Script:IsAdmin -and $Script:DataDirIsDefault) {
     $wtRoot = Split-Path $DataPath
     if (-not (Test-Path -LiteralPath $wtRoot) -or -not (Test-WtDataRootSafe $wtRoot)) {
         $null = Protect-WtDataRoot $wtRoot
-        # Vorhandene Unterordner/Dateien auf die geerbten Rechte zuruecksetzen und Besitz uebernehmen
+        # Reset existing subfolders/files to the inherited permissions and take ownership
         if (Get-ChildItem -LiteralPath $wtRoot -Force -ErrorAction SilentlyContinue) {
             $null = & icacls.exe (Join-Path $wtRoot '*') /reset /T /C /Q 2>&1
             $null = & icacls.exe $wtRoot /setowner '*S-1-5-32-544' /T /C /Q 2>&1
         }
     }
     $Script:DataDirProtected = Test-WtDataRootSafe $wtRoot
-    # Einmalige Uebernahme der Daten aus aelteren Versionen (Ordner WinTidy-Daten neben dem Skript)
+    # One-time migration of data from older versions (folder WinTidy-Daten next to the script)
     if (-not (Test-Path -LiteralPath (Join-Path $DataPath 'snapshots')) -and (Test-Path -LiteralPath (Join-Path $Script:LegacyDataDir 'snapshots'))) {
         try {
             New-Item -ItemType Directory -Force -Path $DataPath | Out-Null
             Get-ChildItem -LiteralPath $Script:LegacyDataDir -Force -ErrorAction Stop | Copy-Item -Destination $DataPath -Recurse -Force -ErrorAction Stop
-            if (-not (Test-Path -LiteralPath (Join-Path $DataPath 'snapshots'))) { throw 'Uebernahme unvollstaendig' }
-            Set-Content -LiteralPath (Join-Path $Script:LegacyDataDir 'UMGEZOGEN.txt') -Value ("Die WinTidy-Daten liegen seit Version 1.3 geschuetzt unter $DataPath. Dieser Ordner kann geloescht werden.") -Encoding UTF8 -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath (Join-Path $DataPath 'Migration incomplete'))) { throw 'Uebernahme unvollstaendig' }
+            Set-Content -LiteralPath (Join-Path $Script:LegacyDataDir 'UMGEZOGEN.txt') -Value ((T 'The WinTidy data has been stored protected under {0} since version 1.3. This folder can be deleted.' $DataPath)) -Encoding UTF8 -ErrorAction SilentlyContinue
             $Script:DataMigrated = $true
         } catch { }
     }
@@ -137,7 +192,7 @@ $Script:DataDir = $DataPath
 $Script:SnapDir = Join-Path $DataPath 'snapshots'
 $Script:RunsDir = Join-Path $DataPath 'runs'
 foreach ($d in $Script:DataDir, $Script:SnapDir, $Script:RunsDir) { if (-not (Test-Path $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null } }
-$Script:RestoreRunId = $RunId   # -RunId ist der Restore-Zielparameter; $Script:RunId wird gleich ueberschrieben
+$Script:RestoreRunId = $RunId   # -RunId is the restore target parameter; $Script:RunId is overwritten right below
 $Script:RunId = (Get-Date -Format 'yyyyMMdd-HHmmss')
 $Script:RunDir = $null
 $Script:Cache = @{}
@@ -159,11 +214,11 @@ $Script:DefaultConfig = [ordered]@{
     WingetExclude           = @('rekordbox', 'DaVinci', 'Blackmagic', 'AlphaTheta')
     OrphanDirIgnore         = @('Microsoft', 'Windows', 'Packages', 'Temp', 'Package Cache', 'Common Files', 'NVIDIA', 'NVIDIA Corporation', 'Intel', 'AMD', 'Realtek', 'WindowsApps', 'ModifiableWindowsApps', 'Reference Assemblies', 'MSBuild', 'Internet Explorer', 'Windows Defender', 'Windows Mail', 'Windows Media Player', 'Windows NT', 'Windows Photo Viewer', 'Windows Sidebar', 'Uninstall Information', 'WindowsPowerShell', 'PackageManagement', 'dotnet', 'USOShared', 'USOPrivate', 'regid.1991-06.com.microsoft', 'SoftwareDistribution', 'ssh', 'Comms', 'ConnectedDevicesPlatform', 'D3DSCache', 'CrashDumps', 'Programs', 'PlaceholderTileLogoFolder', 'VirtualStore', 'Publishers', 'IsolatedStorage', 'speech', 'ElevatedDiagnostics', 'Adobe', 'Google', 'Mozilla', 'Apple', 'Apple Computer', 'Apple Inc', 'Claude', 'Code', 'Electron', 'NuGet', 'npm', 'npm-cache', 'pip')
     OrphanDirMinMB          = 50
-    ExtraTempPaths          = @()      # weitere Temp-Ordner (z. B. 'C:\Temp'), nur wenn dort wirklich nur Wegwerfdateien liegen
-    # Hardware/Kuehlung (Grad Celsius). Scan = PC hat kaum zu tun (Laptop +5 Grad)
+    ExtraTempPaths          = @()      # additional temp folders (e.g. 'C:\Temp'), only if they really contain nothing but disposable files
+    # Hardware/cooling (degrees Celsius). Scan = PC is mostly idle (laptop +5 degrees)
     CpuTempIdleWarnC        = 80
     CpuTempIdleCritC        = 90
-    # Temperaturgrenze (TjMax) je CPU-Familie (Regex auf den CPU-Namen, erster Treffer zaehlt; sonst 100)
+    # Temperature limit (TjMax) per CPU family (regex on the CPU name, first match wins; otherwise 100)
     CpuTjMax                = [ordered]@{ 'Ryzen.*\d{4}X3D' = 89; 'Ryzen [3579] [79]\d{3}' = 95; 'Ryzen' = 90; 'Core\(TM\) Ultra|Core Ultra' = 105; 'Intel' = 100 }
     GpuTempWarnC            = 83
     GpuTempCritC            = 90
@@ -171,34 +226,37 @@ $Script:DefaultConfig = [ordered]@{
     DiskTempCritC           = @{ NVMe = 80; SSD = 70; HDD = 60 }
     CoolingTestSeconds      = 60
     WinOldMinAgeDays        = 10
-    # Ende der Sicherheitsupdates je Windows-Build (Home/Pro; Enterprise/Education: +12 Monate). Quelle: Microsoft Lifecycle
+    # End of security updates per Windows build (Home/Pro; Enterprise/Education: +12 months). Source: Microsoft Lifecycle
     WindowsSupportEnd       = [ordered]@{ '19045' = '2025-10-14'; '22621' = '2024-10-08'; '22631' = '2025-11-11'; '26100' = '2026-10-13'; '26200' = '2027-10-12' }
 }
+# Configuration = defaults + WinTidy.config.json + WinTidy.config.local.json (personal, not in Git).
+# Only keys that differ from the defaults belong in the files; keys starting with _ are ignored.
 function Merge-Config {
     $cfg = [ordered]@{}
     foreach ($k in $Script:DefaultConfig.Keys) { $cfg[$k] = $Script:DefaultConfig[$k] }
-    $p = if ($ConfigPath) { $ConfigPath } else { Join-Path $Script:ToolRoot 'WinTidy.config.json' }
-    if (Test-Path $p) {
+    $files = if ($ConfigPath) { @($ConfigPath) } else { @((Join-Path $Script:ToolRoot 'WinTidy.config.json'), (Join-Path $Script:ToolRoot 'WinTidy.config.local.json')) }
+    foreach ($p in $files) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
         try {
-            $user = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+            $user = Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
             foreach ($prop in $user.PSObject.Properties) {
                 if ($prop.Name -like '_*') { continue }
-                $def = $Script:DefaultConfig[$prop.Name]
+                $def = $cfg[$prop.Name]
                 if (($def -is [hashtable] -or $def -is [System.Collections.Specialized.OrderedDictionary]) -and $prop.Value -is [pscustomobject]) {
-                    # Tabellen (z. B. DiskTempWarnC) pro Unterschluessel zusammenfuehren statt komplett zu ersetzen
+                    # Merge tables (e.g. DiskTempWarnC) per sub-key instead of replacing them completely
                     $m = [ordered]@{}; foreach ($k in $def.Keys) { $m[$k] = $def[$k] }
                     foreach ($sp in $prop.Value.PSObject.Properties) { $m[$sp.Name] = $sp.Value }
                     $cfg[$prop.Name] = $m
                 } else { $cfg[$prop.Name] = $prop.Value }
             }
-        } catch { Write-Warning "Konfiguration $p konnte nicht gelesen werden: $($_.Exception.Message)" }
+        } catch { Write-Warning (T 'Configuration {0} could not be read: {1}' $p ($_.Exception.Message)) }
     }
     return $cfg
 }
-# Konfiguration auf gefaehrliche Werte pruefen (z. B. Altersgrenze 0 = alles loeschen)
+# Check the configuration for dangerous values (e.g. age limit 0 = delete everything)
 function Test-Config($cfg) {
     $min = @{ TempAgeDays = 1; RecycleBinAgeDays = 7; CrashDumpAgeDays = 1; WinOldMinAgeDays = 10; OrphanDirMinMB = 10; CoolingTestSeconds = 20 }
-    foreach ($k in @($min.Keys)) { $v = 0; if (-not [int]::TryParse([string]$cfg[$k], [ref]$v) -or $v -lt $min[$k]) { Write-Warning "Konfiguration: $k ungueltig ($($cfg[$k])) - Standardwert wird verwendet"; $cfg[$k] = $Script:DefaultConfig[$k] } }
+    foreach ($k in @($min.Keys)) { $v = 0; if (-not [int]::TryParse([string]$cfg[$k], [ref]$v) -or $v -lt $min[$k]) { Write-Warning (T 'Configuration: {0} invalid ({1}) - default value is used' $k ($cfg[$k])); $cfg[$k] = $Script:DefaultConfig[$k] } }
     $never = 'Microsoft.WindowsStore', 'Microsoft.SecHealthUI', 'Microsoft.DesktopAppInstaller', 'Microsoft.Windows.ShellExperienceHost', 'Microsoft.Windows.StartMenuExperienceHost', 'Microsoft.AAD.BrokerPlugin', 'Microsoft.WindowsAppRuntime', 'Microsoft.VCLibs', 'Microsoft.UI.Xaml', 'Microsoft.NET'
     $cfg.BloatApps = @($cfg.BloatApps | Where-Object { $n = [string]$_; $n -match '^[\w\.\-]+$' -and -not ($never | Where-Object { $n -like "$_*" }) })
     if ([string]$cfg.ShadowStorageTarget -notmatch '^(\d{1,2})%$' -or [int]$Matches[1] -lt 3) { $cfg.ShadowStorageTarget = $Script:DefaultConfig.ShadowStorageTarget }
@@ -208,7 +266,7 @@ function Test-Config($cfg) {
 $Script:Cfg = Test-Config (Merge-Config)
 
 # =============================================================================
-#  Ausgabe, Logging, Hilfsfunktionen
+#  Output, logging, helper functions
 # =============================================================================
 function W([string]$Text, [string]$Color = 'Gray', [switch]$NoNewline) {
     if ($Script:UiSink) {
@@ -253,8 +311,8 @@ function Get-DirSize([string]$Path) {
     $s = (Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
     if ($s) { return [int64]$s } else { return [int64]0 }
 }
-# Verknuepfungen (Junctions, Symlinks, OneDrive-Platzhalter) werden beim Aufraeumen nie betreten und nie geloescht.
-# Sonst koennte z. B. eine Junction in einem Temp-Ordner das Loeschen auf beliebige andere Ordner umlenken.
+# Links (junctions, symlinks, OneDrive placeholders) are never entered and never deleted during cleanup.
+# Otherwise e.g. a junction in a temp folder could redirect the deletion to arbitrary other folders.
 function Test-Reparse($Item) { return [bool]($Item -and ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)) }
 function Test-SafeDeleteRoot([string]$Path) {
     if (-not $Path) { return $false }
@@ -265,7 +323,7 @@ function Test-SafeDeleteRoot([string]$Path) {
 }
 function Get-OldFiles([string]$Path, [int]$Days) {
     if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Container)) { return @() }
-    if (-not (Test-SafeDeleteRoot $Path)) { W "    Ordner $Path wird zur Sicherheit nicht bereinigt" 'DarkYellow'; return @() }
+    if (-not (Test-SafeDeleteRoot $Path)) { W (T '    Folder {0} is not cleaned for safety reasons' $Path) 'DarkYellow'; return @() }
     $root = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if (-not $root -or (Test-Reparse $root)) { return @() }
     $limit = (Get-Date).AddDays(-$Days)
@@ -291,7 +349,7 @@ function Remove-EmptyDirs([string]$Path, [int]$Days = 0) {
         if ($d.LastWriteTime -lt $limit -and -not (Get-ChildItem -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue) -and (Test-PathChainNoReparse $Path $d.FullName) -and -not ([IO.File]::GetAttributes($d.FullName) -band [IO.FileAttributes]::ReparsePoint)) { try { [IO.Directory]::Delete($d.FullName, $false) } catch { } }
     }
 }
-# Unmittelbar vor dem Loeschen: liegt die Datei noch unterhalb der Wurzel, ohne Verknuepfung dazwischen?
+# Right before deleting: is the file still below the root, without a link in between?
 function Test-PathChainNoReparse([string]$Root, [string]$Full) {
     try {
         $sep = [string][IO.Path]::DirectorySeparatorChar
@@ -305,10 +363,10 @@ function Test-PathChainNoReparse([string]$Root, [string]$Full) {
         return $true
     } catch { return $false }
 }
-# Loescht einen Ordner samt Inhalt, folgt dabei aber keinen Verknuepfungen (die Verknuepfung selbst wird entfernt, ihr Ziel nicht)
+# Deletes a folder including its contents, but never follows links (the link itself is removed, its target is not)
 function Remove-TreeNoFollow([string]$Path) {
     $it = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    if (Test-Reparse $it) { throw "Verknuepfung (Junction/Symlink) - zur Sicherheit nicht geloescht: $Path" }
+    if (Test-Reparse $it) { throw (T 'Link (junction/symlink) - not deleted for safety reasons: {0}' $Path) }
     if (-not $it.PSIsContainer) { $it.Attributes = 'Normal'; $it.Delete(); return }
     foreach ($e in @(Get-ChildItem -LiteralPath $it.FullName -Force -ErrorAction Stop)) {
         if (Test-Reparse $e) { if ($e.PSIsContainer) { [IO.Directory]::Delete($e.FullName, $false) } else { [IO.File]::Delete($e.FullName) } }
@@ -323,7 +381,7 @@ function Test-DriveExists([string]$Path) {
     return $true
 }
 
-# Ermittelt aus einer Befehlszeile die eigentliche Zieldatei (fuer Existenzpruefungen)
+# Determines the actual target file of a command line (for existence checks)
 function Resolve-CommandTarget([string]$Command) {
     if (-not $Command) { return $null }
     $c = [Environment]::ExpandEnvironmentVariables($Command.Trim())
@@ -335,7 +393,7 @@ function Resolve-CommandTarget([string]$Command) {
     $interpreters = 'rundll32.exe', 'wscript.exe', 'cscript.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe', 'mshta.exe', 'regsvr32.exe', 'conhost.exe'
     if ($interpreters -contains $leaf.ToLower() -and $rest) {
         if ($rest -match '"?([A-Za-z]:\\[^"]+?\.(dll|vbs|js|ps1|bat|cmd|hta|exe))"?') { return $Matches[1] }
-        return $null   # Interpreter ohne Dateiargument: nicht pruefbar
+        return $null   # Interpreter without a file argument: cannot be checked
     }
     if ($exe -notmatch '\\') {
         $cmd = Get-Command $exe -ErrorAction SilentlyContinue
@@ -346,7 +404,7 @@ function Resolve-CommandTarget([string]$Command) {
 function Get-TargetState([string]$Target) {
     if (-not $Target) { return 'unbekannt' }
     $Target = $Target -replace '^\\\?\?\\', '' -replace '^\\\\\?\\', ''
-    # Netzwerkpfade nie als "verwaist" werten (NAS schlaeft, VPN getrennt) und mit Adminrechten nicht antasten
+    # Never treat network paths as "orphaned" (NAS asleep, VPN disconnected) and never touch them with admin rights
     if ($Target.StartsWith('\\')) { return 'unbekannt' }
     if ($Target -notmatch '^[A-Za-z]:\\') { return 'unbekannt' }
     if (-not (Test-DriveExists $Target)) { return 'LaufwerkFehlt' }
@@ -364,12 +422,12 @@ function Confirm-Item([string]$Question, [string]$Risk) {
     if ($Script:AllYes -and $Risk -ne 'Hoch') { return $true }
     while ($true) {
         W "    $Question " 'White' -NoNewline
-        W '[j]a / [n]ein / [a]lle dieser Regel / [s]Regel ueberspringen: ' 'DarkGray' -NoNewline
+        W (T '[y]es / [n]o / [a]ll of this rule / [s]kip rule: ') 'DarkGray' -NoNewline
         $a = (Read-Host).Trim().ToLower()
         switch -Regex ($a) {
-            '^(j|ja|y)$' { return $true }
-            '^(n|nein|)$' { return $false }
-            '^a$' { if ($Risk -eq 'Hoch') { W '    (bei Risiko "Hoch" wird jedes Objekt einzeln gefragt)' 'DarkYellow'; continue }; $Script:AllYes = $true; return $true }
+            '^(j|ja|y|yes)$' { return $true }
+            '^(n|nein|no|)$' { return $false }
+            '^a$' { if ($Risk -eq 'Hoch') { W (T '    (with risk "High" every item is asked individually)') 'DarkYellow'; continue }; $Script:AllYes = $true; return $true }
             '^s$' { throw 'SKIPRULE' }
         }
     }
@@ -380,7 +438,7 @@ function Backup-RegKey([string]$Key, [string]$Name) {
     $f = Join-Path $Script:RunDir ("backup\" + ($Name -replace '[^\w\-]', '_') + '.reg')
     if (-not (Test-Path $f)) { & reg.exe export $Key $f /y 2>$null | Out-Null }
 }
-# Registry-Wert lesen, so dass er sich als JSON speichern und exakt zurueckschreiben laesst
+# Read a registry value so that it can be stored as JSON and written back exactly
 function Get-RegValueRaw([string]$Key, [string]$Name) {
     try {
         $k = Get-Item -LiteralPath $Key -ErrorAction Stop
@@ -396,9 +454,9 @@ function ConvertTo-RegKeyText([string]$Key) {
     $k = $k -replace '^HKEY_CURRENT_USER', 'HKCU' -replace '^HKEY_LOCAL_MACHINE', 'HKLM' -replace '^(HKCU|HKLM):', '$1'
     return $k.TrimEnd('\')
 }
-# Nur diese Schluessel darf "Wiederherstellen" anfassen (Schutz vor manipulierten Sicherungen)
+# Only these keys may be touched by "Restore" (protection against tampered backups)
 $Script:RestoreKeyAllow = '(?i)^HK(CU|LM)\\Software\\(WOW6432Node\\)?Microsoft\\Windows\\CurrentVersion\\(Run|Explorer\\StartupApproved\\(Run|Run32|StartupFolder))$|^HKCU\\System\\GameConfigStore$|^HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR$|^HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\SystemAppData\\[^\\]+\\[^\\]+$|^HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem$'
-# Aenderung eines Registry-Werts mit Undo-Info ausfuehren (Vorher/Nachher; Restore setzt nur zurueck, wenn seitdem niemand den Wert geaendert hat)
+# Change a registry value with undo info (before/after; Restore only resets if nobody has changed the value since)
 function Set-RegValueWithUndo([string]$Rule, [string]$Objekt, [string]$Key, [string]$Name, $Value, [string]$Type, [switch]$Remove) {
     $vorher = Get-RegValueRaw $Key $Name
     if ($Remove) { Remove-ItemProperty -LiteralPath $Key -Name $Name -ErrorAction Stop }
@@ -411,11 +469,11 @@ function Set-RegValueWithUndo([string]$Rule, [string]$Objekt, [string]$Key, [str
 }
 function Test-RegKeyAllowed([string]$Key) { $kt = ConvertTo-RegKeyText $Key; return ($kt -notmatch '(^|\\)\.\.?(\\|$)' -and $kt -match $Script:RestoreKeyAllow) }
 function Restore-RegValue($u) {
-    if (-not (Test-RegKeyAllowed $u.Key)) { throw 'Unerwarteter Registry-Pfad - nicht zurueckgesetzt' }
+    if (-not (Test-RegKeyAllowed $u.Key)) { throw (T 'Unexpected registry path - not reset') }
     $cur = Get-RegValueRaw $u.Key $u.Name
     $a = if ($null -eq $cur) { '' } else { $cur | ConvertTo-Json -Compress -Depth 3 }
     $b = if ($null -eq $u.Nachher) { '' } else { $u.Nachher | ConvertTo-Json -Compress -Depth 3 }
-    if ($a -ne $b) { throw 'Seitdem geaendert - nicht ueberschrieben' }
+    if ($a -ne $b) { throw (T 'Changed since - not overwritten') }
     if ($null -eq $u.Vorher) { if ($null -ne $cur) { Remove-ItemProperty -LiteralPath $u.Key -Name $u.Name -ErrorAction Stop }; return }
     $v = $u.Vorher.Wert
     switch ([string]$u.Vorher.Art) { 'Binary' { $v = [byte[]][Convert]::FromBase64String([string]$v) } 'DWord' { $v = [int]$v } 'QWord' { $v = [int64]$v } 'MultiString' { $v = [string[]]@($v) } }
@@ -433,7 +491,7 @@ function Backup-Task($Task) {
 }
 
 # =============================================================================
-#  Datenquellen
+#  Data sources
 # =============================================================================
 function Get-InstalledApps {
     if ($Script:Cache.Apps) { return $Script:Cache.Apps }
@@ -462,7 +520,7 @@ function Get-BootOffenders([int]$Days = 60) {
         $ev = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Diagnostics-Performance/Operational'; Id = 101, 102, 103, 106, 109; StartTime = (Get-Date).AddDays(-$Days) } -ErrorAction Stop
         $rows = foreach ($e in $ev) {
             $x = [xml]$e.ToXml(); $d = @{}; $x.Event.EventData.Data | ForEach-Object { $d[$_.Name] = $_.'#text' }
-            $typ = switch ($e.Id) { 101 { 'App' } 102 { 'Treiber' } 103 { 'Dienst' } 106 { 'Hintergrund' } 109 { 'Geraet' } }
+            $typ = switch ($e.Id) { 101 { 'App' } 102 { (T 'Driver') } 103 { (T 'Service') } 106 { (T 'Background') } 109 { (T 'Device') } }
             [pscustomobject]@{ Typ = $typ; Datei = $d.Name; Name = $d.FriendlyName; DegradationMs = [int]$d.DegradationTime }
         }
         $r = @($rows | Where-Object Datei | Group-Object Typ, Datei | ForEach-Object {
@@ -502,8 +560,8 @@ function Get-StartupItems {
     }
     $sh = $null; try { $sh = New-Object -ComObject WScript.Shell } catch { }
     $folders = @(
-        @{ Ort = 'Autostart-Ordner (Benutzer)'; Path = [Environment]::GetFolderPath('Startup'); SA = "$Script:SA_HKCU\StartupFolder"; Reg = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' },
-        @{ Ort = 'Autostart-Ordner (Alle)'; Path = [Environment]::GetFolderPath('CommonStartup'); SA = "$Script:SA_HKLM\StartupFolder"; Reg = 'HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' }
+        @{ Ort = (T 'Startup folder (user)'); Path = [Environment]::GetFolderPath('Startup'); SA = "$Script:SA_HKCU\StartupFolder"; Reg = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' },
+        @{ Ort = (T 'Startup folder (all users)'); Path = [Environment]::GetFolderPath('CommonStartup'); SA = "$Script:SA_HKLM\StartupFolder"; Reg = 'HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' }
     )
     foreach ($f in $folders) {
         if (-not $f.Path -or -not (Test-Path $f.Path)) { continue }
@@ -588,21 +646,21 @@ function Get-RecycleBinOld([int]$Days) {
 }
 
 # =============================================================================
-#  Kontext (Server, Firmen-PC, Akku, anderes Konto) und Hardware-Datenquellen
+#  Context (server, company PC, battery, other account) and hardware data sources
 # =============================================================================
 function Test-RebootPending {
     (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
     (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
 }
 
-# Geraeteart: Laptop (PCSystemType 2 bzw. mobiles Gehaeuse), Akku vorhanden (ohne USV), laeuft gerade auf Akku, VM
+# Device type: laptop (PCSystemType 2 or mobile chassis), battery present (excluding UPS), currently on battery, VM
 function Get-ChassisInfo {
     if ($Script:Cache.Chassis) { return $Script:Cache.Chassis }
     $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
     $types = @((Get-CimInstance Win32_SystemEnclosure -ErrorAction SilentlyContinue | Select-Object -First 1).ChassisTypes)
     $mobile = [bool]($types | Where-Object { $_ -in 8, 9, 10, 11, 14, 30, 31, 32 })
     $laptop = ($cs -and [int]$cs.PCSystemType -eq 2) -or $mobile
-    # USV-Geraete melden sich ebenfalls als Batterie - nicht mitzaehlen
+    # UPS devices also report as batteries - do not count them
     $bat = @(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Where-Object { "$($_.Name) $($_.DeviceID) $($_.Caption)" -notmatch '(?i)\bUPS\b|\bUSV\b|APC|Eaton|CyberPower' })
     $akku = $false
     if ($laptop -and $bat.Count) {
@@ -634,21 +692,21 @@ function Get-WtContext {
     $proc = [string]$Script:Me.Name
     $ch = Get-ChassisInfo
     [pscustomobject]@{
-        # Fail-closed: laesst sich das Betriebssystem nicht abfragen, wird wie ein Server behandelt (nur pruefen)
+        # Fail-closed: if the operating system cannot be queried, treat it like a server (check only)
         Server = ((-not $os) -or $os.ProductType -ne 1); Verwaltet = ($domain -or $mdm -or $aad -or $sccm); Domaene = $domain; Intune = $mdm; EntraJoin = $aad; ConfigMgr = $sccm
         AnderesKonto = [bool]($sess -and $proc -and $sess -ne $proc); ProzessBenutzer = $proc; SitzungsBenutzer = $sess
         NeustartAusstehend = [bool](Test-RebootPending); Akku = [bool]$ch.Akku; Laptop = [bool]$ch.Laptop; VM = [bool]$ch.VM; Admin = $Script:IsAdmin; Hinweise = @()
     }
 }
 
-# Andere aktive Sicherheitsprodukte (Security Center, nur Client-Windows). productState-Bit 0x1000 = aktiv
+# Other active security products (Security Center, client Windows only). productState bit 0x1000 = active
 function Get-OtherSecurityProducts([string]$Class) {
     $k = "Sec_$Class"; if ($Script:Cache.ContainsKey($k)) { return $Script:Cache[$k] }
     $r = @(); try { $r = @(Get-CimInstance -Namespace root\SecurityCenter2 -ClassName $Class -ErrorAction Stop | Where-Object { [string]$_.displayName -notmatch '(?i)defender|windows' -and ([int64]$_.productState -band 0x1000) } | ForEach-Object { [string]$_.displayName }) } catch { }
     $Script:Cache[$k] = $r
     return $r
 }
-# Supportende der Windows-Version und letzte Update-Installation
+# End of support of the Windows version and last update installation
 function Get-WindowsSupportInfo {
     if ($Script:Cache.ContainsKey('WinSupport')) { return $Script:Cache.WinSupport }
     $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
@@ -673,15 +731,15 @@ function ConvertTo-WtNumber($v) {
     $s = ([string]$v).Trim()
     if ($s -match '(?i)n/?a\b|not supported|unknown|^$') { return $null }
     $s = $s -replace '[^\d\.,\-]', ''
-    if ($s -match '^-?\d{1,3}(\.\d{3})+$') { $s = $s -replace '\.', '' }          # Tausenderpunkte (1.234)
+    if ($s -match '^-?\d{1,3}(\.\d{3})+$') { $s = $s -replace '\.', '' }          # Thousands separators (1.234)
     elseif ($s -match '^-?\d{1,3}(,\d{3})+\.\d+$') { $s = $s -replace ',', '' }   # 1,234.5
-    else { $s = $s -replace ',', '.' }                                           # Dezimalkomma
+    else { $s = $s -replace ',', '.' }                                           # Decimal comma
     $d = 0.0
     if ([double]::TryParse($s, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$d)) { return $d }
     return $null
 }
 
-# winget sicher aufloesen: mit Adminrechten nur aus dem installierten App-Installer-Paket (nicht ueber PATH)
+# Resolve winget safely: with admin rights only from the installed App Installer package (not via PATH)
 function Get-WingetPath {
     if ($Script:Cache.ContainsKey('Winget')) { return $Script:Cache.Winget }
     $p = $null
@@ -694,24 +752,24 @@ function Get-WingetPath {
     return $p
 }
 
-# Verstaendliche Namen fuer Store-Apps und Geraeteklassen
+# Friendly names for Store apps and device classes
 $Script:AppNames = @{
-    'Microsoft.BingNews' = 'Microsoft News'; 'Microsoft.BingWeather' = 'Wetter (Microsoft)'; 'Microsoft.ZuneVideo' = 'Filme & TV'; 'Microsoft.Getstarted' = 'Tipps'
-    'Microsoft.MicrosoftSolitaireCollection' = 'Solitaire-Spiele'; 'Microsoft.MixedReality.Portal' = 'Mixed-Reality-Portal'; 'Microsoft.WindowsFeedbackHub' = 'Feedback-Hub'
-    'Microsoft.M365Companions' = 'Microsoft 365 Begleiter-Apps'; 'Clipchamp.Clipchamp' = 'Clipchamp (Videoschnitt)'; 'Microsoft.549981C3F5F10' = 'Cortana'; 'Microsoft.Windows.DevHome' = 'Dev Home (für Entwickler)'
-    'Microsoft.BingSearch' = 'Bing-Suche'; 'Microsoft.PowerAutomateDesktop' = 'Power Automate'; 'Microsoft.People' = 'Kontakte (alt)'; 'Microsoft.SkypeApp' = 'Skype'
-    'Microsoft.Wallet' = 'Wallet'; 'Microsoft.3DBuilder' = '3D Builder'; 'Microsoft.Print3D' = 'Print 3D'; 'Microsoft.Microsoft3DViewer' = '3D-Viewer'
+    'Microsoft.BingNews' = 'Microsoft News'; 'Microsoft.BingWeather' = (T 'Weather (Microsoft)'); 'Microsoft.ZuneVideo' = (T 'Movies & TV'); 'Microsoft.Getstarted' = (T 'Tips')
+    'Microsoft.MicrosoftSolitaireCollection' = (T 'Solitaire games'); 'Microsoft.MixedReality.Portal' = (T 'Mixed Reality Portal'); 'Microsoft.WindowsFeedbackHub' = (T 'Feedback Hub')
+    'Microsoft.M365Companions' = (T 'Microsoft 365 companion apps'); 'Clipchamp.Clipchamp' = (T 'Clipchamp (video editing)'); 'Microsoft.549981C3F5F10' = 'Cortana'; 'Microsoft.Windows.DevHome' = (T 'Dev Home (for developers)')
+    'Microsoft.BingSearch' = (T 'Bing Search'); 'Microsoft.PowerAutomateDesktop' = 'Power Automate'; 'Microsoft.People' = (T 'People (legacy)'); 'Microsoft.SkypeApp' = 'Skype'
+    'Microsoft.Wallet' = 'Wallet'; 'Microsoft.3DBuilder' = '3D Builder'; 'Microsoft.Print3D' = 'Print 3D'; 'Microsoft.Microsoft3DViewer' = (T '3D Viewer')
 }
 function Get-AppDisplayName([string]$Id) { if ($Script:AppNames.ContainsKey($Id)) { return $Script:AppNames[$Id] }; return ($Id -replace '^[^\.]+\.', '') }
 $Script:DeviceClassNames = @{
-    'System' = 'Systemgeräte'; 'HDC' = 'Laufwerks-Controller'; 'SCSIAdapter' = 'Speicher-Controller'; 'Display' = 'Grafikkarten'; 'Monitor' = 'Bildschirme'; 'MEDIA' = 'Audiogeräte'
-    'Net' = 'Netzwerkadapter'; 'DiskDrive' = 'Laufwerke'; 'Volume' = 'Laufwerksbereiche'; 'USB' = 'USB-Controller'; 'USBDevice' = 'USB-Geräte'; 'HIDClass' = 'Eingabegeräte'
-    'Keyboard' = 'Tastaturen'; 'Mouse' = 'Mäuse'; 'WPD' = 'Handys und Kameras'; 'Image' = 'Scanner und Kameras'; 'Camera' = 'Kameras'; 'Ports' = 'Anschlüsse (COM)'; 'Processor' = 'Prozessoren'
-    'SmartCardReader' = 'Kartenleser'; 'Sensor' = 'Sensoren'; 'Biometric' = 'Fingerabdruckleser'
+    'System' = (T 'System devices'); 'HDC' = (T 'Drive controllers'); 'SCSIAdapter' = (T 'Storage controllers'); 'Display' = (T 'Graphics cards'); 'Monitor' = (T 'Monitors'); 'MEDIA' = (T 'Audio devices')
+    'Net' = (T 'Network adapters'); 'DiskDrive' = (T 'Drives'); 'Volume' = (T 'Volumes'); 'USB' = (T 'USB controllers'); 'USBDevice' = (T 'USB devices'); 'HIDClass' = (T 'Input devices')
+    'Keyboard' = (T 'Keyboards'); 'Mouse' = (T 'Mice'); 'WPD' = (T 'Phones and cameras'); 'Image' = (T 'Scanners and cameras'); 'Camera' = (T 'Cameras'); 'Ports' = (T 'Ports (COM)'); 'Processor' = (T 'Processors')
+    'SmartCardReader' = (T 'Card readers'); 'Sensor' = (T 'Sensors'); 'Biometric' = (T 'Fingerprint readers')
 }
 function Get-DeviceClassName([string]$Class) { if ($Script:DeviceClassNames.ContainsKey($Class)) { return $Script:DeviceClassNames[$Class] }; return $Class }
 
-# NVIDIA-Grafikkarten: nvidia-smi wird mit dem Treiber installiert (lokalisierungsfeste CSV-Ausgabe)
+# NVIDIA graphics cards: nvidia-smi is installed with the driver (locale-independent CSV output)
 function Find-NvidiaSmi { foreach ($p in @("$env:SystemRoot\System32\nvidia-smi.exe", "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe")) { if ($p -and (Test-Path -LiteralPath $p)) { return $p } }; return $null }
 function Invoke-NvidiaQuery([string]$Exe) {
     $q = 'name,temperature.gpu,fan.speed,power.draw,power.limit,clocks.sm,clocks.max.sm,utilization.gpu,pcie.link.width.current,pcie.link.width.max'
@@ -727,7 +785,7 @@ function Get-NvidiaGpus {
     $exe = Find-NvidiaSmi
     if ($exe) {
         $res = @(Invoke-NvidiaQuery $exe)
-        # Drosselgruende sind Momentaufnahmen: nur werten, was in mindestens 2 von 3 Proben gesetzt ist
+        # Throttle reasons are snapshots: only count what is set in at least 2 of 3 samples
         if ($res | Where-Object { $_.Gruende -band 0xE8 }) {
             $proben = @(, @($res | ForEach-Object { $_.Gruende }))
             for ($i = 0; $i -lt 2; $i++) { Start-Sleep -Milliseconds 1000; $proben += , @(Invoke-NvidiaQuery $exe | ForEach-Object { $_.Gruende }) }
@@ -737,7 +795,7 @@ function Get-NvidiaGpus {
                 $res[$g].GruendeStabil = $stabil
             }
         } else { foreach ($g in $res) { $g.GruendeStabil = $g.Gruende } }
-        # Temperaturgrenzen der Karte (Ausgabe ist immer englisch)
+        # Temperature limits of the card (output is always English)
         $t = @(& $exe -q -d TEMPERATURE 2>$null)
         $gi = -1
         foreach ($l in $t) {
@@ -768,17 +826,17 @@ function ConvertFrom-NvidiaCsv([string[]]$Lines) {
 }
 function Get-NvidiaReasonText([int64]$m) {
     $t = @()
-    if ($m -band 0x40) { $t += 'Hitze (Hardware)' }
-    if ($m -band 0x20) { $t += 'Temperaturgrenze' }
-    if ($m -band 0x80) { $t += 'Stromversorgung (Power Brake)' }
-    if ($m -band 0x8) { $t += 'Hardware-Signal (oft Stromversorgung oder Hitze)' }
-    if ($m -band 0x4) { $t += 'Leistungsgrenze' }
+    if ($m -band 0x40) { $t += (T 'Heat (hardware)') }
+    if ($m -band 0x20) { $t += (T 'Temperature limit') }
+    if ($m -band 0x80) { $t += (T 'Power supply (power brake)') }
+    if ($m -band 0x8) { $t += (T 'Hardware signal (often power supply or heat)') }
+    if ($m -band 0x4) { $t += (T 'Power limit') }
     return $t
 }
 
-# Sensoren aus Hardware-Monitoren (optional): LibreHardwareMonitor / OpenHardwareMonitor (WMI, nur solange das
-# Programm laeuft) oder HWiNFO (Werte mit "Report value in Gadget", nur solange HWiNFO laeuft). Ohne diese Programme
-# meldet ein Desktop-Mainboard Luefterdrehzahlen und CPU-Temperatur meist gar nicht an Windows.
+# Sensors from hardware monitors (optional): LibreHardwareMonitor / OpenHardwareMonitor (WMI, only while the
+# program runs) or HWiNFO (values with "Report value in Gadget", only while HWiNFO runs). Without these programs
+# a desktop motherboard usually does not report fan speeds and CPU temperature to Windows at all.
 function Get-HwMonitorSensors([switch]$NoCache) {
     if (-not $NoCache -and $Script:Cache.ContainsKey('HwMon')) { return $Script:Cache.HwMon }
     $res = @()
@@ -820,7 +878,7 @@ function Get-CpuTempFromSensors($sensors) {
     $t = @($sensors | Where-Object { $_.Typ -eq 'Temperature' -and $_.Wert -gt 5 -and $_.Wert -lt 130 -and $_.Name -notmatch '(?i)distance|tjmax' })
     $cpu = @($t | Where-Object { $_.GeraeteTyp -eq 'Cpu' })
     if (-not $cpu.Count) { $cpu = @($t | Where-Object { $_.Name -match '(?i)\bcpu\b|tctl|tdie|package' -and $_.Name -notmatch '(?i)gpu|vrm|soc|chipset' -and $_.Geraet -notmatch '(?i)gpu|nvidia|radeon' }) }
-    # Bevorzugt: Tdie (ohne Offset), dann Package/Tctl, dann Core-Mittel/Max
+    # Preferred: Tdie (without offset), then Package/Tctl, then core average/max
     foreach ($muster in '(?i)tdie', '(?i)package|tctl', '(?i)core.*(average|mittel)', '(?i)core.*max') {
         $pref = $cpu | Where-Object { $_.Name -match $muster } | Sort-Object Wert -Descending | Select-Object -First 1
         if ($pref) { return [math]::Round([double]$pref.Wert, 1) }
@@ -829,7 +887,7 @@ function Get-CpuTempFromSensors($sensors) {
     if ($pref) { return [math]::Round([double]$pref.Wert, 1) }
     return $null
 }
-# CPU-Temperatur fuer den Scan: Median mehrerer Werte plus Auslastung (nur aussagekraeftig, wenn der PC ruht)
+# CPU temperature for the scan: median of several readings plus load (only meaningful while the PC is idle)
 function Get-CpuTempMedian([int]$Count = 5, [int]$DelayMs = 600) {
     $temps = @(); $last = @()
     for ($i = 0; $i -lt $Count; $i++) {
@@ -843,7 +901,7 @@ function Get-CpuTempMedian([int]$Count = 5, [int]$DelayMs = 600) {
     $s = @($temps | Sort-Object)
     [pscustomobject]@{ TempC = $s[[int][math]::Floor($s.Count / 2)]; Auslastung = $(if ($last.Count) { [math]::Round(($last | Measure-Object -Average).Average, 0) } else { $null }) }
 }
-# Temperaturgrenze der CPU laut Konfiguration (Regex auf den CPU-Namen)
+# CPU temperature limit according to the configuration (regex on the CPU name)
 function Get-CpuTjMax([string]$Name) {
     if (-not $Name) { $Name = (Get-ChassisInfo).CpuName }
     $tab = $Script:Cfg.CpuTjMax
@@ -868,7 +926,7 @@ function Get-CpuPerfSample {
 
 function Get-DiskHealth {
     if ($Script:Cache.ContainsKey('Disks')) { return $Script:Cache.Disks }
-    # SMART-Vorhersage: InstanceName = PNPDeviceID + '_0'; Win32_DiskDrive.Index = PhysicalDisk.DeviceId
+    # SMART prediction: InstanceName = PNPDeviceID + '_0'; Win32_DiskDrive.Index = PhysicalDisk.DeviceId
     $pf = @(); try { $pf = @(Get-CimInstance -Namespace root\wmi -ClassName MSStorageDriver_FailurePredictStatus -ErrorAction Stop | Where-Object { $_.PredictFailure } | ForEach-Object { [string]$_.InstanceName }) } catch { }
     $dd = @{}; foreach ($x in @(Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue)) { $dd[[string]$x.Index] = $x }
     $zugeordnet = 0
@@ -905,33 +963,33 @@ function Get-BatteryWear {
     return $null
 }
 
-# Drosselung durch die Firmware (Kernel-Processor-Power 37). Windows schreibt das Ereignis je logischem Prozessor -
-# gezaehlt werden deshalb Episoden (verschiedene Minuten), nicht Ereignisse.
+# Throttling by the firmware (Kernel-Processor-Power 37). Windows writes the event per logical processor -
+# so episodes (distinct minutes) are counted, not events.
 function Get-ThrottleEventCount([int]$Days = 30, [datetime]$Since = [datetime]::MinValue) {
     $start = if ($Since -gt [datetime]::MinValue) { $Since } else { (Get-Date).AddDays(-$Days) }
     try { return @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-Processor-Power'; Id = 37; StartTime = $start } -MaxEvents 5000 -ErrorAction Stop | ForEach-Object { $_.TimeCreated.ToString('yyyyMMddHHmm') } | Select-Object -Unique).Count } catch { return 0 }
 }
 function Get-EventCount([hashtable]$Filter) { try { return @(Get-WinEvent -FilterHashtable $Filter -MaxEvents 2000 -ErrorAction Stop).Count } catch { return 0 } }
 
-# Warnsignale aus dem Ereignisprotokoll (fuer Regel EVT-HEALTH und den Snapshot - so bleibt der Score vergleichbar)
+# Warning signs from the event log (for rule EVT-HEALTH and the snapshot - keeps the score comparable)
 function Get-WarningSignals {
     if ($Script:Cache.ContainsKey('Warn')) { return $Script:Cache.Warn }
     $since = (Get-Date).AddDays(-30)
     $checks = @(
-        @{ F = @{ LogName = 'System'; Id = 41; ProviderName = 'Microsoft-Windows-Kernel-Power'; StartTime = $since }; T = 'Plötzliches Ausschalten oder Neustart ohne Herunterfahren' },
-        @{ F = @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; StartTime = $since }; T = 'Bluescreen (Windows ist abgestürzt)' },
-        @{ F = @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; Level = 1, 2, 3; StartTime = $since }; T = 'Von der Hardware gemeldete Fehler' },
-        @{ F = @{ LogName = 'System'; ProviderName = 'disk', 'Ntfs', 'stornvme', 'storahci'; Level = 1, 2; StartTime = $since }; T = 'Fehler beim Lesen oder Schreiben eines Laufwerks' },
-        @{ F = @{ LogName = 'System'; ProviderName = 'nvlddmkm', 'amdkmdag', 'igfx'; Level = 1, 2, 3; StartTime = $since }; T = 'Grafiktreiber ist abgestürzt oder wurde neu gestartet' },
-        @{ F = @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-TPM-WMI', 'TPM'; Level = 1, 2; StartTime = $since }; T = 'Fehler des Sicherheitschips (TPM) – oft hilft ein BIOS-Update' },
-        @{ F = @{ LogName = 'System'; ProviderName = 'Volsnap'; Level = 1, 2; StartTime = $since }; T = 'Wiederherstellungspunkte gingen verloren' }
+        @{ F = @{ LogName = 'System'; Id = 41; ProviderName = 'Microsoft-Windows-Kernel-Power'; StartTime = $since }; T = (T 'Sudden power-off or restart without shutting down') },
+        @{ F = @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; StartTime = $since }; T = (T 'Blue screen (Windows crashed)') },
+        @{ F = @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; Level = 1, 2, 3; StartTime = $since }; T = (T 'Errors reported by the hardware') },
+        @{ F = @{ LogName = 'System'; ProviderName = 'disk', 'Ntfs', 'stornvme', 'storahci'; Level = 1, 2; StartTime = $since }; T = (T 'Errors reading or writing a drive') },
+        @{ F = @{ LogName = 'System'; ProviderName = 'nvlddmkm', 'amdkmdag', 'igfx'; Level = 1, 2, 3; StartTime = $since }; T = (T 'Graphics driver crashed or was restarted') },
+        @{ F = @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-TPM-WMI', 'TPM'; Level = 1, 2; StartTime = $since }; T = (T 'Security chip (TPM) errors – a BIOS update often helps') },
+        @{ F = @{ LogName = 'System'; ProviderName = 'Volsnap'; Level = 1, 2; StartTime = $since }; T = (T 'Restore points were lost') }
     )
     $r = @(foreach ($c in $checks) { $n = Get-EventCount $c.F; if ($n) { [pscustomobject]@{ Text = $c.T; Anzahl = $n } } })
     $Script:Cache.Warn = $r
     return $r
 }
 
-# Energieeinstellung lesen (lokalisierungsfest ueber die Registry statt powercfg-Text)
+# Read a power setting (locale-independent via the registry instead of powercfg text)
 function Get-PowerSettingIndex([string]$SubGuid, [string]$SettingGuid) {
     $o = (& powercfg.exe /getactivescheme 2>$null) -join ' '
     if ($o -notmatch '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') { return $null }
@@ -950,10 +1008,10 @@ $Script:GuidSysCoolPol = '94d3a615-a899-4ac5-ae2b-e4d8f634367f'
 $Script:GuidProcMax = 'bc5038f7-23e0-4960-96da-33abaf5935ec'
 $Script:GuidProcMin = '893dee8e-2bef-41e0-89c6-b55d0929964c'
 $Script:GuidBoostMode = 'be337238-0d82-4146-a960-4f3749d470c7'
-$Script:CoolingTestMin = 20   # Tests setzen den Wert herunter
+$Script:CoolingTestMin = 20   # Tests lower this value
 
-# Hardware-Zustand fuer Regel HW-COOLING, Snapshot und App: Punkte mit Stufe ok|warn|krit|'' (Info).
-# Wertung 'moment' = Momentaufnahme (Temperatur, aktuelle Drosselung) - zaehlt nicht im Score.
+# Hardware state for rule HW-COOLING, snapshot and app: points with level ok|warn|krit|'' (info).
+# Rating 'moment' = snapshot (temperature, current throttling) - does not count in the score.
 function Get-HardwarePoints {
     if ($Script:Cache.ContainsKey('HwPoints')) { return $Script:Cache.HwPoints }
     $c = $Script:Cfg
@@ -963,32 +1021,32 @@ function Get-HardwarePoints {
     $sens = @(Get-HwMonitorSensors)
     $quelle = if ($sens.Count) { $sens[0].Quelle } else { $null }
 
-    # ---- Prozessor: Temperatur (nur mit Hardware-Monitor), Drosselung, Thermalzonen
+    # ---- Processor: temperature (only with a hardware monitor), throttling, thermal zones
     $cpuT = $null
     if ($sens.Count) {
         $m = Get-CpuTempMedian
         if ($m) {
             $cpuT = $m.TempC
             $plus = if ($ch.Laptop) { 5 } else { 0 }
-            if ($null -ne $m.Auslastung -and $m.Auslastung -gt 30) { P '' ("Prozessor: {0:N0} °C (gemessen, während der PC beschäftigt war – nicht bewertet)" -f $cpuT) 'CPU' 'moment' }
-            elseif ($cpuT -ge $c.CpuTempIdleCritC + $plus) { P 'krit' ("Prozessor: {0:N0} °C, obwohl er kaum etwas zu tun hat – Kühler, Lüfter und Staub prüfen lassen" -f $cpuT) 'CPU' 'moment' }
-            elseif ($cpuT -ge $c.CpuTempIdleWarnC + $plus) { P 'warn' ("Prozessor: {0:N0} °C bei wenig Last – etwas warm. Lüfter und Staubfilter prüfen" -f $cpuT) 'CPU' 'moment' }
-            else { P 'ok' ("Prozessor: {0:N0} °C" -f $cpuT) 'CPU' 'moment' }
+            if ($null -ne $m.Auslastung -and $m.Auslastung -gt 30) { P '' ((T 'Processor: {0:N0} °C (measured while the PC was busy – not rated)') -f $cpuT) 'CPU' 'moment' }
+            elseif ($cpuT -ge $c.CpuTempIdleCritC + $plus) { P 'krit' ((T 'Processor: {0:N0} °C although it has hardly anything to do – have the cooler, fans and dust checked') -f $cpuT) 'CPU' 'moment' }
+            elseif ($cpuT -ge $c.CpuTempIdleWarnC + $plus) { P 'warn' ((T 'Processor: {0:N0} °C under light load – a bit warm. Check fans and dust filters') -f $cpuT) 'CPU' 'moment' }
+            else { P 'ok' ((T 'Processor: {0:N0} °C') -f $cpuT) 'CPU' 'moment' }
         }
     }
     $ep7 = Get-ThrottleEventCount 7; $ep30 = Get-ThrottleEventCount 30
-    if (-not $ch.Laptop -and $ep7 -ge 3) { P 'warn' ("Die Firmware hat den Prozessor in den letzten 7 Tagen {0}-mal gebremst. Häufige Ursachen: Kühlung, verstaubte Lüfter oder Leistungsgrenzen im BIOS" -f $ep7) 'CPU' 'moment' }
-    elseif ($ep30 -gt 0) { P '' ("Die Firmware hat den Prozessor in den letzten 30 Tagen {0}-mal kurz gebremst{1}" -f $ep30, $(if ($ch.Laptop) { ' – auf Laptops (z. B. im Akkubetrieb) normal' } else { ' – gelegentlich ist das normal' })) 'CPU' 'moment' }
-    else { P 'ok' 'Prozessor: keine Drosselung in den letzten 30 Tagen' 'CPU' 'moment' }
+    if (-not $ch.Laptop -and $ep7 -ge 3) { P 'warn' ((T 'The firmware throttled the processor {0} times in the last 7 days. Common causes: cooling, dusty fans or power limits in the BIOS') -f $ep7) 'CPU' 'moment' }
+    elseif ($ep30 -gt 0) { P '' ((T 'The firmware briefly throttled the processor {0} times in the last 30 days{1}') -f $ep30, $(if ($ch.Laptop) { (T ' – normal on laptops (e.g. on battery)') } else { (T ' – this is normal occasionally') })) 'CPU' 'moment' }
+    else { P 'ok' (T 'Processor: no throttling in the last 30 days') 'CPU' 'moment' }
     foreach ($z in (Get-ThermalZones)) {
         if ($z.PassivLimit -gt 0 -and $z.PassivLimit -lt 100) {
-            $grund = if ($z.Gruende -band 1) { 'wegen Hitze' } elseif ($z.Gruende -band 2) { 'wegen einer Strombegrenzung' } else { '' }
-            P $(if ($z.PassivLimit -le 80) { 'krit' } else { 'warn' }) ("Windows bremst den Prozessor gerade {0} ({1}: {2} % Leistung, {3:N0} °C)" -f $grund, $z.Name, $z.PassivLimit, $z.TempC).Replace('  ', ' ') 'CPU' 'moment'
+            $grund = if ($z.Gruende -band 1) { (T 'due to heat') } elseif ($z.Gruende -band 2) { (T 'due to a current limit') } else { '' }
+            P $(if ($z.PassivLimit -le 80) { 'krit' } else { 'warn' }) ((T 'Windows is currently throttling the processor {0} ({1}: {2} % performance, {3:N0} °C)') -f $grund, $z.Name, $z.PassivLimit, $z.TempC).Replace('  ', ' ') 'CPU' 'moment'
         }
-        elseif ($z.TempC -ge 90) { P 'warn' ("Temperaturfühler {0}: {1:N0} °C" -f $z.Name, $z.TempC) 'CPU' 'moment' }
+        elseif ($z.TempC -ge 90) { P 'warn' ((T 'Temperature sensor {0}: {1:N0} °C') -f $z.Name, $z.TempC) 'CPU' 'moment' }
     }
 
-    # ---- Luefter (nur mit Hardware-Monitor)
+    # ---- Fans (only with a hardware monitor)
     $fans = @($sens | Where-Object { $_.Typ -eq 'Fan' -and $_.GeraeteTyp -notmatch '(?i)gpu' -and $_.Name -notmatch '(?i)\bgpu\b' })
     $ctrl = @($sens | Where-Object { $_.Typ -eq 'Control' -and $_.GeraeteTyp -notmatch '(?i)gpu' -and $_.Name -notmatch '(?i)\bgpu\b|pump|aio' })
     if ($fans.Count) {
@@ -996,102 +1054,102 @@ function Get-HardwarePoints {
         $pumpen = @($fans | Where-Object { $_.Name -match '(?i)pump|aio' })
         $cpuFan = @($fans | Where-Object { $_.Name -match '(?i)\bcpu\b' -and $_.Name -notmatch '(?i)pump|aio|opt' })
         $steht = $cpuFan.Count -and -not ($cpuFan | Where-Object { $_.Wert -ge 100 })
-        if ($steht -and $null -ne $cpuT -and $cpuT -ge 60) { P 'krit' ("CPU-Lüfter meldet 0 U/min, obwohl der Prozessor {0:N0} °C warm ist – nicht angeschlossen oder defekt. Im BIOS prüfen" -f $cpuT) 'Lüfter' }
-        elseif ($steht) { P '' 'CPU-Lüfter steht gerade – bei kühlem Prozessor ist das oft gewollt (Lüfterstopp im Leerlauf)' 'Lüfter' }
-        elseif (-not $laufend.Count -and $null -ne $cpuT -and $cpuT -ge 60) { P 'krit' 'Kein Lüfter meldet eine Drehzahl, obwohl der Prozessor warm ist – Lüfteranschlüsse prüfen' 'Lüfter' }
-        if ($pumpen.Count -and -not ($pumpen | Where-Object { $_.Wert -ge 100 })) { P 'warn' 'Die Pumpe der Wasserkühlung meldet 0 U/min – entweder ist ihr Drehzahlkabel nicht angeschlossen oder die Pumpe steht. Im BIOS bzw. in der Software der Kühlung prüfen' 'Lüfter' }
-        if ($laufend.Count) { P 'ok' ('Lüfter: ' + (($laufend | Sort-Object Wert -Descending | Select-Object -First 6 | ForEach-Object { '{0} {1:N0} U/min' -f $_.Name, $_.Wert }) -join ', ')) 'Lüfter' }
-        # Volllast bei kuehlem Prozessor: nur Steuerwerte, deren Luefter wirklich laeuft (gleiche Nummer #n)
+        if ($steht -and $null -ne $cpuT -and $cpuT -ge 60) { P 'krit' ((T 'CPU fan reports 0 RPM although the processor is at {0:N0} °C – not connected or defective. Check in the BIOS') -f $cpuT) 'Lüfter' }
+        elseif ($steht) { P '' (T 'CPU fan is currently stopped – with a cool processor this is often intended (fan stop at idle)') 'Lüfter' }
+        elseif (-not $laufend.Count -and $null -ne $cpuT -and $cpuT -ge 60) { P 'krit' (T 'No fan reports a speed although the processor is warm – check the fan connectors') 'Lüfter' }
+        if ($pumpen.Count -and -not ($pumpen | Where-Object { $_.Wert -ge 100 })) { P 'warn' (T 'The water cooling pump reports 0 RPM – either its speed cable is not connected or the pump has stopped. Check in the BIOS or in the cooling software') 'Lüfter' }
+        if ($laufend.Count) { P 'ok' ((T 'Fans: ') + (($laufend | Sort-Object Wert -Descending | Select-Object -First 6 | ForEach-Object { (T '{0} {1:N0} RPM') -f $_.Name, $_.Wert }) -join ', ')) 'Lüfter' }
+        # Full speed with a cool processor: only control values whose fan is really spinning (same number #n)
         $voll = @($ctrl | Where-Object {
             $cv = $_; if ($cv.Wert -lt 95) { return $false }
             if ($cv.Name -match '#(\d+)') { $nr = $Matches[1]; return [bool]($fans | Where-Object { $_.Name -match "#$nr\b" -and $_.Wert -ge 100 }) }
             return [bool]$laufend.Count
         })
-        if ($voll.Count -and $null -ne $cpuT -and $cpuT -lt 55) { P 'warn' ("Lüfter laufen auf Volllast, obwohl der Prozessor kühl ist ({0}) – die Lüfterkurve im BIOS ist vermutlich zu scharf eingestellt (unnötig laut). Hinweis: Das Programm nennt die Anschlüsse oft nur 'Fan #1' – im BIOS heißen sie z. B. CPU_FAN oder CHA_FAN" -f (($voll | Select-Object -First 3 | ForEach-Object { $_.Name }) -join ', ')) 'Lüfter' }
-        P '' ("Sensordaten von {0}" -f $quelle) 'Lüfter'
+        if ($voll.Count -and $null -ne $cpuT -and $cpuT -lt 55) { P 'warn' ((T 'Fans run at full speed although the processor is cool ({0}) – the fan curve in the BIOS is probably too aggressive (unnecessarily loud). Note: the program often only names the connectors ''Fan #1'' – in the BIOS they are called e.g. CPU_FAN or CHA_FAN') -f (($voll | Select-Object -First 3 | ForEach-Object { $_.Name }) -join ', ')) 'Lüfter' }
+        P '' ((T 'Sensor data from {0}') -f $quelle) 'Lüfter'
     } else {
-        P '' 'Lüfterdrehzahlen: Dieses Mainboard meldet sie nicht direkt an Windows. Läuft das kostenlose Programm LibreHardwareMonitor (ab Version 0.9.5), liest WinTidy Lüfter und Prozessor-Temperatur automatisch mit. Den Kühlungstest gibt es trotzdem.' 'Lüfter'
+        P '' (T 'Fan speeds: this motherboard does not report them directly to Windows. If the free program LibreHardwareMonitor (version 0.9.5 or later) is running, WinTidy reads fans and processor temperature automatically. The cooling test works anyway.') 'Lüfter'
     }
     foreach ($p in (Get-FanToolPoints)) { $pts.Add($p) }
 
-    # ---- Grafikkarte (NVIDIA). fan.speed ist die Soll-Drehzahl, kein Messwert.
+    # ---- Graphics card (NVIDIA). fan.speed is the target speed, not a measurement.
     foreach ($g in (Get-NvidiaGpus)) {
-        $txt = '{0}: {1}' -f $g.Name, $(if ($null -ne $g.TempC) { '{0:N0} °C' -f $g.TempC } else { 'Temperatur unbekannt' })
-        if ($null -ne $g.LuefterProzent) { $txt += ', Lüfter {0:N0} %' -f $g.LuefterProzent }
+        $txt = '{0}: {1}' -f $g.Name, $(if ($null -ne $g.TempC) { '{0:N0} °C' -f $g.TempC } else { (T 'temperature unknown') })
+        if ($null -ne $g.LuefterProzent) { $txt += (T ', fans {0:N0} %') -f $g.LuefterProzent }
         $m = [int64]$g.GruendeStabil
         $leerlauf = ($null -ne $g.Auslastung -and $g.Auslastung -lt 10)
         $slow = if ($g.SlowdownC) { $g.SlowdownC } else { $c.GpuTempCritC }
         $grenzeLast = if ($g.MaxOpC) { $g.MaxOpC - 5 } elseif ($g.ZielC) { $g.ZielC + 3 } else { $c.GpuTempWarnC }
-        if (($m -band 0x40) -or ($null -ne $g.TempC -and $g.TempC -ge $slow)) { P 'krit' ($txt + ' – wird wegen Hitze gebremst. Gehäuselüfter und Staub prüfen') 'Grafikkarte' 'moment' }
-        elseif ($null -ne $g.TempC -and $null -ne $g.LuefterProzent -and $g.LuefterProzent -eq 0 -and $g.TempC -ge 70) { P 'warn' ($txt + ' – die Lüfter laufen trotz hoher Temperatur nicht an. Lüfterkurve bzw. Grafikkarten-Software prüfen') 'Grafikkarte' 'moment' }
-        elseif ($leerlauf -and $null -ne $g.TempC -and $g.TempC -ge 70) { P 'warn' ($txt + ' – im Leerlauf ungewöhnlich warm. Luftstrom im Gehäuse prüfen') 'Grafikkarte' 'moment' }
-        elseif (-not $leerlauf -and $null -ne $g.TempC -and $g.TempC -ge $grenzeLast) { P 'warn' ($txt + ' – läuft an der Temperaturgrenze') 'Grafikkarte' 'moment' }
-        elseif ($m -band 0x88) { P 'warn' ($txt + ' – wird gebremst: ' + ((Get-NvidiaReasonText ($m -band 0x88)) -join ', ')) 'Grafikkarte' 'moment' }
-        elseif ($m -band 0x20) { P '' ($txt + ' – regelt den Takt, um ihre Temperaturgrenze zu halten (normal unter Last)') 'Grafikkarte' 'moment' }
-        elseif ($null -ne $g.LuefterProzent -and $g.LuefterProzent -eq 0) { P 'ok' ($txt + ' (Lüfter stehen bei wenig Last – das ist so gewollt und leise)') 'Grafikkarte' 'moment' }
+        if (($m -band 0x40) -or ($null -ne $g.TempC -and $g.TempC -ge $slow)) { P 'krit' ($txt + (T ' – throttled due to heat. Check case fans and dust')) 'Grafikkarte' 'moment' }
+        elseif ($null -ne $g.TempC -and $null -ne $g.LuefterProzent -and $g.LuefterProzent -eq 0 -and $g.TempC -ge 70) { P 'warn' ($txt + (T ' – the fans do not start despite the high temperature. Check the fan curve or the graphics card software')) 'Grafikkarte' 'moment' }
+        elseif ($leerlauf -and $null -ne $g.TempC -and $g.TempC -ge 70) { P 'warn' ($txt + (T ' – unusually warm at idle. Check the airflow in the case')) 'Grafikkarte' 'moment' }
+        elseif (-not $leerlauf -and $null -ne $g.TempC -and $g.TempC -ge $grenzeLast) { P 'warn' ($txt + (T ' – running at the temperature limit')) 'Grafikkarte' 'moment' }
+        elseif ($m -band 0x88) { P 'warn' ($txt + (T ' – throttled: ') + ((Get-NvidiaReasonText ($m -band 0x88)) -join ', ')) 'Grafikkarte' 'moment' }
+        elseif ($m -band 0x20) { P '' ($txt + (T ' – lowers its clock to stay within its temperature limit (normal under load)')) 'Grafikkarte' 'moment' }
+        elseif ($null -ne $g.LuefterProzent -and $g.LuefterProzent -eq 0) { P 'ok' ($txt + (T ' (fans stop at low load – this is intended and quiet)')) 'Grafikkarte' 'moment' }
         else { P 'ok' $txt 'Grafikkarte' 'moment' }
         if ($g.PcieBreite -and $g.PcieBreiteMax -and $g.PcieBreite -lt $g.PcieBreiteMax) {
-            if ($g.PcieBreite -le 4) { P 'warn' ("{0} ist nur mit x{1} statt x{2} angebunden – steckt sie im richtigen Steckplatz (meist der oberste lange)?" -f $g.Name, $g.PcieBreite, $g.PcieBreiteMax) 'Grafikkarte' }
-            else { P '' ("{0} ist mit x{1} statt x{2} angebunden – bei manchen Mainboards normal, wenn weitere Steckplätze oder M.2-Plätze belegt sind" -f $g.Name, $g.PcieBreite, $g.PcieBreiteMax) 'Grafikkarte' }
+            if ($g.PcieBreite -le 4) { P 'warn' ((T '{0} is only connected with x{1} instead of x{2} – is it in the right slot (usually the top long one)?') -f $g.Name, $g.PcieBreite, $g.PcieBreiteMax) 'Grafikkarte' }
+            else { P '' ((T '{0} is connected with x{1} instead of x{2} – normal on some motherboards when other slots or M.2 slots are in use') -f $g.Name, $g.PcieBreite, $g.PcieBreiteMax) 'Grafikkarte' }
         }
     }
 
-    # ---- Laufwerke
+    # ---- Drives
     foreach ($d in (Get-DiskHealth)) {
-        if ($d.Zustand -in 'Unhealthy', '2' -or $d.Betrieb -match 'Predictive Failure' -or $d.Ausfallwarnung) { P 'krit' ("Laufwerk {0}: meldet einen drohenden Defekt – wichtige Daten jetzt sichern und das Laufwerk tauschen lassen" -f $d.Name) 'Laufwerke'; continue }
-        if ($d.Zustand -in 'Warning', '1') { P 'warn' ("Laufwerk {0}: meldet Auffälligkeiten – Daten sichern und das Laufwerk prüfen lassen" -f $d.Name) 'Laufwerke' }
-        if ($null -ne $d.Verschleiss -and $d.Verschleiss -ge 100) { P 'krit' ("SSD {0}: Lebensdauer laut Hersteller verbraucht ({1} %) – Daten sichern, SSD tauschen" -f $d.Name, $d.Verschleiss) 'Laufwerke' }
-        elseif ($null -ne $d.Verschleiss -and $d.Verschleiss -ge 80) { P 'warn' ("SSD {0}: {1} % der Lebensdauer verbraucht" -f $d.Name, $d.Verschleiss) 'Laufwerke' }
+        if ($d.Zustand -in 'Unhealthy', '2' -or $d.Betrieb -match 'Predictive Failure' -or $d.Ausfallwarnung) { P 'krit' ((T 'Drive {0}: reports an imminent failure – back up important data now and have the drive replaced') -f $d.Name) 'Laufwerke'; continue }
+        if ($d.Zustand -in 'Warning', '1') { P 'warn' ((T 'Drive {0}: reports irregularities – back up data and have the drive checked') -f $d.Name) 'Laufwerke' }
+        if ($null -ne $d.Verschleiss -and $d.Verschleiss -ge 100) { P 'krit' ((T 'SSD {0}: rated lifetime used up according to the manufacturer ({1} %) – back up data, replace the SSD') -f $d.Name, $d.Verschleiss) 'Laufwerke' }
+        elseif ($null -ne $d.Verschleiss -and $d.Verschleiss -ge 80) { P 'warn' ((T 'SSD {0}: {1} % of its rated lifetime used') -f $d.Name, $d.Verschleiss) 'Laufwerke' }
         if ($null -ne $d.TempC) {
             $art = if ($d.Art) { $d.Art } else { 'HDD' }
             $w = $c.DiskTempWarnC.$art; $k = $c.DiskTempCritC.$art
-            if ($k -and $d.TempC -ge $k) { P 'krit' ("Laufwerk {0}: {1} °C – deutlich zu heiß. Luftstrom im Gehäuse verbessern (bei NVMe: Kühlkörper)" -f $d.Name, $d.TempC) 'Laufwerke' 'moment' }
-            elseif ($w -and $d.TempC -ge $w) { P 'warn' ("Laufwerk {0}: {1} °C – warm. Luftstrom im Gehäuse prüfen" -f $d.Name, $d.TempC) 'Laufwerke' 'moment' }
-            else { P 'ok' ("Laufwerk {0}: {1} °C" -f $d.Name, $d.TempC) 'Laufwerke' 'moment' }
+            if ($k -and $d.TempC -ge $k) { P 'krit' ((T 'Drive {0}: {1} °C – much too hot. Improve the airflow in the case (NVMe: heatsink)') -f $d.Name, $d.TempC) 'Laufwerke' 'moment' }
+            elseif ($w -and $d.TempC -ge $w) { P 'warn' ((T 'Drive {0}: {1} °C – warm. Check the airflow in the case') -f $d.Name, $d.TempC) 'Laufwerke' 'moment' }
+            else { P 'ok' ((T 'Drive {0}: {1} °C') -f $d.Name, $d.TempC) 'Laufwerke' 'moment' }
         }
     }
-    if ($Script:Cache.SmartUnmapped -gt 0) { P 'krit' 'Ein Laufwerk warnt über seine Selbstdiagnose (SMART) vor einem Ausfall – wichtige Daten jetzt sichern' 'Laufwerke' }
+    if ($Script:Cache.SmartUnmapped -gt 0) { P 'krit' (T 'A drive warns of failure via its self-diagnosis (SMART) – back up important data now') 'Laufwerke' }
 
-    # ---- Arbeitsspeicher und Prozessor-Fehler (Ereignisse)
+    # ---- Memory and processor errors (events)
     $since90 = (Get-Date).AddDays(-90); $since30 = (Get-Date).AddDays(-30)
-    if ((Get-EventCount @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-MemoryDiagnostics-Results'; Id = 1202; StartTime = $since90 }) -gt 0) { P 'krit' 'Die Windows-Speicherdiagnose hat Fehler im Arbeitsspeicher gefunden – RAM prüfen lassen (Riegel, XMP/EXPO-Einstellung)' 'Speicher' }
+    if ((Get-EventCount @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-MemoryDiagnostics-Results'; Id = 1202; StartTime = $since90 }) -gt 0) { P 'krit' (T 'Windows Memory Diagnostic found errors in the RAM – have the RAM checked (modules, XMP/EXPO setting)') 'Speicher' }
     $w19 = Get-EventCount @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; Id = 19; StartTime = $since30 }
-    if ($w19 -ge 5) { P 'warn' ("Der Prozessor hat {0}-mal korrigierte Fehler gemeldet – häufig bei Übertaktung (PBO, Curve Optimizer, XMP/EXPO). BIOS-Einstellungen auf Standard prüfen" -f $w19) 'CPU' }
+    if ($w19 -ge 5) { P 'warn' ((T 'The processor reported {0} corrected errors – common with overclocking (PBO, Curve Optimizer, XMP/EXPO). Check BIOS settings for defaults') -f $w19) 'CPU' }
     $w17 = Get-EventCount @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; Id = 17; StartTime = $since30 }
-    if ($w17 -ge 5) { P 'warn' ("Eine Steckverbindung (PCIe) hat {0}-mal korrigierte Fehler gemeldet – Sitz von Grafikkarte/SSD, Riser-Kabel oder die PCIe-Einstellung im BIOS prüfen" -f $w17) 'CPU' }
+    if ($w17 -ge 5) { P 'warn' ((T 'A connection (PCIe) reported {0} corrected errors – check the seating of graphics card/SSD, riser cables or the PCIe setting in the BIOS') -f $w17) 'CPU' }
 
-    # ---- Akku
+    # ---- Battery
     if ($ch.HatAkku) {
         $wear = Get-BatteryWear
         if ($null -ne $wear) {
-            if ($wear -ge 50) { P 'krit' ("Akku: hat {0} % seiner ursprünglichen Kapazität verloren – ein Austausch lohnt sich" -f $wear) 'Akku' }
-            elseif ($wear -ge 30) { P 'warn' ("Akku: hat {0} % seiner ursprünglichen Kapazität verloren" -f $wear) 'Akku' }
-            else { P 'ok' ("Akku: {0} % Kapazitätsverlust (normal)" -f [math]::Max(0, $wear)) 'Akku' }
+            if ($wear -ge 50) { P 'krit' ((T 'Battery: has lost {0} % of its original capacity – a replacement is worthwhile') -f $wear) 'Akku' }
+            elseif ($wear -ge 30) { P 'warn' ((T 'Battery: has lost {0} % of its original capacity') -f $wear) 'Akku' }
+            else { P 'ok' ((T 'Battery: {0} % capacity loss (normal)') -f [math]::Max(0, $wear)) 'Akku' }
         }
     }
     $Script:Cache.HwPoints = $pts.ToArray()
     return $Script:Cache.HwPoints
 }
 
-# Mehrere Luefter-/Tuning-Programme gleichzeitig kaempfen um die Steuerung (schwankende Luefter, Fehlwerte)
+# Several fan/tuning programs at the same time fight over control (fluctuating fans, wrong readings)
 function Get-FanToolPoints {
     $gruppen = [ordered]@{
-        'Mainboard-Lüfter' = @{ 'ArmouryCrate' = 'Armoury Crate'; 'AsusFanControlService' = 'ASUS Fan Xpert'; 'MSI.CentralServer' = 'MSI Center'; 'GCC' = 'Gigabyte Control Center'; 'EasyTune' = 'Gigabyte EasyTune'; 'FanControl' = 'Fan Control'; 'ArgusMonitor' = 'Argus Monitor'; 'SpeedFan' = 'SpeedFan'; 'NZXT CAM' = 'NZXT CAM'; 'iCUE' = 'Corsair iCUE'; 'L-Connect' = 'Lian Li L-Connect'; 'G-Helper' = 'G-Helper'; 'LegionToolkit' = 'Legion Toolkit' }
-        'Grafikkarten-Lüfter' = @{ 'MSIAfterburner' = 'MSI Afterburner'; 'GPUTweakII' = 'ASUS GPU Tweak'; 'GPUTweakIII' = 'ASUS GPU Tweak'; 'PrecisionX_x64' = 'EVGA Precision X1'; 'PrecisionX' = 'EVGA Precision X1' }
+        (T 'motherboard fans') = @{ 'ArmouryCrate' = 'Armoury Crate'; 'AsusFanControlService' = 'ASUS Fan Xpert'; 'MSI.CentralServer' = 'MSI Center'; 'GCC' = 'Gigabyte Control Center'; 'EasyTune' = 'Gigabyte EasyTune'; 'FanControl' = 'Fan Control'; 'ArgusMonitor' = 'Argus Monitor'; 'SpeedFan' = 'SpeedFan'; 'NZXT CAM' = 'NZXT CAM'; 'iCUE' = 'Corsair iCUE'; 'L-Connect' = 'Lian Li L-Connect'; 'G-Helper' = 'G-Helper'; 'LegionToolkit' = 'Legion Toolkit' }
+        (T 'graphics card fans') = @{ 'MSIAfterburner' = 'MSI Afterburner'; 'GPUTweakII' = 'ASUS GPU Tweak'; 'GPUTweakIII' = 'ASUS GPU Tweak'; 'PrecisionX_x64' = 'EVGA Precision X1'; 'PrecisionX' = 'EVGA Precision X1' }
     }
     $proc = @(Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName -Unique)
     $res = @()
     foreach ($g in $gruppen.Keys) {
         $tab = $gruppen[$g]
         $treffer = @($tab.Keys | Where-Object { $n = $_; $proc | Where-Object { $_ -like "$n*" } } | ForEach-Object { $tab[$_] } | Select-Object -Unique)
-        if ($treffer.Count -ge 2) { $res += [pscustomobject]@{ Stufe = 'warn'; Text = ("Mehrere Programme steuern gleichzeitig die {0}: {1} – das kann zu schwankenden oder falschen Lüfterdrehzahlen führen. Am besten nur eines davon verwenden" -f $g, ($treffer -join ', ')); Bereich = 'Lüfter'; Wertung = 'dauer' } }
+        if ($treffer.Count -ge 2) { $res += [pscustomobject]@{ Stufe = 'warn'; Text = ((T 'Several programs control the {0} at the same time: {1} – this can cause fluctuating or wrong fan speeds. Best use only one of them') -f $g, ($treffer -join ', ')); Bereich = 'Lüfter'; Wertung = 'dauer' } }
     }
     $tuning = @(@{ 'ThrottleStop' = 'ThrottleStop'; 'XtuService' = 'Intel XTU'; 'AMDRyzenMasterDriver' = 'Ryzen Master'; 'RyzenMaster' = 'Ryzen Master' }.GetEnumerator() | Where-Object { $n = $_.Key; $proc | Where-Object { $_ -like "$n*" } } | ForEach-Object { $_.Value } | Select-Object -Unique)
-    if ($tuning.Count) { $res += [pscustomobject]@{ Stufe = ''; Text = ("Tuning-Programm aktiv ({0}) – Spannungen/Takt werden manuell beeinflusst; das wirkt sich auf Temperaturen und den Kühlungstest aus" -f ($tuning -join ', ')); Bereich = 'CPU'; Wertung = 'dauer' } }
+    if ($tuning.Count) { $res += [pscustomobject]@{ Stufe = ''; Text = ((T 'Tuning program active ({0}) – voltages/clocks are changed manually; this affects temperatures and the cooling test') -f ($tuning -join ', ')); Bereich = 'CPU'; Wertung = 'dauer' } }
     return $res
 }
 
-# Kompakte Hardware-Messwerte fuer den Snapshot (Vorher/Nachher und Verlauf)
+# Compact hardware readings for the snapshot (before/after and history)
 function Get-HardwareSnapshot {
     $sens = @(Get-HwMonitorSensors)
     $g = @(Get-NvidiaGpus) | Select-Object -First 1
@@ -1119,16 +1177,16 @@ function Show-HwPoints($Punkte) {
     }
 }
 
-# Kuehlungstest: belastet die Prozessorkerne fuer kurze Zeit und beobachtet Leistung, Drosselung und - falls ein
-# Hardware-Monitor laeuft - Temperatur und Luefterdrehzahl. Aendert nichts am System.
-# Status: OK | ABGEBROCHEN (vom Benutzer, wird nicht gespeichert) | GESTOPPT (Sicherheitsabbruch) | AKKU | GESPERRT
+# Cooling test: loads the processor cores for a short time and watches performance, throttling and - if a
+# hardware monitor is running - temperature and fan speed. Changes nothing on the system.
+# Status: OK | ABGEBROCHEN (cancelled by the user, not saved) | GESTOPPT (safety stop) | AKKU | GESPERRT
 function Invoke-CoolingTest([int]$Seconds = 60, [scriptblock]$OnProgress = $null, $Control = $null) {
     $Seconds = [math]::Max($Script:CoolingTestMin, [math]::Min(600, $Seconds))
     $Script:Cache = @{}
     $ch = Get-ChassisInfo
-    if ($ch.Akku) { return [pscustomobject]@{ Status = 'AKKU'; Meldung = 'Der Kühlungstest geht nur mit angeschlossenem Netzteil. Bitte das Netzteil anschließen und es dann noch einmal versuchen.'; Punkte = @() } }
+    if ($ch.Akku) { return [pscustomobject]@{ Status = 'AKKU'; Meldung = (T 'The cooling test only works with the power adapter connected. Please connect the power adapter and try again.'); Punkte = @() } }
     $ctx = $null; try { $ctx = Get-WtContext } catch { }
-    if ($ch.VM -or ($ctx -and $ctx.Server)) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = 'Auf Servern und in virtuellen Maschinen ist der Kühlungstest nicht sinnvoll und deshalb gesperrt.'; Punkte = @() } }
+    if ($ch.VM -or ($ctx -and $ctx.Server)) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = (T 'On servers and in virtual machines the cooling test makes no sense and is therefore blocked.'); Punkte = @() } }
     if (-not ('WtBurn2' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
@@ -1143,7 +1201,7 @@ public static class WtBurn2 {
     struct PPTS { public uint Version; public uint ControlMask; public uint StateMask; }
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool SetProcessInformation(IntPtr hProcess, int infoClass, ref PPTS info, uint size);
-    // Windows 11 drosselt Prozesse mit niedriger Prioritaet per EcoQoS - fuer die Messung ausdruecklich abschalten
+    // Windows 11 throttles low-priority processes via EcoQoS - explicitly turn that off for the measurement
     static void SetEco(bool aus) {
         try {
             PPTS s = new PPTS(); s.Version = 1; s.ControlMask = aus ? 1u : 0u; s.StateMask = 0;
@@ -1159,7 +1217,7 @@ public static class WtBurn2 {
     public static void Stop() { stop = true; SetEco(false); }
     static void Work() {
         double a = 1.0001, b = 1.0002, c = 1.0003, d = 1.0004;
-        // Watchdog: endet spaetestens zur Deadline, auch wenn PowerShell haengt
+        // Watchdog: ends at the deadline at the latest, even if PowerShell hangs
         while (!stop && sw.ElapsedTicks < Interlocked.Read(ref deadline)) {
             for (int i = 1; i < 1000000; i++) { a = Math.Sqrt(a * 1.0001 + i); b = Math.Sin(b) + b * 0.5; c = c * 1.000001 + Math.Cos(i); d = Math.Sqrt(d + c); }
             if (a > 1e300 || b > 1e300 || c > 1e300 || d > 1e300) { a = b = c = d = 1.0; }
@@ -1188,7 +1246,7 @@ public static class WtBurn2 {
     $start = Get-Date
     $sw = [Diagnostics.Stopwatch]::StartNew()
     for ($i = 0; $i -lt 3; $i++) { $verlauf.Add((Sample 'Ruhe' $sw.Elapsed.TotalSeconds)); Start-Sleep -Milliseconds 1500 }
-    $threads = [Environment]::ProcessorCount; if ($threads -gt 4) { $threads-- }   # einen Kern fuer Windows und die Messung frei lassen
+    $threads = [Environment]::ProcessorCount; if ($threads -gt 4) { $threads-- }   # leave one core free for Windows and the measurement
     $abbruch = $false; $grund = $null
     $t0 = $sw.Elapsed.TotalSeconds
     [WtBurn2]::Start($threads, $Seconds + 15)
@@ -1199,21 +1257,21 @@ public static class WtBurn2 {
             $el = $sw.Elapsed.TotalSeconds - $t0
             $s = Sample 'Last' $el
             $verlauf.Add($s)
-            # Sicherheitsabbruch
-            if ($null -ne $s.CpuTempC -and $s.CpuTempC -ge $tj + 3) { $grund = ('Prozessor über {0} °C' -f [int]$s.CpuTempC); break }
-            if ($s.ZonePassiv -and $s.ZonePassiv -lt 80) { $grund = 'Windows bremst den Prozessor wegen Hitze stark'; break }
-            if ($ch.HatAkku -and @(Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus -OperationTimeoutSec 3 -ErrorAction SilentlyContinue | Where-Object { $_.PowerOnline -eq $false }).Count) { $grund = 'Netzteil wurde getrennt'; break }
-            if ($OnProgress) { try { & $OnProgress ([int]$el) $Seconds ("Kühlungstest läuft – noch {0} Sekunden. Die Lüfter werden dabei hörbar lauter." -f [int]([math]::Max(0, $Seconds - $el))) 'HW-COOLTEST' } catch { } }
+            # Safety stop
+            if ($null -ne $s.CpuTempC -and $s.CpuTempC -ge $tj + 3) { $grund = ((T 'Processor above {0} °C') -f [int]$s.CpuTempC); break }
+            if ($s.ZonePassiv -and $s.ZonePassiv -lt 80) { $grund = (T 'Windows is heavily throttling the processor due to heat'); break }
+            if ($ch.HatAkku -and @(Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus -OperationTimeoutSec 3 -ErrorAction SilentlyContinue | Where-Object { $_.PowerOnline -eq $false }).Count) { $grund = (T 'Power adapter was disconnected'); break }
+            if ($OnProgress) { try { & $OnProgress ([int]$el) $Seconds ((T 'Cooling test running – {0} seconds left. The fans will get audibly louder.') -f [int]([math]::Max(0, $Seconds - $el))) 'HW-COOLTEST' } catch { } }
         }
     } finally { [WtBurn2]::Stop() }
-    if ($OnProgress) { try { & $OnProgress $Seconds $Seconds 'Fast fertig – der Prozessor kühlt ab …' 'HW-COOLTEST' } catch { } }
+    if ($OnProgress) { try { & $OnProgress $Seconds $Seconds (T 'Almost done – the processor is cooling down …') 'HW-COOLTEST' } catch { } }
     for ($i = 0; $i -lt 3; $i++) { Start-Sleep -Milliseconds 2000; $verlauf.Add((Sample 'Danach' $sw.Elapsed.TotalSeconds)) }
     $pts = New-Object System.Collections.Generic.List[object]
     function P([string]$Stufe, [string]$Text) { $pts.Add([pscustomobject]@{ Stufe = $Stufe; Text = $Text }) }
     $ruhe = @($verlauf | Where-Object Phase -eq 'Ruhe'); $last = @($verlauf | Where-Object Phase -eq 'Last')
     $status = if ($abbruch) { 'ABGEBROCHEN' } elseif ($grund) { 'GESTOPPT' } else { 'OK' }
-    if ($abbruch) { P '' 'Der Test wurde abgebrochen – das Ergebnis ist unvollständig.' }
-    if ($grund) { P 'krit' ("Der Test wurde zur Sicherheit vorzeitig beendet: {0}. Die Kühlung sollte geprüft werden." -f $grund) }
+    if ($abbruch) { P '' (T 'The test was cancelled – the result is incomplete.') }
+    if ($grund) { P 'krit' ((T 'The test was stopped early for safety reasons: {0}. The cooling should be checked.') -f $grund) }
     $mitLeistung = @($last | Where-Object { $_.Leistung -gt 0 })
     $mitT = @($verlauf | Where-Object { $null -ne $_.CpuTempC })
     $tmax = $null; $t0c = $null
@@ -1227,8 +1285,8 @@ public static class WtBurn2 {
     $signal = ($neu37 -gt 0 -or ($zp -and $zp -lt 100))
     $limitProben = @($last | Where-Object { $_.Limit -gt 0 -and $_.Limit -lt 95 }).Count
     if (-not $abbruch) {
-        # 1) Leistung unter Dauerlast. Ein Abfall nach der Turbo-Phase ist oft gewollt (Leistungs-/Zeitlimit des Herstellers);
-        #    als Kuehlungsproblem gilt er nur zusammen mit Erreichen der Temperaturgrenze oder Drosselsignalen.
+        # 1) Performance under sustained load. A drop after the turbo phase is often intended (power/time limit of the manufacturer);
+        #    it only counts as a cooling problem together with reaching the temperature limit or throttling signals.
         if ($mitLeistung.Count -ge 6) {
             $n = $mitLeistung.Count; $q = [math]::Max(2, [int][math]::Floor($n / 4))
             $anfang = ($mitLeistung | Select-Object -First $q | Measure-Object Leistung -Average).Average
@@ -1236,20 +1294,20 @@ public static class WtBurn2 {
             $drop = if ($anfang -gt 0) { [math]::Round(100 * ($anfang - $ende) / $anfang, 0) } else { 0 }
             if ($drop -ge 15 -and ($heiss -or $signal)) {
                 $st = if ($drop -ge 30) { 'krit' } else { 'warn' }
-                P $st ("Der Prozessor wird unter Dauerlast um {0} % langsamer und erreicht dabei seine Temperaturgrenze bzw. wird gebremst – typisch für zu schwache Kühlung, verstaubte Kühler oder zu langsam drehende Lüfter" -f $drop)
+                P $st ((T 'The processor gets {0} % slower under sustained load and reaches its temperature limit or is throttled – typical of weak cooling, dusty coolers or fans spinning too slowly') -f $drop)
             } elseif ($drop -ge 30 -and $null -eq $tmax) {
-                P 'warn' ("Der Prozessor wird unter Dauerlast um {0} % langsamer. Ohne Temperaturfühler ist unklar, ob das an der Kühlung oder an einer Leistungsgrenze liegt – LibreHardwareMonitor starten und den Test wiederholen" -f $drop)
+                P 'warn' ((T 'The processor gets {0} % slower under sustained load. Without a temperature sensor it is unclear whether this is due to cooling or a power limit – start LibreHardwareMonitor and repeat the test') -f $drop)
             } elseif ($drop -ge 15) {
-                P '' ("In den ersten Sekunden arbeitet der Prozessor kurz schneller als auf Dauer vorgesehen. Danach sinkt die Leistung um {0} % – {1}" -f $drop, $(if ($null -ne $tmax) { 'die Temperatur bleibt dabei unter der Grenze, das ist eine Leistungsgrenze des Herstellers und kein Kühlungsproblem.' } else { 'das ist bei vielen Prozessoren vom Hersteller so gewollt.' }))
-            } else { P 'ok' ("Der Prozessor hält seine Leistung auch unter Dauerlast (am Ende noch {0:N0} % der Anfangsleistung)" -f $(if ($anfang -gt 0) { 100 * $ende / $anfang } else { 100 })) }
-            if ($limitProben -ge 3) { P $(if ($heiss) { 'warn' } else { '' }) ("Die Firmware hat die Leistung während des Tests zeitweise begrenzt (Leistungs- oder Temperaturgrenze)") }
-        } else { P '' 'Die Prozessorleistung ließ sich auf diesem PC nicht messen.' }
-        if ($neu37 -gt 0) { P 'warn' ("Während des Tests hat Windows {0}-mal eine Drosselung durch die Firmware gemeldet" -f $neu37) }
-        if ($zp -and $zp -lt 100) { P $(if ($zp -le 80) { 'krit' } else { 'warn' }) ("Windows hat den Prozessor während des Tests gebremst (bis auf {0} %)" -f $zp) }
-        # 2) Temperatur und Luefterreaktion (nur mit Hardware-Monitor)
+                P '' ((T 'In the first seconds the processor briefly runs faster than intended for sustained load. After that, performance drops by {0} % – {1}') -f $drop, $(if ($null -ne $tmax) { (T 'the temperature stays below the limit, so this is a power limit of the manufacturer and not a cooling problem.') } else { (T 'many processors are designed this way by the manufacturer.') }))
+            } else { P 'ok' ((T 'The processor keeps its performance under sustained load (still {0:N0} % of the initial performance at the end)') -f $(if ($anfang -gt 0) { 100 * $ende / $anfang } else { 100 })) }
+            if ($limitProben -ge 3) { P $(if ($heiss) { 'warn' } else { '' }) ((T 'The firmware temporarily limited performance during the test (power or temperature limit)')) }
+        } else { P '' (T 'The processor performance could not be measured on this PC.') }
+        if ($neu37 -gt 0) { P 'warn' ((T 'During the test Windows reported throttling by the firmware {0} times') -f $neu37) }
+        if ($zp -and $zp -lt 100) { P $(if ($zp -le 80) { 'krit' } else { 'warn' }) ((T 'Windows throttled the processor during the test (down to {0} %)') -f $zp) }
+        # 2) Temperature and fan response (only with a hardware monitor)
         if ($null -ne $tmax) {
-            if ($heiss) { P '' ("Der Prozessor erreicht unter Last {0:N0} °C und damit seine Temperaturgrenze ({1} °C). Viele aktuelle Prozessoren regeln bewusst an dieser Grenze – entscheidend ist, ob die Leistung dabei einbricht (siehe oben)." -f $tmax, $tj) }
-            else { P 'ok' ("Prozessor-Temperatur unter Last: höchstens {0:N0} °C (Grenze {1} °C)" -f $tmax, $tj) }
+            if ($heiss) { P '' ((T 'Under load the processor reaches {0:N0} °C and thus its temperature limit ({1} °C). Many current processors deliberately regulate at this limit – what matters is whether performance drops (see above).') -f $tmax, $tj) }
+            else { P 'ok' ((T 'Processor temperature under load: at most {0:N0} °C (limit {1} °C)') -f $tmax, $tj) }
             $namen = @($ruhe + $last | ForEach-Object { @($_.Luefter.Keys) } | Select-Object -Unique)
             $reakt = @(); $kand = 0
             foreach ($fn in $namen) {
@@ -1259,12 +1317,12 @@ public static class WtBurn2 {
             }
             if ($kand -and $null -ne $t0c) {
                 $best = $reakt | Sort-Object Plus -Descending | Select-Object -First 1
-                if ($best.Plus -ge 15) { P 'ok' ("Die Lüfter reagieren auf Wärme ({0}: +{1} % Drehzahl unter Last)" -f $best.Name, $best.Plus) }
-                elseif ($best.Plus -lt 5 -and ($tmax - $t0c) -ge 20 -and $tmax -ge 85) { P 'warn' ("Die Lüfter drehen kaum hoch (höchstens +{0} %), obwohl der Prozessor {1:N0} °C wärmer wurde – vermutlich feste Drehzahl. Lüfterkurve im BIOS prüfen (bei Wasserkühlungen reagieren die Lüfter oft absichtlich träge)" -f $best.Plus, ($tmax - $t0c)) }
-                else { P '' ("Die Lüfter drehen etwas hoch (höchstens +{0} %)" -f $best.Plus) }
+                if ($best.Plus -ge 15) { P 'ok' ((T 'The fans respond to heat ({0}: +{1} % speed under load)') -f $best.Name, $best.Plus) }
+                elseif ($best.Plus -lt 5 -and ($tmax - $t0c) -ge 20 -and $tmax -ge 85) { P 'warn' ((T 'The fans hardly speed up (at most +{0} %), although the processor got {1:N0} °C warmer – probably a fixed speed. Check the fan curve in the BIOS (with water cooling the fans often react sluggishly on purpose)') -f $best.Plus, ($tmax - $t0c)) }
+                else { P '' ((T 'The fans speed up a little (at most +{0} %)') -f $best.Plus) }
             }
-        } else { P '' 'Ohne Temperaturfühler (z. B. LibreHardwareMonitor) bewertet WinTidy nur, ob der Prozessor unter Last gebremst wird.' }
-        P '' 'Hinweis: Ein Test von einer Minute zeigt grobe Fehler (Kühler sitzt nicht, Lüfter steht, keine Wärmeleitpaste). Wie sich der PC bei stundenlanger Last verhält, zeigt er nicht.'
+        } else { P '' (T 'Without a temperature sensor (e.g. LibreHardwareMonitor) WinTidy only rates whether the processor is throttled under load.') }
+        P '' (T 'Note: a one-minute test reveals gross faults (cooler not seated, fan stopped, no thermal paste). It does not show how the PC behaves under hours of load.')
     }
     $res = [pscustomobject]@{ Status = $status; Grund = $grund; Zeit = $start.ToString('o'); Sekunden = [int](($last | Measure-Object Sek -Maximum).Maximum); Kerne = $threads; TjMax = $tj; Sensorquelle = $(if ($null -ne $tmax) { (@(Get-HwMonitorSensors) | Select-Object -First 1).Quelle } else { $null }); Punkte = $pts.ToArray(); Verlauf = $verlauf.ToArray() }
     if (-not $abbruch) {
@@ -1283,92 +1341,92 @@ function Get-LastCoolingTest {
     return $null
 }
 
-# Gemeinsame Hilfe fuer Datentraegerbereinigung (cleanmgr /sagerun) mit ausgewaehlten Kategorien
+# Shared helper for Disk Cleanup (cleanmgr /sagerun) with selected categories
 function Invoke-CleanMgr([string[]]$Categories) {
     $root = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
-    # Reste eines abgebrochenen Laufs entfernen, sonst raeumt cleanmgr ungewollt weitere Kategorien (z. B. Windows.old) mit ab
+    # Remove leftovers of a cancelled run, otherwise cleanmgr unintentionally cleans further categories (e.g. Windows.old)
     foreach ($k in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) { Remove-ItemProperty -LiteralPath $k.PSPath -Name StateFlags4711 -ErrorAction SilentlyContinue }
     $set = @(); foreach ($c in $Categories) { if (Test-Path "$root\$c") { Set-ItemProperty "$root\$c" -Name StateFlags4711 -Value 2 -Type DWord; $set += $c } }
-    if (-not $set.Count) { throw 'Keine passenden Bereinigungskategorien gefunden' }
+    if (-not $set.Count) { throw (T 'No matching cleanup categories found') }
     try {
         $p = Start-Process "$env:windir\System32\cleanmgr.exe" -ArgumentList '/sagerun:4711' -PassThru -WindowStyle Minimized
-        if (-not $p.WaitForExit(3600000)) { throw 'Zeitueberschreitung (60 Min.)' }
+        if (-not $p.WaitForExit(3600000)) { throw (T 'Timeout (60 min.)') }
     } finally { foreach ($c in $set) { Remove-ItemProperty "$root\$c" -Name StateFlags4711 -ErrorAction SilentlyContinue } }
     return $set.Count
 }
 
 # =============================================================================
-#  Regeln
-#  Jede Regel: Id, Kategorie, Titel, Warum, Risiko (Niedrig|Mittel|Hoch|Info), Wirkung,
-#              Admin (bool), Standard (bool), Detect {-> Items}, Fix {param($item) -> Meldung}
-#              optional: Dauer (Text), Endgueltig, Einzeln, Umkehrbar (bool) - fuer die App
-#  Item.Data.Stufe (ok|warn|krit) steuert bei Info-Regeln das Symbol in der App
+#  Rules
+#  Each rule: Id, Kategorie, Titel, Warum, Risiko (Niedrig|Mittel|Hoch|Info), Wirkung,
+#              Admin (bool), Standard (bool), Detect {-> items}, Fix {param($item) -> message}
+#              optional: Dauer (text), Endgueltig, Einzeln, Umkehrbar (bool) - for the app
+#  Item.Data.Stufe (ok|warn|krit) controls the icon of info rules in the app
 #  Item: [pscustomobject]@{ Label; Bytes; Data }
 # =============================================================================
 function New-Item2([string]$Label, [double]$Bytes = 0, $Data = $null, [string]$Technik = $null) { [pscustomobject]@{ Label = $Label; Bytes = [int64]$Bytes; Data = $Data; Technik = $Technik } }
 
 $Script:Rules = @(
 
-    # ---------------------------------------------------------------- Speicher
-    [pscustomobject]@{ Id = 'CLN-TEMP'; Kategorie = 'Speicher'; Titel = 'Temporaere Dateien'; Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $false; Standard = $true
-        Warum = 'Temp-Ordner wachsen unbegrenzt. Geloescht werden nur Dateien, die laenger als die Altersgrenze weder angelegt noch geaendert wurden (laufende Installer bleiben unberuehrt). Verknuepfungen werden nie verfolgt. Weitere Ordner nur ueber ExtraTempPaths in der Konfiguration.'
+    # ---------------------------------------------------------------- Storage
+    [pscustomobject]@{ Id = 'CLN-TEMP'; Kategorie = 'Speicher'; Titel = (T 'Temporary files'); Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $false; Standard = $true
+        Warum = (T 'Temp folders grow without limit. Only files that were neither created nor modified for longer than the age limit are deleted (running installers stay untouched). Links are never followed. Additional folders only via ExtraTempPaths in the configuration.')
         Detect = {
             $paths = @($env:TEMP) + @($Script:Cfg.ExtraTempPaths); if ($Script:IsAdmin) { $paths += "$env:windir\Temp" }
             foreach ($p in ($paths | Where-Object { $_ } | Select-Object -Unique)) {
                 $f = @(Get-OldFiles $p $Script:Cfg.TempAgeDays)
-                if ($f.Count) { New-Item2 ("Temporäre Dateien in {0}: {1} Dateien, älter als {2} Tage" -f $p, $f.Count, $Script:Cfg.TempAgeDays) (($f | Measure-Object Length -Sum).Sum) $p }
+                if ($f.Count) { New-Item2 ((T 'Temporary files in {0}: {1} files, older than {2} days') -f $p, $f.Count, $Script:Cfg.TempAgeDays) (($f | Measure-Object Length -Sum).Sum) $p }
             }
         }
-        Fix = { param($it) $n = 0; foreach ($f in (Get-OldFiles $it.Data $Script:Cfg.TempAgeDays)) { try { if (Test-PathChainNoReparse $it.Data $f.FullName) { $f.Attributes = 'Normal'; $f.Delete(); $n++ } } catch { } }; Remove-EmptyDirs $it.Data $Script:Cfg.TempAgeDays; "$n Dateien geloescht" }
+        Fix = { param($it) $n = 0; foreach ($f in (Get-OldFiles $it.Data $Script:Cfg.TempAgeDays)) { try { if (Test-PathChainNoReparse $it.Data $f.FullName) { $f.Attributes = 'Normal'; $f.Delete(); $n++ } } catch { } }; Remove-EmptyDirs $it.Data $Script:Cfg.TempAgeDays; (T '{0} files deleted' $n) }
     }
 
-    [pscustomobject]@{ Id = 'CLN-WINCLEAN'; Kategorie = 'Speicher'; Titel = 'Windows-Datentraegerbereinigung (Update-Reste, Fehlerberichte, Update-Cache)'; Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Dauer = '5–15 Minuten'; Endgueltig = $true
-        Warum = 'Nutzt die Windows-eigene Bereinigung (cleanmgr /sagerun) fuer Update-Reste, Fehlerberichte, Speicherabbilder und den Delivery-Optimization-Cache. Die vorherige Windows-Version (Windows.old) behandelt die eigene Regel CLN-WINOLD.'
+    [pscustomobject]@{ Id = 'CLN-WINCLEAN'; Kategorie = 'Speicher'; Titel = (T 'Windows Disk Cleanup (update leftovers, error reports, update cache)'); Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Dauer = (T '5–15 minutes'); Endgueltig = $true
+        Warum = (T 'Uses Windows'' own cleanup (cleanmgr /sagerun) for update leftovers, error reports, memory dumps and the Delivery Optimization cache. The previous Windows version (Windows.old) is handled by its own rule CLN-WINOLD.')
         Detect = {
             if (-not (Test-Path "$env:windir\System32\cleanmgr.exe")) { return }
             $t = @("$env:windir\SoftwareDistribution\Download", "$env:windir\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache", "$env:ProgramData\Microsoft\Windows\WER", "$env:windir\MEMORY.DMP", "$env:windir\Minidump", "$env:windir\LiveKernelReports")
             $sum = 0; $found = @()
             foreach ($p in $t) { $s = Get-DirSize $p; if ($s -gt 10MB) { $sum += $s; $found += ('{0} ({1})' -f (Split-Path $p -Leaf), (Fmt-Bytes $s)) } }
-            if ($sum -gt 50MB) { New-Item2 ('Reste von Windows-Updates und Fehlerberichte (' + ($found -join ', ') + ')') $sum $null }
+            if ($sum -gt 50MB) { New-Item2 ((T 'Leftovers of Windows updates and error reports (') + ($found -join ', ') + ')') $sum $null }
         }
         Fix = { param($it)
             $n = Invoke-CleanMgr @('Update Cleanup', 'Windows Error Reporting Files', 'Delivery Optimization Files', 'System error memory dump files', 'System error minidump files', 'Windows Upgrade Log Files', 'Setup Log Files', 'Downloaded Program Files')
-            # cleanmgr laesst den Delivery-Optimization-Cache und Treiber-Watchdog-Abbilder teils liegen
+            # cleanmgr sometimes leaves the Delivery Optimization cache and driver watchdog dumps behind
             if (Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue) { try { Delete-DeliveryOptimizationCache -Force -ErrorAction Stop } catch { } }
             $lkr = "$env:windir\LiveKernelReports"
             if (Test-Path $lkr) { Get-ChildItem $lkr -Recurse -File -Filter '*.dmp' -Force -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } | Remove-Item -Force -ErrorAction SilentlyContinue }
-            "Kategorien: $n"
+            (T 'Categories: {0}' $n)
         }
     }
 
-    [pscustomobject]@{ Id = 'CLN-WINOLD'; Kategorie = 'Speicher'; Titel = 'Vorherige Windows-Version (Windows.old) und Upgrade-Reste entfernen'; Risiko = 'Mittel'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Endgueltig = $true; Dauer = '5–20 Minuten'
-        Warum = 'Nach einem grossen Windows-Update bleibt die vorherige Version als Windows.old liegen (oft 10-30 GB). Danach ist ein Zurueck zur alten Windows-Version nicht mehr moeglich. Liegen in Windows.old noch persoenliche Dateien (nach Neuinstallation/Zuruecksetzen), wird gewarnt und nichts vorausgewaehlt. Die Dateien fuer "Diesen PC zuruecksetzen" bleiben erhalten.'
+    [pscustomobject]@{ Id = 'CLN-WINOLD'; Kategorie = 'Speicher'; Titel = (T 'Remove the previous Windows version (Windows.old) and upgrade leftovers'); Risiko = 'Mittel'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Endgueltig = $true; Dauer = (T '5–20 minutes')
+        Warum = (T 'After a major Windows update, the previous version stays behind as Windows.old (often 10-30 GB). Afterwards going back to the old Windows version is no longer possible. If Windows.old still contains personal files (after a reinstall/reset), WinTidy warns and preselects nothing. The files for "Reset this PC" are kept.')
         Detect = {
             if (-not (Test-Path "$env:windir\System32\cleanmgr.exe")) { return }
             $old = "$env:SystemDrive\Windows.old"; $sum = 0
             foreach ($d in @($old, "$env:SystemDrive\`$WINDOWS.~BT", "$env:SystemDrive\`$Windows.~WS")) { $s = Get-DirSize $d; if ($s -gt 10MB) { $sum += $s } }
             if ($sum -lt 500MB) { return }
             $alter = $null; if (Test-Path -LiteralPath $old) { try { $alter = [int]((Get-Date) - (Get-Item -LiteralPath $old -Force).CreationTime).TotalDays } catch { } }
-            # Persoenliche Dateien in Windows.old\Users? (nach Neuinstallation ohne Formatieren oft die einzige Kopie)
+            # Personal files in Windows.old\Users? (after a reinstall without formatting often the only copy)
             $userBytes = [int64]0
             if (Test-Path -LiteralPath "$old\Users") {
                 foreach ($u in @(Get-ChildItem -LiteralPath "$old\Users" -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin 'Public', 'Default', 'Default User', 'All Users' -and -not (Test-Reparse $_) })) {
                     foreach ($sub in 'Desktop', 'Documents', 'Pictures', 'Videos', 'Music', 'Downloads', 'OneDrive') { $userBytes += Get-DirSize (Join-Path $u.FullName $sub) }
                 }
             }
-            $lbl = 'Vorherige Windows-Version und Upgrade-Reste' + $(if ($null -ne $alter) { " (seit $alter Tagen)" } else { '' })
-            if ($userBytes -gt 10MB) { $lbl += (' – ACHTUNG: enthält noch {0} persönliche Dateien (Windows.old\Users). Vorher sichern!' -f (Fmt-Bytes $userBytes)) }
+            $lbl = (T 'Previous Windows version and upgrade leftovers') + $(if ($null -ne $alter) { (T ' (for {0} days)' $alter) } else { '' })
+            if ($userBytes -gt 10MB) { $lbl += ((T ' – CAUTION: still contains {0} of personal files (Windows.old\Users). Back them up first!') -f (Fmt-Bytes $userBytes)) }
             $it = New-Item2 $lbl $sum @{ AlterTage = $alter; PersoenlicheBytes = $userBytes; Stufe = $(if ($userBytes -gt 10MB) { 'warn' } else { '' }) }
             $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue ($null -ne $alter -and $alter -ge $Script:Cfg.WinOldMinAgeDays -and $userBytes -le 10MB)
             $it
         }
-        Fix = { param($it) $n = Invoke-CleanMgr @('Previous Installations', 'Temporary Setup Files'); "Kategorien: $n" }
+        Fix = { param($it) $n = Invoke-CleanMgr @('Previous Installations', 'Temporary Setup Files'); (T 'Categories: {0}' $n) }
     }
 
-    [pscustomobject]@{ Id = 'CLN-WINSXS'; Kategorie = 'Speicher'; Titel = 'Windows-Komponentenspeicher (WinSxS) bereinigen'; Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Dauer = '5–30 Minuten'
-        Warum = 'Ersetzte Komponenten aus Updates bleiben im WinSxS liegen. DISM entfernt sie, wenn Windows selbst eine Bereinigung empfiehlt (ohne /ResetBase). Ersetzte Komponenten werden dabei sofort entfernt; das aktuelle Update bleibt deinstallierbar. Die Analyse laeuft hoechstens alle 7 Tage (mit -Deep immer).'
+    [pscustomobject]@{ Id = 'CLN-WINSXS'; Kategorie = 'Speicher'; Titel = (T 'Clean up the Windows component store (WinSxS)'); Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Dauer = (T '5–30 minutes')
+        Warum = (T 'Superseded components from updates stay in WinSxS. DISM removes them when Windows itself recommends a cleanup (without /ResetBase). Superseded components are removed immediately; the current update remains uninstallable. The analysis runs at most every 7 days (always with -Deep).')
         Detect = {
-            # Die DISM-Analyse dauert Minuten und heizt die CPU auf: nur alle 7 Tage (oder mit -Deep), nie bei ausstehendem Neustart
+            # The DISM analysis takes minutes and heats up the CPU: only every 7 days (or with -Deep), never with a pending restart
             if (Test-RebootPending) { return }
             $cacheFile = Join-Path $Script:DataDir 'winsxs-analyse.json'
             if (-not $Script:Cache.ContainsKey('WinSxS') -and -not $Deep -and (Test-Path -LiteralPath $cacheFile)) {
@@ -1383,24 +1441,24 @@ $Script:Rules = @(
                 try { [ordered]@{ Zeit = (Get-Date).ToString('o'); Empfohlen = [bool]$rec; BackupsBytes = [int64]$bk } | ConvertTo-Json | Out-File -LiteralPath $cacheFile -Encoding utf8 } catch { }
             }
             $w = $Script:Cache.WinSxS
-            # DISM meldet oft auch direkt nach einer Bereinigung weiter "empfohlen" - dann nicht staendig erneut vorschlagen
+            # DISM often keeps reporting "recommended" even right after a cleanup - then do not suggest it again all the time
             $kuerzlich = $false
             foreach ($f in (Get-ChildItem $Script:RunsDir -Recurse -Filter 'actions.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-14) })) {
                 if (Select-String -LiteralPath $f.FullName -Pattern '"Regel":"CLN-WINSXS".*"Status":"OK"' -Quiet) { $kuerzlich = $true; break }
             }
-            if ($w.Empfohlen -and -not $kuerzlich) { New-Item2 ('Komponentenbereinigung empfohlen (Sicherungen/deaktivierte Features: {0}; wie viel davon frei wird, entscheidet Windows)' -f (Fmt-Bytes $w.BackupsBytes)) 0 $null }
+            if ($w.Empfohlen -and -not $kuerzlich) { New-Item2 ((T 'Component cleanup recommended (backups/disabled features: {0}; Windows decides how much of it is freed)') -f (Fmt-Bytes $w.BackupsBytes)) 0 $null }
         }
-        Fix = { param($it) $o = & dism.exe /Online /Cleanup-Image /StartComponentCleanup /English 2>&1; if ($LASTEXITCODE -ne 0) { throw ("Windows konnte die Bereinigung gerade nicht ausführen – später noch einmal versuchen (DISM-Code {0})" -f $LASTEXITCODE) }; Remove-Item -LiteralPath (Join-Path $Script:DataDir 'winsxs-analyse.json') -ErrorAction SilentlyContinue; 'DISM erfolgreich' }
+        Fix = { param($it) $o = & dism.exe /Online /Cleanup-Image /StartComponentCleanup /English 2>&1; if ($LASTEXITCODE -ne 0) { throw ((T 'Windows could not run the cleanup right now – try again later (DISM code {0})') -f $LASTEXITCODE) }; Remove-Item -LiteralPath (Join-Path $Script:DataDir 'winsxs-analyse.json') -ErrorAction SilentlyContinue; (T 'DISM successful') }
     }
 
-    [pscustomobject]@{ Id = 'CLN-DUMPS'; Kategorie = 'Speicher'; Titel = 'Absturzabbilder von Programmen'; Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $false; Standard = $true
-        Warum = 'Programm-Absturzabbilder (CrashDumps) sind nur fuer Entwickler nuetzlich und koennen mehrere GB gross werden.'
-        Detect = { $p = Join-Path $env:LOCALAPPDATA 'CrashDumps'; $f = @(Get-OldFiles $p $Script:Cfg.CrashDumpAgeDays); if ($f.Count) { New-Item2 ("Absturzberichte von Programmen: {0} Dateien" -f $f.Count) (($f | Measure-Object Length -Sum).Sum) $p } }
-        Fix = { param($it) $n = 0; foreach ($f in (Get-OldFiles $it.Data $Script:Cfg.CrashDumpAgeDays)) { try { if (Test-PathChainNoReparse $it.Data $f.FullName) { $f.Attributes = 'Normal'; $f.Delete(); $n++ } } catch { } }; "$n Dateien" }
+    [pscustomobject]@{ Id = 'CLN-DUMPS'; Kategorie = 'Speicher'; Titel = (T 'Crash dumps of programs'); Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $false; Standard = $true
+        Warum = (T 'Program crash dumps (CrashDumps) are only useful for developers and can grow to several GB.')
+        Detect = { $p = Join-Path $env:LOCALAPPDATA 'CrashDumps'; $f = @(Get-OldFiles $p $Script:Cfg.CrashDumpAgeDays); if ($f.Count) { New-Item2 ((T 'Crash reports of programs: {0} files') -f $f.Count) (($f | Measure-Object Length -Sum).Sum) $p } }
+        Fix = { param($it) $n = 0; foreach ($f in (Get-OldFiles $it.Data $Script:Cfg.CrashDumpAgeDays)) { try { if (Test-PathChainNoReparse $it.Data $f.FullName) { $f.Attributes = 'Normal'; $f.Delete(); $n++ } } catch { } }; (T '{0} files' $n) }
     }
 
-    [pscustomobject]@{ Id = 'CLN-HIBERFIL'; Kategorie = 'Speicher'; Titel = 'Ruhezustandsdatei auf Desktop-PCs verkleinern'; Risiko = 'Mittel'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Umkehrbar = $true
-        Warum = 'hiberfil.sys ist auf Desktops oft 40 % des Arbeitsspeichers gross, obwohl der Ruhezustand kaum genutzt wird. "powercfg /h /type reduced" verkleinert sie auf die Groesse, die der Schnellstart braucht - der Schnellstart bleibt, nur der Ruhezustand entfaellt. Rueckgaengig ueber "Wiederherstellen". Vorausgewaehlt nur, wenn der Ruhezustand nicht im Startmenue angeboten wird.'
+    [pscustomobject]@{ Id = 'CLN-HIBERFIL'; Kategorie = 'Speicher'; Titel = (T 'Shrink the hibernation file on desktop PCs'); Risiko = 'Mittel'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Umkehrbar = $true
+        Warum = (T 'On desktops hiberfil.sys is often 40 % of the RAM size although hibernation is hardly used. "powercfg /h /type reduced" shrinks it to the size fast startup needs - fast startup stays, only hibernation is no longer available. Can be undone via "Restore". Only preselected if hibernation is not offered in the Start menu.')
         Detect = {
             $ch = Get-ChassisInfo; if ($ch.Laptop) { return }
             $hf = Join-Path $env:SystemDrive 'hiberfil.sys'
@@ -1409,28 +1467,28 @@ $Script:Rules = @(
             if ($f.Length -lt 2GB -or $f.Length -lt 0.3 * $ram) { return }
             $spar = [int64]([math]::Max(0, $f.Length - 0.2 * $ram))
             $zeigt = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FlyoutMenuSettings' -ErrorAction SilentlyContinue).ShowHibernateOption
-            # Hybrider Standby und Ein-/Ruhetaste auf "Ruhezustand" brauchen die volle Datei
+            # Hybrid sleep and power/sleep button set to "Hibernate" need the full file
             $hybrid = Get-PowerSettingIndex '238c9fa8-0aad-41ed-83f4-97be242c8f20' '94ac6d29-73ce-41a6-809f-6363ba21b47e'
             $pb = Get-PowerSettingIndex '4f971e89-eebd-4455-a8de-9e59040e7347' '7648efa3-dd9c-4e3e-b566-50f929386280'
             $sb = Get-PowerSettingIndex '4f971e89-eebd-4455-a8de-9e59040e7347' '96996bc0-ad50-47ec-923b-6f41874dd9eb'
             $braucht = ($hybrid -and $hybrid.AC -eq 1) -or ($pb -and $pb.AC -eq 2) -or ($sb -and $sb.AC -eq 2)
-            $txt = "Ruhezustandsdatei ({0}) – nach dem Verkleinern ca. {1} frei" -f (Fmt-Bytes $f.Length), (Fmt-Bytes $spar)
-            if ($hybrid -and $hybrid.AC -eq 1) { $txt += '. Achtung: Der hybride Standby (schützt im Energiesparmodus bei Stromausfall) ist an und würde mit abgeschaltet' }
+            $txt = (T 'Hibernation file ({0}) – about {1} freed after shrinking') -f (Fmt-Bytes $f.Length), (Fmt-Bytes $spar)
+            if ($hybrid -and $hybrid.AC -eq 1) { $txt += (T '. Caution: hybrid sleep (protects against power failure in sleep mode) is on and would be turned off as well') }
             $it = New-Item2 $txt $spar $null
             $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue ($zeigt -ne 1 -and -not $braucht)
             $it
         }
         Fix = { param($it)
             $null = & powercfg.exe /h /type reduced 2>&1
-            if ($LASTEXITCODE -ne 0) { throw "powercfg meldet Fehler $LASTEXITCODE" }
-            Add-ActionRecord 'CLN-HIBERFIL' 'Ruhezustandsdatei' 'Undo-Info' 0 '' @{ Typ = 'Hiber'; Vorher = 'full' } | Out-Null
-            'verkleinert'
+            if ($LASTEXITCODE -ne 0) { throw (T 'powercfg reports error {0}' $LASTEXITCODE) }
+            Add-ActionRecord 'CLN-HIBERFIL' (T 'Hibernation file') 'Undo-Info' 0 '' @{ Typ = 'Hiber'; Vorher = 'full' } | Out-Null
+            (T 'shrunk')
         }
     }
 
-    [pscustomobject]@{ Id = 'CLN-RECYCLE'; Kategorie = 'Speicher'; Titel = 'Alte Papierkorb-Eintraege'; Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $false; Standard = $true
-        Warum = 'Nur Eintraege, die vor mehr als der Altersgrenze geloescht wurden. Frisch Geloeschtes bleibt wiederherstellbar.'
-        Detect = { $o = @(Get-RecycleBinOld $Script:Cfg.RecycleBinAgeDays); if ($o.Count) { New-Item2 ("{0} Dateien, die vor über {1} Tagen gelöscht wurden" -f $o.Count, $Script:Cfg.RecycleBinAgeDays) (($o | Measure-Object Size -Sum).Sum) $null } }
+    [pscustomobject]@{ Id = 'CLN-RECYCLE'; Kategorie = 'Speicher'; Titel = (T 'Old recycle bin items'); Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $false; Standard = $true
+        Warum = (T 'Only items deleted longer ago than the age limit. Recently deleted items stay recoverable.')
+        Detect = { $o = @(Get-RecycleBinOld $Script:Cfg.RecycleBinAgeDays); if ($o.Count) { New-Item2 ((T '{0} files that were deleted more than {1} days ago') -f $o.Count, $Script:Cfg.RecycleBinAgeDays) (($o | Measure-Object Size -Sum).Sum) $null } }
         Fix = { param($it)
             $n = 0
             foreach ($e in (Get-RecycleBinOld $Script:Cfg.RecycleBinAgeDays)) {
@@ -1438,12 +1496,12 @@ $Script:Rules = @(
                 try { Remove-TreeNoFollow $e.Path } catch { }
                 if (-not (Test-Path -LiteralPath $e.Path)) { Remove-Item -LiteralPath $i -Force -ErrorAction SilentlyContinue; $n++ }
             }
-            "$n Eintraege entfernt"
+            (T '{0} items removed' $n)
         }
     }
 
-    [pscustomobject]@{ Id = 'CLN-RECYCLE-ORPHAN'; Kategorie = 'Speicher'; Titel = 'Papierkoerbe nicht mehr existierender Benutzerkonten'; Risiko = 'Mittel'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Endgueltig = $true
-        Warum = 'Nach Neuinstallationen oder Kontowechseln bleiben auf jedem Laufwerk Papierkoerbe alter Konten-SIDs liegen, die kein Benutzer mehr sieht. Angeboten wird nur, was zu keinem Profil und keinem existierenden Konto gehoert; ist die Profilliste nicht lesbar, wird nichts angeboten.'
+    [pscustomobject]@{ Id = 'CLN-RECYCLE-ORPHAN'; Kategorie = 'Speicher'; Titel = (T 'Recycle bins of user accounts that no longer exist'); Risiko = 'Mittel'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Endgueltig = $true
+        Warum = (T 'After reinstalls or account changes, recycle bins of old account SIDs remain on every drive that no user sees anymore. Only what belongs to no profile and no existing account is offered; if the profile list cannot be read, nothing is offered.')
         Detect = {
             $known = @(); try { $known = @(Get-CimInstance Win32_UserProfile -ErrorAction Stop | Select-Object -ExpandProperty SID) } catch { return }
             if ($known.Count -lt 1) { return }
@@ -1452,22 +1510,22 @@ $Script:Rules = @(
                 $rb = "$($v.LW):\`$Recycle.Bin"
                 if (-not (Test-Path -LiteralPath $rb)) { continue }
                 foreach ($d in @(Get-ChildItem -LiteralPath $rb -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^S-1-5-21-\d+-\d+-\d+-\d+$' -and $known -notcontains $_.Name -and -not (Test-Reparse $_) })) {
-                    # Konto existiert noch (z. B. Domaenenkonto ohne lokales Profil)? Dann nicht anbieten.
+                    # Does the account still exist (e.g. domain account without a local profile)? Then do not offer it.
                     $lebt = $false; try { $null = (New-Object Security.Principal.SecurityIdentifier $d.Name).Translate([Security.Principal.NTAccount]); $lebt = $true } catch { }
                     if ($lebt) { continue }
                     $s = Get-DirSize $d.FullName
-                    New-Item2 ("Papierkorb eines gelöschten Benutzerkontos auf {0}: ({1})" -f $v.LW, (Fmt-Bytes $s)) $s $d.FullName
+                    New-Item2 ((T 'Recycle bin of a deleted user account on {0}: ({1})') -f $v.LW, (Fmt-Bytes $s)) $s $d.FullName
                 }
             }
         }
-        Fix = { param($it) if ([string]$it.Data -notmatch '^[A-Za-z]:\\\$Recycle\.Bin\\S-1-5-21-[\d-]+$') { throw 'Unerwarteter Pfad' }; Remove-TreeNoFollow $it.Data; 'entfernt' }
+        Fix = { param($it) if ([string]$it.Data -notmatch '^[A-Za-z]:\\\$Recycle\.Bin\\S-1-5-21-[\d-]+$') { throw (T 'Unexpected path') }; Remove-TreeNoFollow $it.Data; (T 'removed') }
     }
 
-    [pscustomobject]@{ Id = 'CLN-DRIVERSTORE'; Kategorie = 'Speicher'; Titel = 'Alte Treiberpakete im Treiberspeicher'; Risiko = 'Mittel'; Wirkung = 'Speicher/Hygiene'; Admin = $true; Standard = $true
-        Warum = 'Bei jedem Treiberupdate bleibt die alte Version im Treiberspeicher. Entfernt werden nur aeltere Duplikate (die neueste bleibt) und Chipsatztreiber des jeweils anderen CPU-Herstellers (Reste eines Vorgaenger-PCs). Treiber in Benutzung verweigert Windows (kein /force).'
+    [pscustomobject]@{ Id = 'CLN-DRIVERSTORE'; Kategorie = 'Speicher'; Titel = (T 'Old driver packages in the driver store'); Risiko = 'Mittel'; Wirkung = 'Speicher/Hygiene'; Admin = $true; Standard = $true
+        Warum = (T 'With every driver update the old version stays in the driver store. Only older duplicates are removed (the newest stays) as well as chipset drivers of the other CPU vendor (leftovers of a previous PC). Windows refuses drivers in use (no /force).')
         Detect = {
             $pk = Get-DriverPackages
-            # INF-Dateien, die irgendein Geraet benutzt - auch ein gerade nicht angeschlossenes (Dock, Audio-Interface)
+            # INF files used by any device - including one that is currently not connected (dock, audio interface)
             $inUse = @{}
             foreach ($c in @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class' -ErrorAction SilentlyContinue)) { foreach ($i in @(Get-ChildItem $c.PSPath -ErrorAction SilentlyContinue)) { $inf = (Get-ItemProperty $i.PSPath -Name InfPath -ErrorAction SilentlyContinue).InfPath; if ($inf) { $inUse[([string]$inf).ToLower()] = $true } } }
             $cpu = (Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1).Manufacturer
@@ -1478,16 +1536,16 @@ $Script:Rules = @(
                 $kand = if ($fremdPlattform) { $s } elseif ($s.Count -gt 1) { $s | Select-Object -Skip 1 } else { @() }
                 foreach ($k in $kand) {
                     if ($inUse.ContainsKey(([string]$k.Pub).ToLower())) { continue }
-                    $grund = if ($fremdPlattform) { 'Chipsatz-Treiber anderer CPU-Plattform' } else { "aeltere Version, neueste $($s[0].VerText) bleibt" }
+                    $grund = if ($fremdPlattform) { (T 'Chipset driver of another CPU platform') } else { (T 'older version, newest {0} stays' ($s[0].VerText)) }
                     New-Item2 ("{0} {1} {2} {3} - {4}" -f $k.Pub, $k.Orig, $k.Prov, $k.VerText, $grund) 0 $k.Pub
                 }
             }
         }
-        Fix = { param($it) $o = & pnputil.exe /delete-driver $it.Data 2>&1; if ($LASTEXITCODE -ne 0) { throw 'SKIP:Wird noch benutzt – Windows behält diesen Treiber' }; 'entfernt' }
+        Fix = { param($it) $o = & pnputil.exe /delete-driver $it.Data 2>&1; if ($LASTEXITCODE -ne 0) { throw (T 'SKIP:Still in use – Windows keeps this driver') }; (T 'removed') }
     }
 
-    [pscustomobject]@{ Id = 'CLN-ORPHANDIR'; Kategorie = 'Speicher'; Titel = 'Ordner ohne zugehoeriges installiertes Programm'; Risiko = 'Hoch'; Wirkung = 'Speicher/Hygiene'; Admin = $false; Standard = $false
-        Warum = 'Heuristik: Ordner in Programme/ProgramData/AppData, deren Name zu keinem installierten Programm passt. Kann Fehltreffer enthalten - darum nur auf ausdruecklichen Wunsch (-Rule CLN-ORPHANDIR) und mit Einzelbestaetigung.'
+    [pscustomobject]@{ Id = 'CLN-ORPHANDIR'; Kategorie = 'Speicher'; Titel = (T 'Folders without a matching installed program'); Risiko = 'Hoch'; Wirkung = 'Speicher/Hygiene'; Admin = $false; Standard = $false
+        Warum = (T 'Heuristic: folders in Program Files/ProgramData/AppData whose name matches no installed program. May contain false positives - therefore only on explicit request (-Rule CLN-ORPHANDIR) and with confirmation for each item.')
         Detect = {
             $apps = Get-InstalledApps
             $norm = { param($s) (([string]$s).ToLower() -replace '[^a-z0-9]', '') }
@@ -1506,13 +1564,13 @@ $Script:Rules = @(
                 }
             }
         }
-        Fix = { param($it) if (-not (Test-SafeDeleteRoot $it.Data)) { throw 'Unsicherer Pfad' }; Remove-TreeNoFollow $it.Data; 'entfernt' }
+        Fix = { param($it) if (-not (Test-SafeDeleteRoot $it.Data)) { throw (T 'Unsafe path') }; Remove-TreeNoFollow $it.Data; (T 'removed') }
     }
 
-    # ---------------------------------------------------------------- Autostart
-    [pscustomobject]@{ Id = 'STA-ORPHAN'; Kategorie = 'Autostart'; Titel = 'Autostart-Eintraege mit fehlender Programmdatei'; Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Umkehrbar = $true
-        Warum = 'Verweist ein Autostart auf eine nicht mehr vorhandene Datei, ist das Programm deinstalliert. Eintraege auf derzeit fehlenden Laufwerken (USB) und im Netzwerk werden nicht angefasst. Alles wird vorher gesichert.'
-        Detect = { Get-StartupItems | Where-Object { $_.Zustand -eq 'fehlt' } | ForEach-Object { New-Item2 ("{0} – das Programm dazu ist nicht mehr da" -f $_.Name) 0 $_ ("[{0}] {1} -> {2}" -f $_.Ort, $_.Name, $_.Ziel) } }
+    # ---------------------------------------------------------------- Startup
+    [pscustomobject]@{ Id = 'STA-ORPHAN'; Kategorie = 'Autostart'; Titel = (T 'Startup entries with a missing program file'); Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Umkehrbar = $true
+        Warum = (T 'If a startup entry points to a file that no longer exists, the program has been uninstalled. Entries on currently missing drives (USB) and on the network are not touched. Everything is backed up first.')
+        Detect = { Get-StartupItems | Where-Object { $_.Zustand -eq 'fehlt' } | ForEach-Object { New-Item2 ((T '{0} – the program for it is gone') -f $_.Name) 0 $_ ("[{0}] {1} -> {2}" -f $_.Ort, $_.Name, $_.Ziel) } }
         Fix = { param($it)
             $s = $it.Data
             switch ($s.Art) {
@@ -1530,12 +1588,12 @@ $Script:Rules = @(
                 }
                 'StoreApp' { Backup-RegKey (ConvertTo-RegKeyText $s.Key) ('appxkey_' + $s.Ort + '_' + $s.Name); Remove-Item -Path $s.Key -Recurse -Force -ErrorAction Stop }
             }
-            'entfernt'
+            (T 'removed')
         }
     }
 
-    [pscustomobject]@{ Id = 'STA-APPROVED-ORPHAN'; Kategorie = 'Autostart'; Titel = 'Verwaiste Autostart-Statuswerte'; Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Umkehrbar = $true
-        Warum = 'Der Task-Manager merkt sich an/aus-Zustaende auch fuer laengst entfernte Programme.'
+    [pscustomobject]@{ Id = 'STA-APPROVED-ORPHAN'; Kategorie = 'Autostart'; Titel = (T 'Orphaned startup state values'); Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Umkehrbar = $true
+        Warum = (T 'Task Manager remembers on/off states even for programs removed long ago.')
         Detect = {
             $pairs = @(
                 @{ SA = "$Script:SA_HKCU\Run"; Run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' },
@@ -1549,15 +1607,15 @@ $Script:Rules = @(
                 $sa = Get-ItemProperty $p.SA -ErrorAction SilentlyContinue
                 if (-not $sa) { continue }
                 foreach ($n in ($sa.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | Select-Object -ExpandProperty Name)) {
-                    if ($exist -notcontains $n) { New-Item2 ("Überbleibsel von {0}" -f $n) 0 @{ Key = $p.SA; Name = $n } }
+                    if ($exist -notcontains $n) { New-Item2 ((T 'Leftover of {0}') -f $n) 0 @{ Key = $p.SA; Name = $n } }
                 }
             }
         }
-        Fix = { param($it) Set-RegValueWithUndo 'STA-APPROVED-ORPHAN' $it.Data.Name $it.Data.Key $it.Data.Name $null '' -Remove; 'entfernt' }
+        Fix = { param($it) Set-RegValueWithUndo 'STA-APPROVED-ORPHAN' $it.Data.Name $it.Data.Key $it.Data.Name $null '' -Remove; (T 'removed') }
     }
 
-    [pscustomobject]@{ Id = 'STA-HEAVY'; Kategorie = 'Autostart'; Titel = 'Aktive Autostarts pruefen (gemessene Startbremsen zuerst)'; Risiko = 'Mittel'; Wirkung = 'Startzeit'; Admin = $true; Standard = $true; Umkehrbar = $true
-        Warum = 'Jedes Programm im Autostart kostet Anmeldezeit und RAM. Deaktiviert wird wie im Task-Manager (umkehrbar, nichts wird deinstalliert). Vorausgewaehlt bzw. mit -Yes deaktiviert werden nur Eintraege aus HeavyStartup; Virenschutz, VPN, Backup, Cloud-Speicher und Eingabegeraete sind geschuetzt (ProtectedStartup).'
+    [pscustomobject]@{ Id = 'STA-HEAVY'; Kategorie = 'Autostart'; Titel = (T 'Review active startup programs (measured startup delays first)'); Risiko = 'Mittel'; Wirkung = 'Startzeit'; Admin = $true; Standard = $true; Umkehrbar = $true
+        Warum = (T 'Every startup program costs sign-in time and RAM. Disabling works like in Task Manager (reversible, nothing is uninstalled). Only entries from HeavyStartup are preselected or disabled with -Yes; antivirus, VPN, backup, cloud storage and input devices are protected (ProtectedStartup).')
         Detect = {
             $prot = $Script:Cfg.ProtectedStartup; $heavy = $Script:Cfg.HeavyStartup
             Get-StartupItems | Where-Object { $_.Aktiv -and $_.Zustand -ne 'fehlt' } | Sort-Object DegradationMs -Descending | ForEach-Object {
@@ -1567,7 +1625,7 @@ $Script:Rules = @(
                 if ($prot | Where-Object { $id -like "*$_*" }) { return }
                 $isHeavy = [bool]($heavy | Where-Object { $id -like "*$_*" })
                 $nm = if ($vi -and $vi.FileDescription -and $s.Art -ne 'StoreApp') { "{0} ({1})" -f $s.Name, ([string]$vi.FileDescription).Trim() } else { $s.Name }
-                $tag = @(); if ($s.DegradationMs -ge $Script:Cfg.BootDegradationHintMs) { $tag += ('verlängert den Start um etwa {0:N0} Sekunden' -f ($s.DegradationMs / 1000)) }; if ($isHeavy) { $tag += 'startet unnötig mit' }
+                $tag = @(); if ($s.DegradationMs -ge $Script:Cfg.BootDegradationHintMs) { $tag += ((T 'delays startup by about {0:N0} seconds') -f ($s.DegradationMs / 1000)) }; if ($isHeavy) { $tag += (T 'starts unnecessarily') }
                 $it = New-Item2 ("{0}{1}" -f $nm, $(if ($tag) { ' – ' + ($tag -join ', ') } else { '' })) 0 $s ("[{0}] {1} -> {2}" -f $s.Ort, $s.Name, $s.Ziel)
                 $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue $isHeavy
                 $it
@@ -1580,27 +1638,27 @@ $Script:Rules = @(
                 [byte[]]$v = @(3, 0, 0, 0) + [BitConverter]::GetBytes((Get-Date).ToFileTime())
                 Set-RegValueWithUndo 'STA-HEAVY' $s.Name $s.SAKey $s.Name $v 'Binary'
             }
-            'deaktiviert'
+            (T 'disabled')
         }
     }
 
-    # ---------------------------------------------------------------- Aufgaben & Dienste
-    [pscustomobject]@{ Id = 'TSK-ORPHAN'; Kategorie = 'Aufgaben'; Titel = 'Geplante Aufgaben mit fehlender Programmdatei'; Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Umkehrbar = $true
-        Warum = 'Solche Aufgaben laufen bei jedem Trigger ins Leere und erzeugen Fehler. Sie werden deaktiviert (nicht geloescht) und vorher gesichert.'
+    # ---------------------------------------------------------------- Tasks & services
+    [pscustomobject]@{ Id = 'TSK-ORPHAN'; Kategorie = 'Aufgaben'; Titel = (T 'Scheduled tasks with a missing program file'); Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Umkehrbar = $true
+        Warum = (T 'Such tasks run into nothing at every trigger and produce errors. They are disabled (not deleted) and backed up first.')
         Detect = {
             foreach ($t in (Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskPath -notlike '\Microsoft\Windows\*' -and $_.State -ne 'Disabled' })) {
                 foreach ($a in @($t.Actions)) {
                     if (-not $a.Execute) { continue }
                     $tg = Resolve-CommandTarget ("`"$(([string]$a.Execute).Trim('"'))`" $($a.Arguments)")
-                    if ((Get-TargetState $tg) -eq 'fehlt') { New-Item2 ("Geplante Aufgabe {0} – das Programm dazu ist nicht mehr da" -f $t.TaskName) 0 $t ("{0}{1} -> {2}" -f $t.TaskPath, $t.TaskName, $tg); break }
+                    if ((Get-TargetState $tg) -eq 'fehlt') { New-Item2 ((T 'Scheduled task {0} – the program for it is gone') -f $t.TaskName) 0 $t ("{0}{1} -> {2}" -f $t.TaskPath, $t.TaskName, $tg); break }
                 }
             }
         }
-        Fix = { param($it) Backup-Task $it.Data; Disable-ScheduledTask -TaskName $it.Data.TaskName -TaskPath $it.Data.TaskPath -ErrorAction Stop | Out-Null; 'deaktiviert' }
+        Fix = { param($it) Backup-Task $it.Data; Disable-ScheduledTask -TaskName $it.Data.TaskName -TaskPath $it.Data.TaskPath -ErrorAction Stop | Out-Null; (T 'disabled') }
     }
 
-    [pscustomobject]@{ Id = 'TSK-ANTIPATTERN'; Kategorie = 'Aufgaben'; Titel = 'Eigene Wartungsskripte mit schaedlichen Mustern'; Risiko = 'Info'; Wirkung = 'Startzeit/Datensicherheit'; Admin = $false; Standard = $true
-        Warum = 'Gut gemeinte Aufraeumskripte machen Windows oft langsamer oder gefaehrden Daten. Erkannt werden: Prefetch loeschen, Papierkorb komplett leeren, Downloads ohne Altersgrenze loeschen, winget --all/--force bei jeder Anmeldung.'
+    [pscustomobject]@{ Id = 'TSK-ANTIPATTERN'; Kategorie = 'Aufgaben'; Titel = (T 'Own maintenance scripts with harmful patterns'); Risiko = 'Info'; Wirkung = 'Startzeit/Datensicherheit'; Admin = $false; Standard = $true
+        Warum = (T 'Well-meant cleanup scripts often make Windows slower or endanger data. Detected: deleting Prefetch, emptying the recycle bin completely, deleting Downloads without an age limit, winget --all/--force at every sign-in.')
         Detect = {
             $del = '(?i)(remove-item|\bdel\b|\brd\b|rmdir|\berase\b|\[IO\.(File|Directory)\]::Delete)'
             foreach ($t in (Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.Author -notlike 'Microsoft*' -and $_.TaskPath -notlike '\Microsoft\Windows\*' })) {
@@ -1611,50 +1669,50 @@ $Script:Rules = @(
                     if ($f -and (Test-Path -LiteralPath $f) -and $f -match '\.(ps1|psm1|bat|cmd|vbs)$' -and (Get-Item $f).Length -lt 500KB) {
                         $raw = Get-Content -LiteralPath $f -Raw -ErrorAction SilentlyContinue
                         if ($f -match '\.ps') { $raw = [regex]::Replace($raw, '(?s)<#.*?#>', '') }
-                        # Kommentare entfernen, damit erklaerende Hinweise ("Prefetch wird NICHT geloescht") nicht anschlagen
+                        # Remove comments so that explanatory notes ("Prefetch is NOT deleted") do not trigger
                         $code = ($raw -split "`r?`n" | Where-Object { $_ -notmatch '^\s*(#|rem\s|rem$|::|'')' } | ForEach-Object { $_ -replace '\s+#\s.*$', '' }) -join "`n"
                         $txt += "`n" + $code
                     }
                     $lines = $txt -split "`n"
                     $hits = @()
-                    if ($lines | Where-Object { $_ -match '(?i)prefetch' -and $_ -match $del }) { $hits += 'loescht Prefetch -> Starts und Programmstarts werden langsamer' }
-                    if (($txt -match '(?i)clear-recyclebin' -or ($lines | Where-Object { $_ -match '(?i)\$recycle\.bin' -and $_ -match $del })) -and $txt -notmatch '(?i)DateDeleted|AddDays|-lt\s*\$') { $hits += 'leert den Papierkorb komplett -> versehentlich Geloeschtes ist sofort weg' }
-                    if (($lines | Where-Object { $_ -match '(?i)downloads' -and $_ -match $del }) -and $txt -notmatch '(?i)lastwritetime|adddays|creationtime|SendToRecycleBin') { $hits += 'loescht Downloads ohne Altersgrenze' }
-                    if ($txt -match '(?i)winget(\.exe)?\s+upgrade\s+.*--all') { $hits += 'winget upgrade --all (installiert alles ungefragt, teils Versionen nebeneinander)' }
-                    if ($txt -match '(?i)winget[^\n]*--force') { $hits += 'winget --force (uebergeht Sicherheitspruefungen)' }
-                    foreach ($h in $hits) { New-Item2 ("{0}{1}: {2}{3}" -f $t.TaskPath, $t.TaskName, $h, $(if ($logon) { ' (bei jeder Anmeldung!)' } else { '' })) 0 $null }
+                    if ($lines | Where-Object { $_ -match '(?i)prefetch' -and $_ -match $del }) { $hits += (T 'deletes Prefetch -> Windows and program starts get slower') }
+                    if (($txt -match '(?i)clear-recyclebin' -or ($lines | Where-Object { $_ -match '(?i)\$recycle\.bin' -and $_ -match $del })) -and $txt -notmatch '(?i)DateDeleted|AddDays|-lt\s*\$') { $hits += (T 'empties the recycle bin completely -> accidentally deleted files are gone immediately') }
+                    if (($lines | Where-Object { $_ -match '(?i)downloads' -and $_ -match $del }) -and $txt -notmatch '(?i)lastwritetime|adddays|creationtime|SendToRecycleBin') { $hits += (T 'deletes Downloads without an age limit') }
+                    if ($txt -match '(?i)winget(\.exe)?\s+upgrade\s+.*--all') { $hits += (T 'winget upgrade --all (installs everything without asking, sometimes versions side by side)') }
+                    if ($txt -match '(?i)winget[^\n]*--force') { $hits += (T 'winget --force (skips security checks)') }
+                    foreach ($h in $hits) { New-Item2 ("{0}{1}: {2}{3}" -f $t.TaskPath, $t.TaskName, $h, $(if ($logon) { (T ' (at every sign-in!)') } else { '' })) 0 $null }
                 }
             }
         }
         Fix = $null
     }
 
-    [pscustomobject]@{ Id = 'SVC-ORPHAN'; Kategorie = 'Dienste'; Titel = 'Dienste mit fehlender Programmdatei'; Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Umkehrbar = $true
-        Warum = 'Reste deinstallierter Programme: Der Dienst startet nie erfolgreich und erzeugt Fehler im Ereignisprotokoll. Er wird auf "Deaktiviert" gesetzt (umkehrbar).'
+    [pscustomobject]@{ Id = 'SVC-ORPHAN'; Kategorie = 'Dienste'; Titel = (T 'Services with a missing program file'); Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Umkehrbar = $true
+        Warum = (T 'Leftovers of uninstalled programs: the service never starts successfully and produces errors in the event log. It is set to "Disabled" (reversible).')
         Detect = {
             foreach ($s in (Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.PathName -and $_.StartMode -ne 'Disabled' })) {
                 $tg = Resolve-CommandTarget $s.PathName
                 if ($tg -match '\\(svchost|lsass|services)\.exe$') { continue }
-                if ((Get-TargetState $tg) -eq 'fehlt') { New-Item2 ("Hintergrunddienst {0} – das Programm dazu ist nicht mehr da" -f $s.DisplayName) 0 @{ Name = $s.Name; StartMode = $s.StartMode; Verzoegert = [bool]$s.DelayedAutoStart } ("{0} -> {1}" -f $s.Name, $tg) }
+                if ((Get-TargetState $tg) -eq 'fehlt') { New-Item2 ((T 'Background service {0} – the program for it is gone') -f $s.DisplayName) 0 @{ Name = $s.Name; StartMode = $s.StartMode; Verzoegert = [bool]$s.DelayedAutoStart } ("{0} -> {1}" -f $s.Name, $tg) }
             }
         }
-        Fix = { param($it) Set-Service -Name $it.Data.Name -StartupType Disabled -ErrorAction Stop; Add-ActionRecord 'SVC-ORPHAN' $it.Data.Name 'Undo-Info' 0 '' @{ Typ = 'Dienst'; Name = $it.Data.Name; StartMode = $it.Data.StartMode; Verzoegert = [bool]$it.Data.Verzoegert } | Out-Null; 'deaktiviert' }
+        Fix = { param($it) Set-Service -Name $it.Data.Name -StartupType Disabled -ErrorAction Stop; Add-ActionRecord 'SVC-ORPHAN' $it.Data.Name 'Undo-Info' 0 '' @{ Typ = 'Dienst'; Name = $it.Data.Name; StartMode = $it.Data.StartMode; Verzoegert = [bool]$it.Data.Verzoegert } | Out-Null; (T 'disabled') }
     }
 
-    # ---------------------------------------------------------------- Programme
-    [pscustomobject]@{ Id = 'APP-SIDEBYSIDE'; Kategorie = 'Programme'; Titel = 'Mehrfach installierte Versionen desselben Programms'; Risiko = 'Mittel'; Wirkung = 'Speicher/Hygiene'; Admin = $true; Standard = $true
-        Warum = 'Manche Installer legen Updates als zusaetzliche Version daneben. Angeboten wird die Deinstallation aller Versionen ausser der neuesten (Laufzeitumgebungen, SDKs usw. sind ausgenommen).'
+    # ---------------------------------------------------------------- Programs
+    [pscustomobject]@{ Id = 'APP-SIDEBYSIDE'; Kategorie = 'Programme'; Titel = (T 'Several installed versions of the same program'); Risiko = 'Mittel'; Wirkung = 'Speicher/Hygiene'; Admin = $true; Standard = $true
+        Warum = (T 'Some installers put updates next to the old version as an additional version. Uninstalling all versions except the newest is offered (runtimes, SDKs etc. are excluded).')
         Detect = {
             $ex = ($Script:Cfg.SideBySideExclude -join '|')
-            # Mit Adminrechten nur Eintraege aus HKLM: HKCU-Eintraege koennen von Programmen ohne Adminrechte stammen,
-            # ihr Deinstallationsbefehl wuerde sonst mit Adminrechten laufen
+            # With admin rights only entries from HKLM: HKCU entries can come from programs without admin rights,
+            # their uninstall command would otherwise run with admin rights
             $apps = Get-InstalledApps | Where-Object { $_.DisplayName -notmatch $ex -and $_.UninstallString -and (-not $Script:IsAdmin -or [string]$_.PSPath -like '*HKEY_LOCAL_MACHINE*') }
             $grp = $apps | Group-Object { (($_.DisplayName -replace '\(?\b(x64|x86|64-?bit|32-?bit)\b\)?', '' -replace '\bv?\d+(\.\d+)+\b', '' -replace '\s+', ' ').Trim().ToLower()) + '|' + $_.Publisher }
             foreach ($g in ($grp | Where-Object { $_.Count -gt 1 })) {
                 $withV = @($g.Group | ForEach-Object { $v = [version]'0.0'; $m = [regex]::Match(("$($_.DisplayVersion) $($_.DisplayName)"), '\d+(\.\d+)+'); if ($m.Success) { try { $v = [version]($m.Value -replace '^(\d+(\.\d+){0,3}).*$', '$1') } catch { } }; $_ | Add-Member -NotePropertyName V -NotePropertyValue $v -PassThru -Force })
                 if (@($withV.V | Select-Object -Unique).Count -lt 2) { continue }
                 $newest = ($withV | Sort-Object V -Descending)[0]
-                foreach ($a in ($withV | Where-Object { $_ -ne $newest } | Sort-Object V)) { New-Item2 ("{0} {1} (neueste {2} bleibt)" -f $a.DisplayName, $a.DisplayVersion, $newest.DisplayVersion) ([int64]$a.EstimatedSize * 1KB) $a }
+                foreach ($a in ($withV | Where-Object { $_ -ne $newest } | Sort-Object V)) { New-Item2 ((T '{0} {1} (newest {2} stays)') -f $a.DisplayName, $a.DisplayVersion, $newest.DisplayVersion) ([int64]$a.EstimatedSize * 1KB) $a }
             }
         }
         Fix = { param($it)
@@ -1662,16 +1720,16 @@ $Script:Rules = @(
             $s = if ($a.QuietUninstallString) { $a.QuietUninstallString } else { $a.UninstallString }
             if ($s -match '^\s*"([^"]+)"\s*(.*)$') { $exe = $Matches[1]; $arg = $Matches[2] } elseif ($s -match '^\s*(.+?\.exe)\s*(.*)$') { $exe = $Matches[1]; $arg = $Matches[2] } else { $exe = $s; $arg = '' }
             if ($exe -match 'msiexec') { $arg = $arg -replace '/I\{', '/X{' }
-            W '      (Deinstallationsprogramm oeffnet sich ggf. - bitte durchklicken)' 'DarkGray'
+            W (T '      (the uninstaller may open - please click through it)') 'DarkGray'
             $p = if ($arg.Trim()) { Start-Process -FilePath $exe -ArgumentList $arg -Wait -PassThru } else { Start-Process -FilePath $exe -Wait -PassThru }
-            if ($p.ExitCode -in 1602, 1223) { throw 'SKIP:Deinstallation abgebrochen' }
-            if ($p.ExitCode -notin 0, 3010, 1641) { throw "Deinstallation meldet Code $($p.ExitCode)" }
-            'deinstalliert'
+            if ($p.ExitCode -in 1602, 1223) { throw (T 'SKIP:Uninstall cancelled') }
+            if ($p.ExitCode -notin 0, 3010, 1641) { throw (T 'Uninstaller reports code {0}' ($p.ExitCode)) }
+            (T 'uninstalled')
         }
     }
 
-    [pscustomobject]@{ Id = 'APP-BLOAT'; Kategorie = 'Programme'; Titel = 'Vorinstallierte Store-Apps (Liste BloatApps)'; Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true
-        Warum = 'Werbe- und Demo-Apps ohne Nutzen. Entfernt fuer den Benutzer und als Vorlage fuer neue Konten. Jederzeit aus dem Store neu installierbar.'
+    [pscustomobject]@{ Id = 'APP-BLOAT'; Kategorie = 'Programme'; Titel = (T 'Preinstalled Store apps (BloatApps list)'); Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true
+        Warum = (T 'Ad and demo apps without use. Removed for the user and as a template for new accounts. Can be reinstalled from the Store at any time.')
         Detect = {
             foreach ($n in $Script:Cfg.BloatApps) {
                 $p = @(Get-AppxPackage -Name $n -ErrorAction SilentlyContinue)
@@ -1681,14 +1739,14 @@ $Script:Rules = @(
         Fix = { param($it)
             Get-AppxPackage -Name $it.Data -ErrorAction SilentlyContinue | ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -ErrorAction Stop }
             if ($Script:IsAdmin) { try { Get-AppxProvisionedPackage -Online -ErrorAction Stop | Where-Object DisplayName -eq $it.Data | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null } } catch { } }
-            'entfernt'
+            (T 'removed')
         }
     }
 
-    [pscustomobject]@{ Id = 'APP-UPDATES'; Kategorie = 'Programme'; Titel = 'Veraltete Programme (winget)'; Risiko = 'Mittel'; Wirkung = 'Sicherheit'; Admin = $true; Standard = $true; Dauer = 'je Programm 1–5 Minuten'; Endgueltig = $true
-        Warum = 'Veraltete Software ist das haeufigste Einfallstor. Aktualisiert wird einzeln ueber winget, Programme aus WingetExclude nie automatisch. Laufende Programme koennen dabei beendet werden.'
+    [pscustomobject]@{ Id = 'APP-UPDATES'; Kategorie = 'Programme'; Titel = (T 'Outdated programs (winget)'); Risiko = 'Mittel'; Wirkung = 'Sicherheit'; Admin = $true; Standard = $true; Dauer = (T '1–5 minutes per program'); Endgueltig = $true
+        Warum = (T 'Outdated software is the most common entry point for attacks. Updates are installed one by one via winget, programs from WingetExclude never automatically. Running programs may be closed in the process.')
         Detect = {
-            $ctx = $Script:LastContext; if ($ctx -and $ctx.AnderesKonto) { return }   # benutzerbezogene Installationen waeren unsichtbar
+            $ctx = $Script:LastContext; if ($ctx -and $ctx.AnderesKonto) { return }   # per-user installations would be invisible
             $wg = Get-WingetPath; if (-not $wg) { return }
             $z = @(& $wg upgrade --source winget --disable-interactivity --accept-source-agreements 2>$null | ForEach-Object { ($_ -split "`r")[-1] })
             $kopf = $z | Where-Object { $_ -match '^\s*Name\s+I[dD]\s+' } | Select-Object -First 1
@@ -1697,7 +1755,7 @@ $Script:Rules = @(
             for ($k = [array]::IndexOf($z, $kopf) + 2; $k -lt $z.Count; $k++) {
                 $l = $z[$k]; if ($l -notmatch '\S' -or $l.Length -le $iVer) { break }
                 $id = $l.Substring($iId, $iVer - $iId).Trim(); if ($id -notmatch '^[^\s]+\.[^\s]+$') { break }
-                if ($id -match '…|\.\.\.$') { continue }   # von winget gekuerzte ID - nicht eindeutig
+                if ($id -match '…|\.\.\.$') { continue }   # ID shortened by winget - not unique
                 $name = $l.Substring(0, $iId).Trim()
                 if ($Script:Cfg.WingetExclude | Where-Object { $name -like "*$_*" -or $id -like "*$_*" }) { continue }
                 $ver = ($l.Substring($iVer).Trim() -split '\s+')
@@ -1705,228 +1763,228 @@ $Script:Rules = @(
             }
         }
         Fix = { param($it)
-            $wg = Get-WingetPath; if (-not $wg) { throw 'winget nicht gefunden' }
+            $wg = Get-WingetPath; if (-not $wg) { throw (T 'winget not found') }
             $o = & $wg upgrade --id $it.Data --exact --source winget --silent --disable-interactivity --accept-package-agreements --accept-source-agreements 2>&1
-            if ($LASTEXITCODE -ne 0) { throw ("Aktualisierung hat nicht geklappt – bitte später noch einmal versuchen oder das Programm selbst aktualisieren (winget-Code {0})" -f $LASTEXITCODE) }
-            'aktualisiert'
+            if ($LASTEXITCODE -ne 0) { throw ((T 'The update did not work – please try again later or update the program yourself (winget code {0})') -f $LASTEXITCODE) }
+            (T 'updated')
         }
     }
 
     # ---------------------------------------------------------------- System
-    [pscustomobject]@{ Id = 'SYS-GHOST'; Kategorie = 'System'; Titel = 'Geistergeraete (nicht mehr angeschlossene Hardware)'; Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Endgueltig = $true
-        Warum = 'Alte Geraete bleiben im Geraete-Manager registriert (z. B. vom Vorgaenger-PC). Wird ein Geraet wieder angeschlossen, erkennt Windows es neu. Bluetooth, Audio-Endpunkte und Drucker sind ausgenommen.'
+    [pscustomobject]@{ Id = 'SYS-GHOST'; Kategorie = 'System'; Titel = (T 'Ghost devices (hardware that is no longer connected)'); Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Endgueltig = $true
+        Warum = (T 'Old devices stay registered in Device Manager (e.g. from a previous PC). If a device is connected again, Windows detects it anew. Bluetooth, audio endpoints and printers are excluded.')
         Detect = {
             $cls = $Script:Cfg.GhostDeviceClasses
             $g = Get-GhostDevices
             foreach ($grp in ($g | Group-Object Class | Sort-Object Count -Descending)) {
                 $bsp = ($grp.Group | Select-Object -ExpandProperty FriendlyName -Unique | Where-Object { $_ } | Select-Object -First 3) -join '; '
-                New-Item2 ("{0} alte Einträge: {1} (z. B. {2})" -f $grp.Count, (Get-DeviceClassName $grp.Name), $bsp) 0 @($grp.Group | Select-Object -ExpandProperty InstanceId)
+                New-Item2 ((T '{0} old entries: {1} (e.g. {2})') -f $grp.Count, (Get-DeviceClassName $grp.Name), $bsp) 0 @($grp.Group | Select-Object -ExpandProperty InstanceId)
             }
         }
-        Fix = { param($it) $ok = 0; $f = 0; foreach ($id in $it.Data) { & pnputil.exe /remove-device "$id" 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { $ok++ } else { $f++ } }; "$ok entfernt, $f nicht" }
+        Fix = { param($it) $ok = 0; $f = 0; foreach ($id in $it.Data) { & pnputil.exe /remove-device "$id" 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { $ok++ } else { $f++ } }; (T '{0} removed, {1} not' $ok $f) }
     }
 
-    [pscustomobject]@{ Id = 'SYS-SHADOW'; Kategorie = 'System'; Titel = 'Zu wenig Speicher fuer Wiederherstellungspunkte'; Risiko = 'Niedrig'; Wirkung = 'Sicherheit'; Admin = $true; Standard = $true
-        Warum = 'Ist der Schattenkopie-Speicher zu klein, verwirft Windows Wiederherstellungspunkte (Ereignis Volsnap 36). Ziel: ShadowStorageTarget der Laufwerksgroesse.'
+    [pscustomobject]@{ Id = 'SYS-SHADOW'; Kategorie = 'System'; Titel = (T 'Too little space for restore points'); Risiko = 'Niedrig'; Wirkung = 'Sicherheit'; Admin = $true; Standard = $true
+        Warum = (T 'If the shadow copy storage is too small, Windows discards restore points (event Volsnap 36). Target: ShadowStorageTarget of the drive size.')
         Detect = {
             $vols = @{}; Get-CimInstance Win32_Volume -ErrorAction SilentlyContinue | Where-Object DriveLetter | ForEach-Object { $vols[$_.DeviceID] = $_ }
             foreach ($s in (Get-CimInstance Win32_ShadowStorage -ErrorAction SilentlyContinue)) {
                 $v = $vols[$s.Volume.DeviceID]; if (-not $v -or -not $v.Capacity) { continue }
                 $pct = 100 * $s.MaxSpace / $v.Capacity
-                if ($pct -lt $Script:Cfg.ShadowStorageMinPercent) { New-Item2 ("Laufwerk {0}: nur {1} ({2:N1} %) für Wiederherstellungspunkte" -f $v.DriveLetter, (Fmt-Bytes $s.MaxSpace), $pct) 0 $v.DriveLetter }
+                if ($pct -lt $Script:Cfg.ShadowStorageMinPercent) { New-Item2 ((T 'Drive {0}: only {1} ({2:N1} %) for restore points') -f $v.DriveLetter, (Fmt-Bytes $s.MaxSpace), $pct) 0 $v.DriveLetter }
             }
         }
-        Fix = { param($it) $o = & vssadmin.exe resize shadowstorage /for=$($it.Data) /on=$($it.Data) /maxsize=$($Script:Cfg.ShadowStorageTarget) 2>&1; if ($LASTEXITCODE -ne 0) { throw ($o | Out-String) }; "auf $($Script:Cfg.ShadowStorageTarget) gesetzt" }
+        Fix = { param($it) $o = & vssadmin.exe resize shadowstorage /for=$($it.Data) /on=$($it.Data) /maxsize=$($Script:Cfg.ShadowStorageTarget) 2>&1; if ($LASTEXITCODE -ne 0) { throw ($o | Out-String) }; (T 'set to {0}' ($Script:Cfg.ShadowStorageTarget)) }
     }
 
-    [pscustomobject]@{ Id = 'SYS-TRIM'; Kategorie = 'System'; Titel = 'SSD-TRIM abgeschaltet oder lange nicht gelaufen'; Risiko = 'Niedrig'; Wirkung = 'Leistung'; Admin = $true; Standard = $true; Umkehrbar = $true
-        Warum = 'TRIM teilt der SSD freie Bloecke mit und haelt die Schreibleistung hoch. Windows macht das woechentlich ueber die Laufwerksoptimierung. Gemeldet wird nur, wenn TRIM abgeschaltet ist (oft durch "Tuning"-Tools) oder die Optimierung seit ueber 14 Tagen nicht lief.'
+    [pscustomobject]@{ Id = 'SYS-TRIM'; Kategorie = 'System'; Titel = (T 'SSD TRIM turned off or not run for a long time'); Risiko = 'Niedrig'; Wirkung = 'Leistung'; Admin = $true; Standard = $true; Umkehrbar = $true
+        Warum = (T 'TRIM tells the SSD about free blocks and keeps write performance high. Windows does this weekly via drive optimization. Only reported if TRIM is turned off (often by "tuning" tools) or the optimization has not run for more than 14 days.')
         Detect = {
             $fs = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
             $dd = (Get-ItemProperty $fs -ErrorAction SilentlyContinue).DisableDeleteNotification
             $ssd = @(Get-VolumeInfo | Where-Object { $_.Medium -eq 'SSD' -and $_.FS -eq 'NTFS' })
             if (-not $ssd.Count) { return }
-            if ($dd -eq 1) { New-Item2 'TRIM ist in Windows abgeschaltet – die SSD wird mit der Zeit langsamer' 0 'an'; return }
+            if ($dd -eq 1) { New-Item2 (T 'TRIM is turned off in Windows – the SSD gets slower over time') 0 'an'; return }
             $t = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction SilentlyContinue
             $i = if ($t) { $t | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue } else { $null }
             $alt = (-not $t) -or $t.State -eq 'Disabled' -or -not $i -or -not $i.LastRunTime -or $i.LastRunTime.Year -lt 2000 -or $i.LastRunTime -lt (Get-Date).AddDays(-14)
             if (-not $alt) { return }
-            Get-VolumeInfo | Where-Object { $_.Medium -eq 'SSD' -and $_.FS -eq 'NTFS' } | ForEach-Object { New-Item2 ("SSD {0}: {1} – TRIM lief seit über 14 Tagen nicht" -f $_.LW, $_.Disk) 0 $_.LW }
+            Get-VolumeInfo | Where-Object { $_.Medium -eq 'SSD' -and $_.FS -eq 'NTFS' } | ForEach-Object { New-Item2 ((T 'SSD {0}: {1} – TRIM has not run for more than 14 days') -f $_.LW, $_.Disk) 0 $_.LW }
         }
         Fix = { param($it)
-            if ($it.Data -eq 'an') { Set-RegValueWithUndo 'SYS-TRIM' 'TRIM' 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'DisableDeleteNotification' 0 'DWord'; foreach ($v in @(Get-VolumeInfo | Where-Object { $_.Medium -eq 'SSD' -and $_.FS -eq 'NTFS' })) { try { Optimize-Volume -DriveLetter $v.LW -ReTrim -ErrorAction Stop } catch { } }; return 'TRIM eingeschaltet' }
-            Optimize-Volume -DriveLetter $it.Data -ReTrim -ErrorAction Stop; 'TRIM ausgefuehrt'
+            if ($it.Data -eq 'an') { Set-RegValueWithUndo 'SYS-TRIM' 'TRIM' 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'DisableDeleteNotification' 0 'DWord'; foreach ($v in @(Get-VolumeInfo | Where-Object { $_.Medium -eq 'SSD' -and $_.FS -eq 'NTFS' })) { try { Optimize-Volume -DriveLetter $v.LW -ReTrim -ErrorAction Stop } catch { } }; return (T 'TRIM turned on') }
+            Optimize-Volume -DriveLetter $it.Data -ReTrim -ErrorAction Stop; (T 'TRIM run')
         }
     }
 
-    [pscustomobject]@{ Id = 'SYS-MAINT'; Kategorie = 'System'; Titel = 'Automatische Wartung laeuft nicht durch'; Risiko = 'Niedrig'; Wirkung = 'Leistung/Hygiene'; Admin = $true; Standard = $true
-        Warum = 'Laufwerksoptimierung, Systemwiederherstellung u. a. haengen an der automatischen Wartung. Bricht sie dauerhaft ab, veraltet das System schleichend.'
+    [pscustomobject]@{ Id = 'SYS-MAINT'; Kategorie = 'System'; Titel = (T 'Automatic maintenance does not complete'); Risiko = 'Niedrig'; Wirkung = 'Leistung/Hygiene'; Admin = $true; Standard = $true
+        Warum = (T 'Drive optimization, System Restore and more depend on automatic maintenance. If it keeps aborting, the system slowly falls behind.')
         Detect = {
             $t = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction SilentlyContinue
             if (-not $t) { return }
             $i = $t | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue
-            # Abbrueche (0x8007042B) sind normal, wenn man waehrend der Wartung arbeitet - relevant ist nur, wenn sie lange nicht lief
-            if ($t.State -eq 'Disabled') { New-Item2 'Die Laufwerkspflege von Windows ist abgeschaltet (Aufgabe ScheduledDefrag deaktiviert)' 0 'aus'; return }
-            if (-not $i.LastRunTime -or $i.LastRunTime.Year -lt 2000 -or $i.LastRunTime -lt (Get-Date).AddDays(-14)) { New-Item2 ("Die Laufwerkspflege von Windows lief seit über 14 Tagen nicht{0}" -f $(if ($i.LastRunTime -and $i.LastRunTime.Year -ge 2000) { " (zuletzt {0:dd.MM.yyyy})" -f $i.LastRunTime } else { '' })) 0 $null }
+            # Aborts (0x8007042B) are normal if you work during maintenance - it only matters if it has not run for a long time
+            if ($t.State -eq 'Disabled') { New-Item2 (T 'Windows drive maintenance is turned off (task ScheduledDefrag disabled)') 0 'aus'; return }
+            if (-not $i.LastRunTime -or $i.LastRunTime.Year -lt 2000 -or $i.LastRunTime -lt (Get-Date).AddDays(-14)) { New-Item2 ((T 'Windows drive maintenance has not run for more than 14 days{0}') -f $(if ($i.LastRunTime -and $i.LastRunTime.Year -ge 2000) { (T ' (last {0:yyyy-MM-dd})') -f $i.LastRunTime } else { '' })) 0 $null }
         }
         Fix = { param($it)
-            if ($it.Data -eq 'aus') { Backup-Task (Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag'); Enable-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction Stop | Out-Null; return 'Laufwerkspflege eingeschaltet' }
-            Start-Process "$env:windir\System32\MSchedExe.exe" -ArgumentList 'Start'; 'Wartung gestartet (PC ca. 1 Stunde anlassen)'
+            if ($it.Data -eq 'aus') { Backup-Task (Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag'); Enable-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction Stop | Out-Null; return (T 'Drive maintenance turned on') }
+            Start-Process "$env:windir\System32\MSchedExe.exe" -ArgumentList 'Start'; (T 'Maintenance started (leave the PC on for about 1 hour)')
         }
     }
 
-    [pscustomobject]@{ Id = 'SYS-INTEGRITY'; Kategorie = 'System'; Titel = 'Systemdateien und Komponentenspeicher pruefen/reparieren'; Risiko = 'Niedrig'; Wirkung = 'Stabilitaet'; Admin = $true; Standard = $true; Dauer = '10–30 Minuten'
-        Warum = 'DISM prueft den Komponentenspeicher, SFC die Systemdateien. Mit -Deep wird die Reparatur immer angeboten, sonst nur bei gemeldetem Schaden.'
+    [pscustomobject]@{ Id = 'SYS-INTEGRITY'; Kategorie = 'System'; Titel = (T 'Check/repair system files and the component store'); Risiko = 'Niedrig'; Wirkung = 'Stabilitaet'; Admin = $true; Standard = $true; Dauer = (T '10–30 minutes')
+        Warum = (T 'DISM checks the component store, SFC the system files. With -Deep the repair is always offered, otherwise only when damage is reported.')
         Detect = {
             $h = $null; try { $h = (Repair-WindowsImage -Online -CheckHealth -ErrorAction Stop).ImageHealthState } catch { }
-            if ($h -and "$h" -ne 'Healthy') { New-Item2 "Komponentenspeicher: $h" 0 'dism' }
-            if ($Deep -or ($h -and "$h" -ne 'Healthy')) { New-Item2 'SFC /scannow (Systemdateien pruefen und reparieren, ca. 10 Min.)' 0 'sfc' }
+            if ($h -and "$h" -ne 'Healthy') { New-Item2 (T 'Component store: {0}' $h) 0 'dism' }
+            if ($Deep -or ($h -and "$h" -ne 'Healthy')) { New-Item2 (T 'SFC /scannow (check and repair system files, about 10 min.)') 0 'sfc' }
         }
         Fix = { param($it)
-            if ($it.Data -eq 'dism') { $r = Repair-WindowsImage -Online -RestoreHealth -ErrorAction Stop; return "Zustand: $($r.ImageHealthState)" }
+            if ($it.Data -eq 'dism') { $r = Repair-WindowsImage -Online -RestoreHealth -ErrorAction Stop; return (T 'State: {0}' ($r.ImageHealthState)) }
             $alt = [Console]::OutputEncoding
             try { [Console]::OutputEncoding = [Text.Encoding]::Unicode; $o = & sfc.exe /scannow 2>&1 } finally { [Console]::OutputEncoding = $alt }
             (($o | ForEach-Object { "$_" -replace "`0", '' } | Where-Object { $_ -match '\S' -and $_ -notmatch '%' }) | Select-Object -Last 2) -join ' '
         }
     }
 
-    [pscustomobject]@{ Id = 'SYS-FSCHECK'; Kategorie = 'System'; Titel = 'Dateisystem-Pruefung (online, nur mit -Deep)'; Risiko = 'Info'; Wirkung = 'Stabilitaet'; Admin = $true; Standard = $true
-        Warum = 'Prueft NTFS-Volumes im laufenden Betrieb auf Fehler. Bei Befund: chkdsk X: /spotfix bzw. /f beim naechsten Start.'
-        Detect = { if (-not $Deep) { return }; foreach ($v in (Get-VolumeInfo | Where-Object FS -eq 'NTFS')) { $r = $null; try { $r = Repair-Volume -DriveLetter $v.LW -Scan -ErrorAction Stop } catch { $r = "Fehler: $($_.Exception.Message)" }; if ("$r" -ne 'NoErrorsFound') { New-Item2 ("{0}: {1}" -f $v.LW, $r) 0 $null } } }
+    [pscustomobject]@{ Id = 'SYS-FSCHECK'; Kategorie = 'System'; Titel = (T 'File system check (online, only with -Deep)'); Risiko = 'Info'; Wirkung = 'Stabilitaet'; Admin = $true; Standard = $true
+        Warum = (T 'Checks NTFS volumes for errors while running. If something is found: chkdsk X: /spotfix or /f at the next start.')
+        Detect = { if (-not $Deep) { return }; foreach ($v in (Get-VolumeInfo | Where-Object FS -eq 'NTFS')) { $r = $null; try { $r = Repair-Volume -DriveLetter $v.LW -Scan -ErrorAction Stop } catch { $r = (T 'Error: {0}' ($_.Exception.Message)) }; if ("$r" -ne 'NoErrorsFound') { New-Item2 ("{0}: {1}" -f $v.LW, $r) 0 $null } } }
         Fix = $null
     }
 
-    [pscustomobject]@{ Id = 'SYS-GAMEDVR'; Kategorie = 'System'; Titel = 'Hintergrundaufnahme (Xbox Game Bar) aktiv'; Risiko = 'Mittel'; Wirkung = 'Leistung'; Admin = $false; Standard = $true; Umkehrbar = $true
-        Warum = 'Die Hintergrundaufnahme ("Aufzeichnen, was passiert ist") nimmt in Spielen staendig die letzten Minuten auf und kostet GPU-Leistung. Abgeschaltet wird nur sie; Clips manuell aufnehmen und der Spielmodus bleiben.'
+    [pscustomobject]@{ Id = 'SYS-GAMEDVR'; Kategorie = 'System'; Titel = (T 'Background recording (Xbox Game Bar) active'); Risiko = 'Mittel'; Wirkung = 'Leistung'; Admin = $false; Standard = $true; Umkehrbar = $true
+        Warum = (T 'Background recording ("Record what happened") constantly records the last minutes in games and costs GPU performance. Only this is turned off; recording clips manually and Game Mode stay.')
         Detect = {
             $k = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' -ErrorAction SilentlyContinue
-            if ($k -and $k.HistoricalCaptureEnabled -eq 1 -and $k.AppCaptureEnabled -ne 0) { New-Item2 'Die Hintergrund-Aufnahme der Xbox Game Bar ist eingeschaltet' 0 $null }
+            if ($k -and $k.HistoricalCaptureEnabled -eq 1 -and $k.AppCaptureEnabled -ne 0) { New-Item2 (T 'Background recording of the Xbox Game Bar is turned on') 0 $null }
         }
-        Fix = { param($it) Set-RegValueWithUndo 'SYS-GAMEDVR' 'Hintergrund-Aufnahme' 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'HistoricalCaptureEnabled' 0 'DWord'; 'deaktiviert' }
+        Fix = { param($it) Set-RegValueWithUndo 'SYS-GAMEDVR' (T 'Background recording') 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'HistoricalCaptureEnabled' 0 'DWord'; (T 'disabled') }
     }
 
-    # ---------------------------------------------------------------- Sicherheit (meist Info)
-    [pscustomobject]@{ Id = 'SEC-EXECPOLICY'; Kategorie = 'Sicherheit'; Titel = 'PowerShell-Ausfuehrungsrichtlinie zu offen'; Risiko = 'Mittel'; Wirkung = 'Sicherheit'; Admin = $false; Standard = $true; Umkehrbar = $true
-        Warum = '"Unrestricted"/"Bypass" dauerhaft erlaubt jedes heruntergeladene Skript. RemoteSigned laesst lokale Skripte weiter laufen, blockiert aber unsignierte Downloads.'
-        Detect = { foreach ($s in 'CurrentUser', 'LocalMachine') { $p = Get-ExecutionPolicy -Scope $s; if ("$p" -in 'Unrestricted', 'Bypass') { New-Item2 $(if ($s -eq 'CurrentUser') { 'Für dein Benutzerkonto ist diese Schutzeinstellung ausgeschaltet' } else { 'Für alle Benutzer ist diese Schutzeinstellung ausgeschaltet' }) 0 $s } } }
-        Fix = { param($it) $alt = "$(Get-ExecutionPolicy -Scope $it.Data)"; try { Set-ExecutionPolicy RemoteSigned -Scope $it.Data -Force -ErrorAction Stop } catch { if ($_.Exception.Message -notmatch 'overridden|ueberschrieben|überschrieben') { throw } }; if ("$(Get-ExecutionPolicy -Scope $it.Data)" -ne $alt) { Add-ActionRecord 'SEC-EXECPOLICY' 'Schutzeinstellung fuer Skripte' 'Undo-Info' 0 '' @{ Typ = 'ExecPolicy'; Scope = $it.Data; Vorher = $alt } | Out-Null }; 'RemoteSigned' }
+    # ---------------------------------------------------------------- Security (mostly info)
+    [pscustomobject]@{ Id = 'SEC-EXECPOLICY'; Kategorie = 'Sicherheit'; Titel = (T 'PowerShell execution policy too permissive'); Risiko = 'Mittel'; Wirkung = 'Sicherheit'; Admin = $false; Standard = $true; Umkehrbar = $true
+        Warum = (T '"Unrestricted"/"Bypass" permanently allows every downloaded script. RemoteSigned keeps local scripts running but blocks unsigned downloads.')
+        Detect = { foreach ($s in 'CurrentUser', 'LocalMachine') { $p = Get-ExecutionPolicy -Scope $s; if ("$p" -in 'Unrestricted', 'Bypass') { New-Item2 $(if ($s -eq 'CurrentUser') { (T 'This protection setting is turned off for your user account') } else { (T 'This protection setting is turned off for all users') }) 0 $s } } }
+        Fix = { param($it) $alt = "$(Get-ExecutionPolicy -Scope $it.Data)"; try { Set-ExecutionPolicy RemoteSigned -Scope $it.Data -Force -ErrorAction Stop } catch { if ($_.Exception.Message -notmatch 'overridden|ueberschrieben|überschrieben') { throw } }; if ("$(Get-ExecutionPolicy -Scope $it.Data)" -ne $alt) { Add-ActionRecord 'SEC-EXECPOLICY' (T 'Protection setting for scripts') 'Undo-Info' 0 '' @{ Typ = 'ExecPolicy'; Scope = $it.Data; Vorher = $alt } | Out-Null }; 'RemoteSigned' }
     }
 
-    [pscustomobject]@{ Id = 'SEC-CHECKS'; Kategorie = 'Sicherheit'; Titel = 'Sicherheits-Grundlagen'; Risiko = 'Info'; Wirkung = 'Sicherheit'; Admin = $true; Standard = $true
-        Warum = 'Windows-Support und Updates, Secure Boot, Virenschutz, Firewall, UAC, BIOS-Alter. Ein anderer aktiver Virenschutz bzw. eine andere Firewall wird beruecksichtigt.'
+    [pscustomobject]@{ Id = 'SEC-CHECKS'; Kategorie = 'Sicherheit'; Titel = (T 'Security basics'); Risiko = 'Info'; Wirkung = 'Sicherheit'; Admin = $true; Standard = $true
+        Warum = (T 'Windows support and updates, Secure Boot, antivirus, firewall, UAC, BIOS age. Another active antivirus or firewall is taken into account.')
         Detect = {
             $wi = Get-WindowsSupportInfo
-            if ($wi.Ende -and $wi.Ende -lt (Get-Date)) { New-Item2 ("Diese Windows-Version ({0}) bekommt seit {1:dd.MM.yyyy} keine Sicherheitsupdates mehr – bitte über Einstellungen > Windows Update auf die aktuelle Version aktualisieren" -f $wi.Version, $wi.Ende) 0 @{ Stufe = 'krit' } }
-            elseif ($wi.Ende -and $wi.Ende -lt (Get-Date).AddDays(60)) { New-Item2 ("Diese Windows-Version ({0}) bekommt nur noch bis {1:dd.MM.yyyy} Sicherheitsupdates – bald auf die aktuelle Version aktualisieren" -f $wi.Version, $wi.Ende) 0 @{ Stufe = 'warn' } }
-            if ($wi.WuDeaktiviert) { New-Item2 'Windows Update ist abgeschaltet – der PC bekommt keine Sicherheitsupdates' 0 @{ Stufe = 'krit' } }
-            elseif ($null -ne $wi.TageSeitUpdate -and $wi.TageSeitUpdate -gt 40) { New-Item2 ("Seit {0} Tagen wurden keine Windows-Updates installiert – Einstellungen > Windows Update prüfen" -f $wi.TageSeitUpdate) 0 @{ Stufe = 'warn' } }
+            if ($wi.Ende -and $wi.Ende -lt (Get-Date)) { New-Item2 ((T 'This Windows version ({0}) has not received security updates since {1:yyyy-MM-dd} – please update to the current version via Settings > Windows Update') -f $wi.Version, $wi.Ende) 0 @{ Stufe = 'krit' } }
+            elseif ($wi.Ende -and $wi.Ende -lt (Get-Date).AddDays(60)) { New-Item2 ((T 'This Windows version ({0}) only receives security updates until {1:yyyy-MM-dd} – update to the current version soon') -f $wi.Version, $wi.Ende) 0 @{ Stufe = 'warn' } }
+            if ($wi.WuDeaktiviert) { New-Item2 (T 'Windows Update is turned off – the PC receives no security updates') 0 @{ Stufe = 'krit' } }
+            elseif ($null -ne $wi.TageSeitUpdate -and $wi.TageSeitUpdate -gt 40) { New-Item2 ((T 'No Windows updates have been installed for {0} days – check Settings > Windows Update') -f $wi.TageSeitUpdate) 0 @{ Stufe = 'warn' } }
             $fw = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control' -ErrorAction SilentlyContinue).PEFirmwareType
             $sb = $null; try { $sb = Confirm-SecureBootUEFI -ErrorAction Stop } catch { }
-            if ($fw -eq 1) { New-Item2 'Windows startet im alten BIOS-Modus (Legacy) – Secure Boot (Startschutz) ist so nicht möglich. Eine Umstellung sollte nur jemand machen, der sich auskennt' 0 @{ Stufe = '' } }
-            elseif ($sb -eq $false) { New-Item2 'Secure Boot (Startschutz) ist ausgeschaltet. Das ist kein akutes Problem. Einschalten sollte es nur jemand, der sich auskennt – falsch gemacht, startet Windows nicht mehr' 0 @{ Stufe = '' } }
+            if ($fw -eq 1) { New-Item2 (T 'Windows starts in the old BIOS mode (legacy) – Secure Boot (boot protection) is not possible this way. Only someone who knows what they are doing should switch it') 0 @{ Stufe = '' } }
+            elseif ($sb -eq $false) { New-Item2 (T 'Secure Boot (boot protection) is turned off. This is not an acute problem. Only someone who knows what they are doing should turn it on – done wrong, Windows no longer starts') 0 @{ Stufe = '' } }
             elseif ($sb -eq $true) {
                 $ca = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing' -ErrorAction SilentlyContinue).UEFICA2023Status
-                if ($ca -and [string]$ca -ne 'Updated') { New-Item2 'Die neuen Secure-Boot-Zertifikate (2023) sind noch nicht installiert. Windows erledigt das über Updates; manchmal ist dafür ein BIOS-Update nötig' 0 @{ Stufe = '' } }
+                if ($ca -and [string]$ca -ne 'Updated') { New-Item2 (T 'The new Secure Boot certificates (2023) are not installed yet. Windows does this via updates; sometimes a BIOS update is needed for it') 0 @{ Stufe = '' } }
             }
             $avFremd = @(Get-OtherSecurityProducts 'AntiVirusProduct')
             if (-not $avFremd.Count) {
                 try {
                     $m = Get-MpComputerStatus -ErrorAction Stop
-                    if (-not $m.RealTimeProtectionEnabled) { New-Item2 'Der Virenschutz (Microsoft Defender) ist ausgeschaltet und kein anderer Virenschutz ist aktiv' 0 @{ Stufe = 'krit' } }
-                    elseif ($m.AntivirusSignatureLastUpdated -lt (Get-Date).AddDays(-7)) { New-Item2 ("Die Virenschutz-Signaturen sind älter als 7 Tage (Stand {0:dd.MM.yyyy})" -f $m.AntivirusSignatureLastUpdated) 0 @{ Stufe = 'warn' } }
+                    if (-not $m.RealTimeProtectionEnabled) { New-Item2 (T 'The antivirus (Microsoft Defender) is turned off and no other antivirus is active') 0 @{ Stufe = 'krit' } }
+                    elseif ($m.AntivirusSignatureLastUpdated -lt (Get-Date).AddDays(-7)) { New-Item2 ((T 'The antivirus signatures are older than 7 days (as of {0:yyyy-MM-dd})') -f $m.AntivirusSignatureLastUpdated) 0 @{ Stufe = 'warn' } }
                 } catch { }
             }
             if (-not @(Get-OtherSecurityProducts 'FirewallProduct').Count) {
-                $pn = @{ 'Domain' = 'Firmennetzwerke'; 'Private' = 'private Netzwerke'; 'Public' = 'öffentliche Netzwerke' }
-                try { Get-NetFirewallProfile -ErrorAction Stop | Where-Object { -not $_.Enabled } | ForEach-Object { New-Item2 ("Die Windows-Firewall ist für {0} ausgeschaltet. Einschalten unter Einstellungen > Datenschutz und Sicherheit > Windows-Sicherheit > Firewall" -f $(if ($pn.ContainsKey([string]$_.Name)) { $pn[[string]$_.Name] } else { $_.Name })) 0 @{ Stufe = 'warn' } } } catch { }
+                $pn = @{ 'Domain' = (T 'company networks'); 'Private' = (T 'private networks'); 'Public' = (T 'public networks') }
+                try { Get-NetFirewallProfile -ErrorAction Stop | Where-Object { -not $_.Enabled } | ForEach-Object { New-Item2 ((T 'The Windows Firewall is turned off for {0}. Turn it on under Settings > Privacy & security > Windows Security > Firewall') -f $(if ($pn.ContainsKey([string]$_.Name)) { $pn[[string]$_.Name] } else { $_.Name })) 0 @{ Stufe = 'warn' } } } catch { }
             }
-            if ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue).EnableLUA -eq 0) { New-Item2 'Die Benutzerkontensteuerung (Nachfrage bei Änderungen am System) ist ausgeschaltet' 0 @{ Stufe = 'warn' } }
+            if ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue).EnableLUA -eq 0) { New-Item2 (T 'User Account Control (confirmation for changes to the system) is turned off') 0 @{ Stufe = 'warn' } }
             $b = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
-            if ($b.ReleaseDate -and $b.ReleaseDate -lt (Get-Date).AddYears(-2)) { New-Item2 ("Die Grundsoftware des Mainboards (BIOS) ist vom {0:dd.MM.yyyy}. Ein Update kann Fehler und Sicherheitslücken beheben – bitte nur von jemandem durchführen lassen, der sich auskennt" -f $b.ReleaseDate) 0 @{ Stufe = '' } }
+            if ($b.ReleaseDate -and $b.ReleaseDate -lt (Get-Date).AddYears(-2)) { New-Item2 ((T 'The basic software of the motherboard (BIOS) dates from {0:yyyy-MM-dd}. An update can fix bugs and security holes – please only have it done by someone who knows what they are doing') -f $b.ReleaseDate) 0 @{ Stufe = '' } }
         }
         Fix = $null
     }
 
-    [pscustomobject]@{ Id = 'SYS-TWEAKS'; Kategorie = 'System'; Titel = 'Unguenstige Tuning-Einstellungen'; Risiko = 'Info'; Wirkung = 'Leistung/Sicherheit'; Admin = $true; Standard = $true
-        Warum = 'Manche Tuning-Programme und -Anleitungen schalten Windows-Funktionen ab, die den PC eigentlich schneller oder sicherer machen: Auslagerungsdatei, Prefetch, SysMain, Defender per Richtlinie.'
+    [pscustomobject]@{ Id = 'SYS-TWEAKS'; Kategorie = 'System'; Titel = (T 'Unfavorable tuning settings'); Risiko = 'Info'; Wirkung = 'Leistung/Sicherheit'; Admin = $true; Standard = $true
+        Warum = (T 'Some tuning programs and guides turn off Windows features that actually make the PC faster or safer: page file, Prefetch, SysMain, Defender via policy.')
         Detect = {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-            if ($cs -and -not $cs.AutomaticManagedPagefile -and -not @(Get-CimInstance Win32_PageFileSetting -ErrorAction SilentlyContinue).Count) { New-Item2 'Die Auslagerungsdatei ist abgeschaltet – das führt bei vollem Arbeitsspeicher zu Abstürzen. Empfohlen: "Größe automatisch verwalten" (Systemeigenschaften > Erweitert > Leistung)' 0 @{ Stufe = 'warn' } }
+            if ($cs -and -not $cs.AutomaticManagedPagefile -and -not @(Get-CimInstance Win32_PageFileSetting -ErrorAction SilentlyContinue).Count) { New-Item2 (T 'The page file is turned off – this leads to crashes when the RAM is full. Recommended: "Automatically manage paging file size" (System Properties > Advanced > Performance)') 0 @{ Stufe = 'warn' } }
             $pf = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' -ErrorAction SilentlyContinue).EnablePrefetcher
-            if ($pf -eq 0) { New-Item2 'Prefetch ist abgeschaltet – Windows und Programme starten dadurch langsamer' 0 @{ Stufe = 'warn' } }
+            if ($pf -eq 0) { New-Item2 (T 'Prefetch is turned off – Windows and programs start slower') 0 @{ Stufe = 'warn' } }
             $sm = Get-CimInstance Win32_Service -Filter "Name='SysMain'" -ErrorAction SilentlyContinue
-            if ($sm -and $sm.StartMode -eq 'Disabled') { New-Item2 'Der Dienst SysMain (Programme schneller laden) ist abgeschaltet' 0 @{ Stufe = 'warn' } }
+            if ($sm -and $sm.StartMode -eq 'Disabled') { New-Item2 (T 'The SysMain service (loads programs faster) is turned off') 0 @{ Stufe = 'warn' } }
             $dp = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -ErrorAction SilentlyContinue
             $rp = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' -ErrorAction SilentlyContinue
-            if (($dp.DisableAntiSpyware -eq 1 -or $rp.DisableRealtimeMonitoring -eq 1) -and -not @(Get-OtherSecurityProducts 'AntiVirusProduct').Count) { New-Item2 'Der Virenschutz wurde per Richtlinie abgeschaltet (oft durch Tuning-Programme) und kein anderer Virenschutz ist aktiv' 0 @{ Stufe = 'krit' } }
+            if (($dp.DisableAntiSpyware -eq 1 -or $rp.DisableRealtimeMonitoring -eq 1) -and -not @(Get-OtherSecurityProducts 'AntiVirusProduct').Count) { New-Item2 (T 'The antivirus was turned off via policy (often by tuning programs) and no other antivirus is active') 0 @{ Stufe = 'krit' } }
         }
         Fix = $null
     }
 
-    # ---------------------------------------------------------------- Hardware-Hinweise (Info)
-    [pscustomobject]@{ Id = 'HW-HINTS'; Kategorie = 'Hardware'; Titel = 'Hardware- und Konfigurationshinweise'; Risiko = 'Info'; Wirkung = 'Leistung'; Admin = $false; Standard = $true
-        Warum = 'Die groessten Hebel liegen oft in der Hardware-Konfiguration: Systemplatte, Arbeitsspeicher, Grafikkarte, Energieplan, Netzwerk und Geraetetreiber.'
+    # ---------------------------------------------------------------- Hardware hints (info)
+    [pscustomobject]@{ Id = 'HW-HINTS'; Kategorie = 'Hardware'; Titel = (T 'Hardware and configuration hints'); Risiko = 'Info'; Wirkung = 'Leistung'; Admin = $false; Standard = $true
+        Warum = (T 'The biggest levers are often in the hardware configuration: system drive, RAM, graphics card, power plan, network and device drivers.')
         Detect = {
             $ch = Get-ChassisInfo
             $vols = Get-VolumeInfo; $sys = $vols | Where-Object { $_.LW -eq $env:SystemDrive.Substring(0, 1) }
             if ($sys) {
-                if ($sys.Medium -eq 'HDD') { New-Item2 'Windows liegt auf einer Festplatte (HDD) – eine SSD ist die größte einzelne Verbesserung' 0 @{ Stufe = 'warn' } }
+                if ($sys.Medium -eq 'HDD') { New-Item2 (T 'Windows is on a hard disk (HDD) – an SSD is the biggest single improvement') 0 @{ Stufe = 'warn' } }
                 $nvme = $vols | Where-Object { $_.Bus -eq 'NVMe' -and $_.LW -ne $sys.LW -and $_.FreiProzent -gt 60 }
-                if ($sys.Bus -ne 'NVMe' -and $nvme) { New-Item2 ("Windows liegt auf {0} ({1}), aber Laufwerk {2}: ist eine kaum genutzte, schnellere NVMe-SSD ({3} GB frei) – ein Umzug von Windows dorthin bringt deutlich schnellere Starts" -f $sys.Disk, $sys.Bus, $nvme[0].LW, $nvme[0].FreiGB) 0 @{ Stufe = '' } }
+                if ($sys.Bus -ne 'NVMe' -and $nvme) { New-Item2 ((T 'Windows is on {0} ({1}), but drive {2}: is a barely used, faster NVMe SSD ({3} GB free) – moving Windows there gives much faster starts') -f $sys.Disk, $sys.Bus, $nvme[0].LW, $nvme[0].FreiGB) 0 @{ Stufe = '' } }
                 elseif ($sys.Medium -eq 'SSD') {
                     $big = $vols | Where-Object { $_.Medium -eq 'SSD' -and $_.LW -ne $sys.LW -and $_.FreiProzent -gt 60 -and $_.GroesseGB -ge 2 * $sys.GroesseGB } | Select-Object -First 1
-                    if ($big) { New-Item2 ("Windows liegt auf {0} ({1} GB), während Laufwerk {2}: ({3}, {4} GB) zu {5} % leer ist – prüfen, ob diese SSD schneller ist (z. B. NVMe), und Windows bzw. Spiele dorthin umziehen" -f $sys.Disk, $sys.GroesseGB, $big.LW, $big.Disk, $big.GroesseGB, $big.FreiProzent) 0 @{ Stufe = '' } }
+                    if ($big) { New-Item2 ((T 'Windows is on {0} ({1} GB), while drive {2}: ({3}, {4} GB) is {5} % empty – check whether this SSD is faster (e.g. NVMe) and move Windows or games there') -f $sys.Disk, $sys.GroesseGB, $big.LW, $big.Disk, $big.GroesseGB, $big.FreiProzent) 0 @{ Stufe = '' } }
                 }
-                if ($sys.FreiProzent -lt 15) { New-Item2 ("Auf dem Windows-Laufwerk sind nur {0} % frei – unter 15 % wird der PC langsamer" -f $sys.FreiProzent) 0 @{ Stufe = 'warn' } }
+                if ($sys.FreiProzent -lt 15) { New-Item2 ((T 'Only {0} % is free on the Windows drive – below 15 % the PC gets slower') -f $sys.FreiProzent) 0 @{ Stufe = 'warn' } }
             }
-            # Arbeitsspeicher
+            # RAM
             $mem = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue | Where-Object { $_.Capacity -gt 0 })
-            if (-not $ch.Laptop -and -not $ch.VM -and $mem.Count -eq 1) { New-Item2 ('Nur ein Speicherriegel eingebaut ({0:N0} GB) – zwei gleiche Riegel arbeiten zusammen (Dual-Channel) und sind spürbar schneller, vor allem bei Spielen und mit Grafik im Prozessor' -f ($mem[0].Capacity / 1GB)) 0 @{ Stufe = 'warn' } }
-            if (-not $ch.Laptop) { foreach ($m in $mem) { if ($m.ConfiguredClockSpeed -and $m.Speed -and $m.ConfiguredClockSpeed -lt $m.Speed) { New-Item2 ("Arbeitsspeicher läuft mit {0} statt {1} MT/s. Falls die Riegel ein XMP/EXPO-Profil haben, lässt es sich im BIOS einschalten (Herstellerangabe prüfen)" -f $m.ConfiguredClockSpeed, $m.Speed) 0 @{ Stufe = '' }; break } } }
-            # Grafik: Treiber fehlt, Monitor am Mainboard
+            if (-not $ch.Laptop -and -not $ch.VM -and $mem.Count -eq 1) { New-Item2 ((T 'Only one memory module installed ({0:N0} GB) – two identical modules work together (dual channel) and are noticeably faster, especially in games and with graphics in the processor') -f ($mem[0].Capacity / 1GB)) 0 @{ Stufe = 'warn' } }
+            if (-not $ch.Laptop) { foreach ($m in $mem) { if ($m.ConfiguredClockSpeed -and $m.Speed -and $m.ConfiguredClockSpeed -lt $m.Speed) { New-Item2 ((T 'RAM runs at {0} instead of {1} MT/s. If the modules have an XMP/EXPO profile, it can be turned on in the BIOS (check the manufacturer''s specification)') -f $m.ConfiguredClockSpeed, $m.Speed) 0 @{ Stufe = '' }; break } } }
+            # Graphics: driver missing, monitor on the motherboard
             $vc = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)
-            if (-not $ch.VM -and ($vc | Where-Object { $_.Name -match 'Basic Display|Standard-VGA|Microsoft Basic' -or $_.InfFilename -eq 'display.inf' })) { New-Item2 'Für die Grafik ist kein richtiger Treiber installiert (Microsoft-Standardtreiber) – Treiber vom Hersteller der Grafikkarte installieren' 0 @{ Stufe = 'krit' } }
+            if (-not $ch.VM -and ($vc | Where-Object { $_.Name -match 'Basic Display|Standard-VGA|Microsoft Basic' -or $_.InfFilename -eq 'display.inf' })) { New-Item2 (T 'No proper driver is installed for the graphics (Microsoft standard driver) – install the driver from the graphics card manufacturer') 0 @{ Stufe = 'krit' } }
             $dgpu = @($vc | Where-Object { $_.Name -match '(?i)NVIDIA|Radeon RX|Radeon Pro|Arc A|Arc B' })
-            if (-not $ch.Laptop -and $dgpu.Count -and -not ($dgpu | Where-Object { $_.CurrentHorizontalResolution }) -and ($vc | Where-Object { $_.CurrentHorizontalResolution })) { New-Item2 ("Der Bildschirm hängt am Mainboard statt an der Grafikkarte ({0}) – das Kabel in einen Anschluss der Grafikkarte stecken, sonst bleibt ihre Leistung ungenutzt" -f $dgpu[0].Name) 0 @{ Stufe = 'warn' } }
-            # Geraete mit Fehlercode (22 = vom Benutzer deaktiviert, 45 = nicht angeschlossen)
+            if (-not $ch.Laptop -and $dgpu.Count -and -not ($dgpu | Where-Object { $_.CurrentHorizontalResolution }) -and ($vc | Where-Object { $_.CurrentHorizontalResolution })) { New-Item2 ((T 'The monitor is connected to the motherboard instead of the graphics card ({0}) – plug the cable into a port of the graphics card, otherwise its performance stays unused') -f $dgpu[0].Name) 0 @{ Stufe = 'warn' } }
+            # Devices with an error code (22 = disabled by the user, 45 = not connected)
             $bad = @(Get-CimInstance Win32_PnPEntity -Filter 'ConfigManagerErrorCode <> 0' -ErrorAction SilentlyContinue | Where-Object { $_.ConfigManagerErrorCode -notin 22, 45 -and $_.Name })
-            foreach ($d in ($bad | Select-Object -First 5)) { New-Item2 ("Gerät {0} funktioniert nicht richtig (Code {1}) – im Geräte-Manager prüfen, meist hilft der Treiber vom Hersteller" -f $d.Name, $d.ConfigManagerErrorCode) 0 @{ Stufe = 'warn' } }
-            # Energieplan
+            foreach ($d in ($bad | Select-Object -First 5)) { New-Item2 ((T 'Device {0} is not working properly (code {1}) – check in Device Manager, usually the manufacturer''s driver helps') -f $d.Name, $d.ConfigManagerErrorCode) 0 @{ Stufe = 'warn' } }
+            # Power plan
             $pmax = Get-PowerSettingIndex $Script:GuidSubProcessor $Script:GuidProcMax
             $pmin = Get-PowerSettingIndex $Script:GuidSubProcessor $Script:GuidProcMin
             $boost = Get-PowerSettingIndex $Script:GuidSubProcessor $Script:GuidBoostMode
-            if ($pmax -and $null -ne $pmax.AC -and $pmax.AC -lt 100) { New-Item2 ("Der Energieplan begrenzt den Prozessor im Netzbetrieb auf {0} % – er arbeitet dadurch nie mit voller Leistung (oft ein alter Tipp gegen Wärme). Systemsteuerung > Energieoptionen > Prozessorenergieverwaltung" -f $pmax.AC) 0 @{ Stufe = 'warn' } }
-            if ($boost -and $boost.AC -eq 0) { New-Item2 'Der Turbo des Prozessors ist im Energieplan abgeschaltet – er arbeitet dadurch deutlich langsamer' 0 @{ Stufe = 'warn' } }
-            if ($pmin -and $pmin.AC -eq 100 -and $pmin.Schema -eq '381b4222-f694-41f0-9685-ff5bb260df2e') { New-Item2 'Im Energieplan "Ausbalanciert" taktet der Prozessor nie herunter (Minimum 100 %) – wärmer und lauter ohne spürbaren Vorteil' 0 @{ Stufe = '' } }
+            if ($pmax -and $null -ne $pmax.AC -and $pmax.AC -lt 100) { New-Item2 ((T 'The power plan limits the processor to {0} % on mains power – it never works at full performance (often an old tip against heat). Control Panel > Power Options > Processor power management') -f $pmax.AC) 0 @{ Stufe = 'warn' } }
+            if ($boost -and $boost.AC -eq 0) { New-Item2 (T 'The processor''s turbo is turned off in the power plan – it works much slower as a result') 0 @{ Stufe = 'warn' } }
+            if ($pmin -and $pmin.AC -eq 100 -and $pmin.Schema -eq '381b4222-f694-41f0-9685-ff5bb260df2e') { New-Item2 (T 'In the "Balanced" power plan the processor never clocks down (minimum 100 %) – warmer and louder without a noticeable benefit') 0 @{ Stufe = '' } }
             $plan = (& powercfg.exe /getactivescheme 2>$null) -join ' '
-            if ($plan -and $plan -notmatch '381b4222-f694-41f0-9685-ff5bb260df2e|8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c|a1841308-3541-4fab-bc81-f71556f20b4a|e9a42b02-d5df-448d-aa00-03f14749eb61') { New-Item2 ("Ein eigener Energieplan ist aktiv: {0}" -f ($plan -replace '^.*\(|\).*$', '')) 0 @{ Stufe = '' } }
-            # Intel 13./14. Generation (Desktop): Microcode-Stand gegen Instabilitaet (Vmin Shift)
+            if ($plan -and $plan -notmatch '381b4222-f694-41f0-9685-ff5bb260df2e|8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c|a1841308-3541-4fab-bc81-f71556f20b4a|e9a42b02-d5df-448d-aa00-03f14749eb61') { New-Item2 ((T 'A custom power plan is active: {0}') -f ($plan -replace '^.*\(|\).*$', '')) 0 @{ Stufe = '' } }
+            # Intel 13th/14th generation (desktop): microcode level against instability (Vmin shift)
             if ($ch.CpuName -match '(?i)i[579]-1[34]\d{3}(K|KF|KS|F|T)?\b' -and $ch.CpuName -notmatch '(?i)\d{4,5}(H|HX|U|P)\b') {
                 $rev = $null; try { $b = [byte[]](Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -ErrorAction Stop).'Update Revision'; if ($b.Count -ge 8) { $rev = [BitConverter]::ToUInt32($b, 4) } } catch { }
-                if ($rev -and $rev -lt 0x1000 -and $rev -lt 0x12F) { New-Item2 ("Prozessor der Intel-Generation 13/14 mit altem Microcode (0x{0:X}) – Intel empfiehlt ein BIOS-Update (mindestens 0x12F) und das Profil 'Intel Default Settings', um bleibende Schäden zu vermeiden" -f $rev) 0 @{ Stufe = 'warn' } }
+                if ($rev -and $rev -lt 0x1000 -and $rev -lt 0x12F) { New-Item2 ((T 'Intel 13th/14th generation processor with old microcode (0x{0:X}) – Intel recommends a BIOS update (at least 0x12F) and the ''Intel Default Settings'' profile to avoid permanent damage') -f $rev) 0 @{ Stufe = 'warn' } }
             }
-            # Netzwerk
+            # Network
             try {
                 $ad = @(Get-NetAdapter -ErrorAction Stop)
                 $lan = @($ad | Where-Object { $_.Status -eq 'Up' -and $_.PhysicalMediaType -eq '802.3' -and $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|VPN|TAP|Loopback|WireGuard' })
-                foreach ($l in $lan) { if ([int64]$l.Speed -gt 0 -and [int64]$l.Speed -le 100000000) { New-Item2 ("Die Netzwerkkabel-Verbindung ({0}) läuft nur mit 100 Mbit/s – meist liegt es an einem alten oder beschädigten Kabel oder Anschluss" -f $l.InterfaceDescription) 0 @{ Stufe = 'warn' } } }
+                foreach ($l in $lan) { if ([int64]$l.Speed -gt 0 -and [int64]$l.Speed -le 100000000) { New-Item2 ((T 'The network cable connection ({0}) only runs at 100 Mbit/s – usually an old or damaged cable or port is to blame') -f $l.InterfaceDescription) 0 @{ Stufe = 'warn' } } }
                 $wifi = $ad | Where-Object { $_.Status -eq 'Up' -and $_.PhysicalMediaType -match '802\.11|Native 802' }
                 $eth = $ad | Where-Object { $_.Status -ne 'Up' -and $_.PhysicalMediaType -eq '802.3' -and $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|VPN|TAP|Loopback' }
-                if ($wifi -and $eth -and -not $lan.Count -and -not $ch.Laptop) { New-Item2 ("Der PC ist per WLAN verbunden ({0}), hat aber einen Netzwerkkabel-Anschluss – falls ein Kabel möglich ist: schneller und stabiler" -f $wifi[0].LinkSpeed) 0 @{ Stufe = '' } }
+                if ($wifi -and $eth -and -not $lan.Count -and -not $ch.Laptop) { New-Item2 ((T 'The PC is connected via Wi-Fi ({0}) but has a network cable port – if a cable is possible: faster and more stable') -f $wifi[0].LinkSpeed) 0 @{ Stufe = '' } }
             } catch { }
             $raidSvc = Get-CimInstance Win32_SystemDriver -Filter "Name='rcraid' OR Name='iaStorAVC' OR Name='iaStorAC'" -ErrorAction SilentlyContinue | Where-Object State -eq 'Running'
-            if ($raidSvc -and -not (Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match 'RAID|Array' })) { New-Item2 ("RAID-Treiber aktiv ({0}), aber kein RAID-Verbund erkennbar – im BIOS ist evtl. RAID statt AHCI/NVMe eingestellt. Umstellen nur mit Vorbereitung, sonst startet Windows nicht" -f ($raidSvc.Name -join ', ')) 0 @{ Stufe = '' } }
-            # Schnellstart: "Herunterfahren" startet Windows nicht wirklich neu
+            if ($raidSvc -and -not (Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match 'RAID|Array' })) { New-Item2 ((T 'RAID driver active ({0}), but no RAID array detected – RAID instead of AHCI/NVMe may be set in the BIOS. Only switch with preparation, otherwise Windows no longer starts') -f ($raidSvc.Name -join ', ')) 0 @{ Stufe = '' } }
+            # Fast startup: "Shut down" does not really restart Windows
             $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
             $hb = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -ErrorAction SilentlyContinue).HiberbootEnabled
-            if ($os -and $hb -eq 1 -and $os.LastBootUpTime -lt (Get-Date).AddDays(-7)) { New-Item2 ("Windows wurde seit {0:N0} Tagen nicht neu gestartet (der Schnellstart macht aus 'Herunterfahren' keinen echten Neustart). Nach Updates und Treibern deshalb 'Neu starten' wählen" -f ((Get-Date) - $os.LastBootUpTime).TotalDays) 0 @{ Stufe = '' } }
+            if ($os -and $hb -eq 1 -and $os.LastBootUpTime -lt (Get-Date).AddDays(-7)) { New-Item2 ((T 'Windows has not been restarted for {0:N0} days (fast startup turns ''Shut down'' into no real restart). So choose ''Restart'' after updates and drivers') -f ((Get-Date) - $os.LastBootUpTime).TotalDays) 0 @{ Stufe = '' } }
         }
         Fix = $null
     }
 
-    # ---------------------------------------------------------------- Kuehlung und Temperaturen (Info)
-    [pscustomobject]@{ Id = 'HW-COOLING'; Kategorie = 'Hardware'; Titel = 'Kuehlung, Luefter und Temperaturen'; Risiko = 'Info'; Wirkung = 'Stabilitaet/Lebensdauer'; Admin = $false; Standard = $true
-        Warum = 'Zu heisse Bauteile werden gebremst und altern schneller; stehende oder dauerhaft volle Luefter deuten auf einen Defekt oder eine unpassende Luefterkurve im BIOS hin. Windows kann Luefterkurven weder lesen noch einstellen - WinTidy misst deshalb die Auswirkungen (Temperaturen, Drosselung, Luefterdrehzahl) und bietet einen kurzen Kuehlungstest an.'
+    # ---------------------------------------------------------------- Cooling and temperatures (info)
+    [pscustomobject]@{ Id = 'HW-COOLING'; Kategorie = 'Hardware'; Titel = (T 'Cooling, fans and temperatures'); Risiko = 'Info'; Wirkung = 'Stabilitaet/Lebensdauer'; Admin = $false; Standard = $true
+        Warum = (T 'Components that are too hot get throttled and age faster; stopped or permanently full-speed fans indicate a defect or an unsuitable fan curve in the BIOS. Windows can neither read nor set fan curves - so WinTidy measures the effects (temperatures, throttling, fan speed) and offers a short cooling test.')
         Detect = {
             foreach ($p in (Get-HardwarePoints)) { New-Item2 $p.Text 0 @{ Stufe = $p.Stufe; Bereich = $p.Bereich; Wertung = $p.Wertung } }
             $lt = Get-LastCoolingTest
@@ -1934,36 +1992,36 @@ $Script:Rules = @(
                 $z = [datetime]$lt.Zeit
                 if ($z -gt (Get-Date).AddDays(-60)) {
                     $pt = @($lt.Punkte | Where-Object { $_.Stufe -eq 'krit' }) + @($lt.Punkte | Where-Object { $_.Stufe -eq 'warn' }) + @($lt.Punkte | Where-Object { $_.Stufe -eq 'ok' })
-                    if ($pt.Count) { New-Item2 ('Letzter Kühlungstest ({0:dd.MM.yyyy}{1}): {2}' -f $z, $(if ($lt.Status -eq 'GESTOPPT') { ', vorzeitig beendet' } else { '' }), $pt[0].Text) 0 @{ Stufe = $pt[0].Stufe; Bereich = 'Test' } }
+                    if ($pt.Count) { New-Item2 ((T 'Last cooling test ({0:yyyy-MM-dd}{1}): {2}') -f $z, $(if ($lt.Status -eq 'GESTOPPT') { (T ', stopped early') } else { '' }), $pt[0].Text) 0 @{ Stufe = $pt[0].Stufe; Bereich = 'Test' } }
                 }
             }
         }
         Fix = $null
     }
 
-    [pscustomobject]@{ Id = 'HW-COOLPOLICY'; Kategorie = 'Hardware'; Titel = 'Kuehlrichtlinie im Netzbetrieb auf "Aktiv" stellen'; Risiko = 'Mittel'; Wirkung = 'Leistung/Temperatur'; Admin = $true; Standard = $true; Umkehrbar = $true
-        Warum = 'Mit der Richtlinie "Passiv" bremst Windows zuerst den Prozessor, bevor die Luefter hochdrehen. Im Netzbetrieb ist "Aktiv" (erst Luefter, dann bremsen) der Windows-Standard. Wirkt nur bei Geraeten, deren Firmware Windows an der Kuehlung beteiligt (ACPI-Thermalzonen). Rueckgaengig ueber "Wiederherstellen".'
+    [pscustomobject]@{ Id = 'HW-COOLPOLICY'; Kategorie = 'Hardware'; Titel = (T 'Set the cooling policy on mains power to "Active"'); Risiko = 'Mittel'; Wirkung = 'Leistung/Temperatur'; Admin = $true; Standard = $true; Umkehrbar = $true
+        Warum = (T 'With the "Passive" policy Windows throttles the processor first before the fans speed up. On mains power "Active" (fans first, then throttling) is the Windows default. Only has an effect on devices whose firmware lets Windows take part in cooling (ACPI thermal zones). Can be undone via "Restore".')
         Detect = {
-            # Nur sinnvoll, wenn die Firmware ACPI-Aktivkuehlung anbietet (Luefterstufen ueber Windows). Desktops und
-            # die meisten aktuellen Laptops steuern Luefter selbst - dort haette die Einstellung keine Wirkung.
+            # Only useful if the firmware offers ACPI active cooling (fan levels via Windows). Desktops and
+            # most current laptops control their fans themselves - there the setting would have no effect.
             $aktiv = @(); try { $aktiv = @(Get-CimInstance -Namespace root\wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop | Where-Object { $_.ActiveTripPointCount -gt 0 }) } catch { }
             if (-not $aktiv.Count) { return }
             $ps = Get-PowerSettingIndex $Script:GuidSubProcessor $Script:GuidSysCoolPol
             if (-not $ps -or $ps.AC -ne 0) { return }
-            New-Item2 'Energieplan: Im Netzbetrieb bremst Windows den Prozessor, bevor die Lüfter hochdrehen (Kühlrichtlinie "Passiv")' 0 @{ Schema = $ps.Schema; AC = $ps.AC }
+            New-Item2 (T 'Power plan: on mains power Windows throttles the processor before the fans speed up (cooling policy "Passive")') 0 @{ Schema = $ps.Schema; AC = $ps.AC }
         }
         Fix = { param($it)
             $null = & powercfg.exe /setacvalueindex $it.Data.Schema $Script:GuidSubProcessor $Script:GuidSysCoolPol 1 2>&1
-            if ($LASTEXITCODE -ne 0) { throw "powercfg meldet Fehler $LASTEXITCODE" }
+            if ($LASTEXITCODE -ne 0) { throw (T 'powercfg reports error {0}' $LASTEXITCODE) }
             $akt = Get-PowerSettingIndex $Script:GuidSubProcessor $Script:GuidSysCoolPol
             if ($akt -and $akt.Schema -eq $it.Data.Schema) { $null = & powercfg.exe /setactive $it.Data.Schema 2>&1 }
-            Add-ActionRecord 'HW-COOLPOLICY' 'Kuehlrichtlinie (Netzbetrieb)' 'Undo-Info' 0 '' @{ Typ = 'PowerSetting'; Schema = $it.Data.Schema; Sub = $Script:GuidSubProcessor; Setting = $Script:GuidSysCoolPol; AC = $it.Data.AC } | Out-Null
-            'auf Aktiv gestellt'
+            Add-ActionRecord 'HW-COOLPOLICY' (T 'Cooling policy (mains power)') 'Undo-Info' 0 '' @{ Typ = 'PowerSetting'; Schema = $it.Data.Schema; Sub = $Script:GuidSubProcessor; Setting = $Script:GuidSysCoolPol; AC = $it.Data.AC } | Out-Null
+            (T 'set to Active')
         }
     }
 
-    [pscustomobject]@{ Id = 'HW-DISPLAY'; Kategorie = 'Hardware'; Titel = 'Bildwiederholrate des Bildschirms'; Risiko = 'Info'; Wirkung = 'Bildqualitaet'; Admin = $false; Standard = $true
-        Warum = 'Schnelle Monitore laufen nach dem Anschliessen oft nur mit 60 Hz, weil die hoehere Rate in Windows nie ausgewaehlt wurde. Verglichen wird mit dem, was der Monitor selbst meldet (EDID).'
+    [pscustomobject]@{ Id = 'HW-DISPLAY'; Kategorie = 'Hardware'; Titel = (T 'Refresh rate of the monitor'); Risiko = 'Info'; Wirkung = 'Bildqualitaet'; Admin = $false; Standard = $true
+        Warum = (T 'Fast monitors often run at only 60 Hz after being connected because the higher rate was never selected in Windows. It is compared with what the monitor itself reports (EDID).')
         Detect = {
             $vc = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { [int]$_.CurrentRefreshRate -gt 1 -and $_.CurrentHorizontalResolution })
             $modes = @()
@@ -1976,11 +2034,11 @@ $Script:Rules = @(
             $mons = @($modes | Select-Object -ExpandProperty Inst -Unique)
             foreach ($v in $vc) {
                 $cur = [int]$v.CurrentRefreshRate
-                $txt = 'Bildschirm: {0} × {1} bei {2} Hz' -f $v.CurrentHorizontalResolution, $v.CurrentVerticalResolution, $cur
-                # Nur bei genau einem Monitor eindeutig zuordenbar
+                $txt = (T 'Monitor: {0} × {1} at {2} Hz') -f $v.CurrentHorizontalResolution, $v.CurrentVerticalResolution, $cur
+                # Only clearly assignable with exactly one monitor
                 if ($vc.Count -eq 1 -and $mons.Count -eq 1) {
                     $max = ($modes | Where-Object { $_.W -eq [int]$v.CurrentHorizontalResolution -and $_.H -eq [int]$v.CurrentVerticalResolution } | Measure-Object Hz -Maximum).Maximum
-                    if ($max -and [math]::Floor($max) -ge $cur + 5) { New-Item2 ("{0} – der Monitor kann bis zu {1:N0} Hz. Einstellen unter Einstellungen > System > Anzeige > Erweiterte Anzeige > Aktualisierungsrate" -f $txt, [math]::Floor($max)) 0 @{ Stufe = $(if ((Get-ChassisInfo).Laptop) { '' } else { 'warn' }); Bereich = 'Bildschirm' }; continue }
+                    if ($max -and [math]::Floor($max) -ge $cur + 5) { New-Item2 ((T '{0} – the monitor supports up to {1:N0} Hz. Set it under Settings > System > Display > Advanced display > Refresh rate') -f $txt, [math]::Floor($max)) 0 @{ Stufe = $(if ((Get-ChassisInfo).Laptop) { '' } else { 'warn' }); Bereich = 'Bildschirm' }; continue }
                 }
                 New-Item2 $txt 0 @{ Stufe = 'ok'; Bereich = 'Bildschirm' }
             }
@@ -1988,9 +2046,9 @@ $Script:Rules = @(
         Fix = $null
     }
 
-    [pscustomobject]@{ Id = 'EVT-HEALTH'; Kategorie = 'Stabilitaet'; Titel = 'Auffaelligkeiten im Ereignisprotokoll (30 Tage)'; Risiko = 'Info'; Wirkung = 'Stabilitaet'; Admin = $false; Standard = $true
-        Warum = 'Unerwartete Abschaltungen, Bluescreens, Hardwarefehler (WHEA), Datentraegerfehler und GPU-Treiber-Resets sind Warnsignale.'
-        Detect = {     foreach ($w in (Get-WarningSignals)) { New-Item2 ("{0}: {1}-mal" -f $w.Text, $w.Anzahl) 0 @{ Stufe = 'warn' } } }
+    [pscustomobject]@{ Id = 'EVT-HEALTH'; Kategorie = 'Stabilitaet'; Titel = (T 'Irregularities in the event log (30 days)'); Risiko = 'Info'; Wirkung = 'Stabilitaet'; Admin = $false; Standard = $true
+        Warum = (T 'Unexpected shutdowns, blue screens, hardware errors (WHEA), disk errors and GPU driver resets are warning signs.')
+        Detect = {     foreach ($w in (Get-WarningSignals)) { New-Item2 ((T '{0}: {1} times') -f $w.Text, $w.Anzahl) 0 @{ Stufe = 'warn' } } }
         Fix = $null
     }
 )
@@ -2000,13 +2058,13 @@ function Get-SelectedRules([switch]$ForApply) {
     if ($Rule) { $r = $r | Where-Object { $Rule -contains $_.Id } }
     else { $r = $r | Where-Object { $_.Standard } }
     if ($ExcludeRule) { $r = $r | Where-Object { $ExcludeRule -notcontains $_.Id } }
-    # Firmen-PC: nur sichere Aufraeumregeln und Hinweise (wie in der App)
+    # Company PC: only safe cleanup rules and hints (as in the app)
     if ($Script:CliContext) { $ctx = $Script:CliContext; $r = $r | Where-Object { Test-RuleAllowed $_ $ctx } }
     return @($r)
 }
 
 # =============================================================================
-#  Snapshot (Messung) und Score
+#  Snapshot (measurement) and score
 # =============================================================================
 function Get-IdleSample {
     $cpu = @(); for ($i = 0; $i -lt 5; $i++) { try { $cpu += (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop).PercentProcessorTime } catch { }; Start-Sleep -Milliseconds 800 }
@@ -2022,7 +2080,7 @@ function Get-IdleSample {
 }
 
 function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
-    W "  Messe System (Snapshot '$Label') ..." 'DarkGray'
+    W (T '  Measuring the system (snapshot ''{0}'') ...' $Label) 'DarkGray'
     $os = Get-CimInstance Win32_OperatingSystem; $cs = Get-CimInstance Win32_ComputerSystem; $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
     $boots = @(Get-BootEvents)
     $startup = @(Get-StartupItems)
@@ -2039,10 +2097,10 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
     $rbSize = 0; try { $rbSize = ((New-Object -ComObject Shell.Application).Namespace(10).Items() | ForEach-Object { $_.Size } | Measure-Object -Sum).Sum } catch { }
     $secBoot = $null; try { $secBoot = Confirm-SecureBootUEFI -ErrorAction Stop } catch { }
     $def = $null; try { $def = (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled } catch { }
-    # Anderer aktiver Virenschutz (Security Center, nur Client-Windows): dann ist ein abgeschalteter Defender normal
+    # Another active antivirus (Security Center, client Windows only): then a disabled Defender is normal
     $av = [bool](@(Get-OtherSecurityProducts 'AntiVirusProduct').Count)
     $wsi = $null; try { $wsi = Get-WindowsSupportInfo } catch { }
-    $hw = $null; try { $hw = Get-HardwareSnapshot } catch { W "  Hardware-Messung fehlgeschlagen: $($_.Exception.Message)" 'DarkYellow' }
+    $hw = $null; try { $hw = Get-HardwareSnapshot } catch { W (T '  Hardware measurement failed: {0}' ($_.Exception.Message)) 'DarkYellow' }
     $warn = @(); try { $warn = @(Get-WarningSignals | ForEach-Object { [ordered]@{ Text = $_.Text; Anzahl = $_.Anzahl } }) } catch { }
     $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
     $snap = [ordered]@{
@@ -2068,7 +2126,7 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
     $snap.Score = Get-HealthScore $snap
     $f = Join-Path $Script:SnapDir ("{0}_{1}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $Label)
     $snap | ConvertTo-Json -Depth 7 | Out-File $f -Encoding utf8
-    W "  Snapshot gespeichert: $f" 'DarkGray'
+    W (T '  Snapshot saved: {0}' $f) 'DarkGray'
     return [pscustomobject]$snap
 }
 
@@ -2077,69 +2135,69 @@ function Get-HealthScore($s) {
     function Abzug($p, $t) { $abz.Add([pscustomobject]@{ Punkte = $p; Grund = $t }) }
     $sys = $s.Laufwerke | Where-Object { $_.LW -eq $env:SystemDrive.Substring(0, 1) } | Select-Object -First 1
     if ($sys) {
-        # Prozent allein taugt nicht: auf 2 TB sind 15 % frei (300 GB) unkritisch
+        # Percent alone is not enough: on 2 TB, 15 % free (300 GB) is not critical
         $fg = [double]$sys.FreiGB; $fp = [double]$sys.FreiProzent
-        if ($fg -lt 10 -or ($fp -lt 10 -and $fg -lt 20)) { Abzug 20 ("Auf dem Windows-Laufwerk sind nur {0:N0} GB frei" -f $fg) }
-        elseif ($fp -lt 15 -and $fg -lt 50) { Abzug 8 ("Auf dem Windows-Laufwerk sind nur {0:N0} GB frei" -f $fg) }
+        if ($fg -lt 10 -or ($fp -lt 10 -and $fg -lt 20)) { Abzug 20 ((T 'Only {0:N0} GB free on the Windows drive') -f $fg) }
+        elseif ($fp -lt 15 -and $fg -lt 50) { Abzug 8 ((T 'Only {0:N0} GB free on the Windows drive') -f $fg) }
     }
-    $b = $s.Boot.Mittel5; if ($b) { $t = "Windows braucht im Schnitt {0:N0} Sekunden zum Starten" -f ($b / 1000); if ($b -gt 90000) { Abzug 15 $t } elseif ($b -gt 60000) { Abzug 10 $t } elseif ($b -gt 40000) { Abzug 5 $t } }
-    $a = $s.Autostart.Aktiv; if ($a -gt 15) { Abzug 10 "$a Programme starten automatisch mit" } elseif ($a -gt 10) { Abzug 5 "$a Programme starten automatisch mit" }
-    if ($s.Autostart.Verwaist -gt 0) { Abzug ([math]::Min(5, $s.Autostart.Verwaist)) "$($s.Autostart.Verwaist) kaputte Autostart-Einträge" }
-    $e = $s.Ereignisse.FehlerSystem7T + $s.Ereignisse.FehlerAnwendung7T; if ($e -gt 200) { Abzug 5 "Viele Fehlermeldungen von Windows in den letzten 7 Tagen ($e)" } elseif ($e -gt 50) { Abzug 3 "Viele Fehlermeldungen von Windows in den letzten 7 Tagen ($e)" }
-    if ($s.Treiber.Duplikate -gt 10) { Abzug 3 "$($s.Treiber.Duplikate) alte Treiber-Versionen" }
-    if ($s.Treiber.Geistergeraete -gt 50) { Abzug 2 "$($s.Treiber.Geistergeraete) alte Geräte-Einträge" }
-    if ($s.Sicherheit.SecureBoot -eq $false) { Abzug 8 'Secure Boot (Startschutz) ist aus' }
-    if ($s.Sicherheit.DefenderEchtzeit -eq $false -and -not $s.Sicherheit.AndererVirenschutz) { Abzug 15 'Kein aktiver Virenschutz' }
-    if ($s.Sicherheit.AusfuehrungsrichtlinieCU -in 'Unrestricted', 'Bypass') { Abzug 3 'Schutzeinstellung für Skripte ist ausgeschaltet' }
-    if ($s.Sicherheit.WindowsSupportEnde) { try { if ([datetime]::ParseExact([string]$s.Sicherheit.WindowsSupportEnde, 'yyyy-MM-dd', $null) -lt [datetime]$s.Zeit) { Abzug 20 'Diese Windows-Version bekommt keine Sicherheitsupdates mehr' } } catch { } }
-    if ($s.Sicherheit.WindowsUpdateAus) { Abzug 15 'Windows Update ist abgeschaltet' }
-    elseif ($s.Sicherheit.TageSeitUpdate -gt 40) { Abzug 10 "Seit $($s.Sicherheit.TageSeitUpdate) Tagen keine Windows-Updates installiert" }
-    if ($s.Speicher.PapierkorbBytes -gt 5GB) { Abzug 2 'Papierkorb größer als 5 GB' }
-    # Warnsignale: neue Snapshots messen sie selbst (vergleichbar vorher/nachher), alte nur ueber die Befunde
+    $b = $s.Boot.Mittel5; if ($b) { $t = (T 'Windows takes {0:N0} seconds to start on average') -f ($b / 1000); if ($b -gt 90000) { Abzug 15 $t } elseif ($b -gt 60000) { Abzug 10 $t } elseif ($b -gt 40000) { Abzug 5 $t } }
+    $a = $s.Autostart.Aktiv; if ($a -gt 15) { Abzug 10 (T '{0} programs start automatically' $a) } elseif ($a -gt 10) { Abzug 5 (T '{0} programs start automatically' $a) }
+    if ($s.Autostart.Verwaist -gt 0) { Abzug ([math]::Min(5, $s.Autostart.Verwaist)) (T '{0} broken startup entries' ($s.Autostart.Verwaist)) }
+    $e = $s.Ereignisse.FehlerSystem7T + $s.Ereignisse.FehlerAnwendung7T; if ($e -gt 200) { Abzug 5 (T 'Many error messages from Windows in the last 7 days ({0})' $e) } elseif ($e -gt 50) { Abzug 3 (T 'Many error messages from Windows in the last 7 days ({0})' $e) }
+    if ($s.Treiber.Duplikate -gt 10) { Abzug 3 (T '{0} old driver versions' ($s.Treiber.Duplikate)) }
+    if ($s.Treiber.Geistergeraete -gt 50) { Abzug 2 (T '{0} old device entries' ($s.Treiber.Geistergeraete)) }
+    if ($s.Sicherheit.SecureBoot -eq $false) { Abzug 8 (T 'Secure Boot (boot protection) is off') }
+    if ($s.Sicherheit.DefenderEchtzeit -eq $false -and -not $s.Sicherheit.AndererVirenschutz) { Abzug 15 (T 'No active antivirus') }
+    if ($s.Sicherheit.AusfuehrungsrichtlinieCU -in 'Unrestricted', 'Bypass') { Abzug 3 (T 'Protection setting for scripts is turned off') }
+    if ($s.Sicherheit.WindowsSupportEnde) { try { if ([datetime]::ParseExact([string]$s.Sicherheit.WindowsSupportEnde, 'yyyy-MM-dd', $null) -lt [datetime]$s.Zeit) { Abzug 20 (T 'This Windows version no longer receives security updates') } } catch { } }
+    if ($s.Sicherheit.WindowsUpdateAus) { Abzug 15 (T 'Windows Update is turned off') }
+    elseif ($s.Sicherheit.TageSeitUpdate -gt 40) { Abzug 10 (T 'No Windows updates installed for {0} days' ($s.Sicherheit.TageSeitUpdate)) }
+    if ($s.Speicher.PapierkorbBytes -gt 5GB) { Abzug 2 (T 'Recycle bin larger than 5 GB') }
+    # Warning signs: new snapshots measure them themselves (comparable before/after), old ones only via the findings
     $nWarn = 0
     if ($null -ne $s.Stabilitaet) { $nWarn = @($s.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }
     else { foreach ($bf in @($s.Befunde)) { if ($bf.Regel -eq 'EVT-HEALTH') { $nWarn += [int]$bf.Anzahl } } }
-    if ($nWarn -gt 0) { Abzug ([math]::Min(10, 2 * $nWarn)) 'Warnmeldungen von Windows (z. B. Abstürze) in den letzten 30 Tagen' }
+    if ($nWarn -gt 0) { Abzug ([math]::Min(10, 2 * $nWarn)) (T 'Warning messages from Windows (e.g. crashes) in the last 30 days') }
     if ($s.Hardware) {
-        # Nur Dauerzustaende (Laufwerk, Akku, Speicherfehler ...), keine Momentaufnahmen wie die aktuelle Temperatur
+        # Only permanent states (drive, battery, memory errors ...), no snapshots such as the current temperature
         $hp = @($s.Hardware.Punkte | Where-Object { $_ -and $_.Wertung -ne 'moment' })
         $nk = @($hp | Where-Object { $_.Stufe -eq 'krit' }).Count; $nw = @($hp | Where-Object { $_.Stufe -eq 'warn' }).Count
-        if ($nk) { Abzug ([math]::Min(10, 5 * $nk)) 'Hardware: wichtige Warnungen (Laufwerke, Speicher, Kühlung, Akku)' }
-        if ($nw) { Abzug ([math]::Min(3, $nw)) 'Hardware: Auffälligkeiten (Laufwerke, Lüfter, Grafikkarte)' }
+        if ($nk) { Abzug ([math]::Min(10, 5 * $nk)) (T 'Hardware: important warnings (drives, memory, cooling, battery)') }
+        if ($nw) { Abzug ([math]::Min(3, $nw)) (T 'Hardware: irregularities (drives, fans, graphics card)') }
     }
     $sum = ($abz | Measure-Object Punkte -Sum).Sum; if (-not $sum) { $sum = 0 }
     [ordered]@{ Wert = [int][math]::Max(0, 100 - $sum); Abzuege = $abz.ToArray() }
 }
 
 # =============================================================================
-#  Regeln ausfuehren
+#  Running rules
 # =============================================================================
 function Invoke-Rules([bool]$Apply) {
     $Script:Preview = -not $Apply
     $rules = Get-SelectedRules -ForApply:$Apply
-    # Hardware zuerst messen, solange der PC noch ruht (DISM, winget usw. heizen die CPU auf)
+    # Measure hardware first while the PC is still idle (DISM, winget etc. heat up the CPU)
     try { $null = Get-HardwarePoints } catch { }
     $findings = New-Object System.Collections.Generic.List[object]
     $total = 0; $done = 0; $failed = 0; $skipped = 0; $bytes = 0
     $i = 0
     foreach ($r in $rules) {
         $i++
-        Sub ("[{0}/{1}] {2}  {3}  (Risiko: {4})" -f $i, $rules.Count, $r.Id, $r.Titel, $r.Risiko)
-        if ($r.Admin -and -not $Script:IsAdmin) { W '    uebersprungen: braucht Adminrechte' 'DarkYellow'; continue }
+        Sub ((T '[{0}/{1}] {2}  {3}  (risk: {4})') -f $i, $rules.Count, $r.Id, $r.Titel, (Get-RiskText $r.Risiko))
+        if ($r.Admin -and -not $Script:IsAdmin) { W (T '    skipped: needs admin rights') 'DarkYellow'; continue }
         $items = @()
-        try { $items = @(& $r.Detect | Where-Object { $_ }) } catch { W "    Fehler bei der Pruefung: $($_.Exception.Message)" 'Red'; continue }
-        if (-not $items.Count) { W '    ok - nichts gefunden' 'Green'; continue }
+        try { $items = @(& $r.Detect | Where-Object { $_ }) } catch { W (T '    Error during the check: {0}' ($_.Exception.Message)) 'Red'; continue }
+        if (-not $items.Count) { W (T '    ok - nothing found') 'Green'; continue }
         $sum = ($items | Measure-Object Bytes -Sum).Sum
         $findings.Add([pscustomobject]@{ Regel = $r.Id; Kategorie = $r.Kategorie; Titel = $r.Titel; Risiko = $r.Risiko; Anzahl = $items.Count; Bytes = [int64]$sum; Objekte = @($items | ForEach-Object { $_.Label }); Stufen = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary] -and $_.Data.Stufe) { [string]$_.Data.Stufe } else { '' } }); Bereiche = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary]) { [string]$_.Data.Bereich } else { '' } }); Wertungen = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary]) { [string]$_.Data.Wertung } else { '' } }) })
-        W ("    {0} Befund(e){1}" -f $items.Count, $(if ($sum) { ', ca. ' + (Fmt-Bytes $sum) } else { '' })) 'Yellow'
-        W "    Warum: $($r.Warum)" 'DarkGray'
+        W ((T '    {0} finding(s){1}') -f $items.Count, $(if ($sum) { (T ', approx. ') + (Fmt-Bytes $sum) } else { '' })) 'Yellow'
+        W (T '    Why: {0}' ($r.Warum)) 'DarkGray'
         foreach ($it in $items) { W ("      - {0}{1}" -f $it.Label, $(if ($it.Bytes) { "  [$(Fmt-Bytes $it.Bytes)]" } else { '' })) 'Gray' }
         if (-not $Apply -or -not $r.Fix) { continue }
-        # Unbeaufsichtigt nur, was die Regel selbst freigibt (AutoOk), z. B. Windows.old erst nach der Wartezeit
+        # Unattended only what the rule itself allows (AutoOk), e.g. Windows.old only after the waiting period
         if ($Yes) { $items = @($items | Where-Object { -not $_.PSObject.Properties['AutoOk'] -or $_.AutoOk }) }
         $Script:AllYes = $false
         try {
-            if ($r.Risiko -eq 'Niedrig' -and -not $Yes) { if (-not (Confirm-Item ("Regel {0} fuer alle {1} Objekte ausfuehren?" -f $r.Id, $items.Count) 'Niedrig')) { $skipped += $items.Count; foreach ($it in $items) { Add-ActionRecord $r.Id $it.Label 'Uebersprungen' | Out-Null }; continue }; $Script:AllYes = $true }
+            if ($r.Risiko -eq 'Niedrig' -and -not $Yes) { if (-not (Confirm-Item ((T 'Run rule {0} for all {1} items?') -f $r.Id, $items.Count) 'Niedrig')) { $skipped += $items.Count; foreach ($it in $items) { Add-ActionRecord $r.Id $it.Label 'Uebersprungen' | Out-Null }; continue }; $Script:AllYes = $true }
             foreach ($it in $items) {
                 $total++
                 $ok = if ($r.Risiko -eq 'Niedrig' -and ($Script:AllYes -or $Yes)) { $true } else { Confirm-Item ("-> {0}" -f $it.Label) $r.Risiko }
@@ -2151,21 +2209,21 @@ function Invoke-Rules([bool]$Apply) {
                     Add-ActionRecord $r.Id $it.Label 'OK' $it.Bytes ([string]$msg) | Out-Null
                 } catch {
                     $em = $_.Exception.Message
-                    if ($em -like 'SKIP:*') { $skipped++; W ("      uebersprungen  {0}: {1}" -f $it.Label, $em.Substring(5)) 'DarkYellow'; Add-ActionRecord $r.Id $it.Label 'Uebersprungen' 0 $em.Substring(5) | Out-Null; continue }
+                    if ($em -like 'SKIP:*') { $skipped++; W ((T '      skipped  {0}: {1}') -f $it.Label, $em.Substring(5)) 'DarkYellow'; Add-ActionRecord $r.Id $it.Label 'Uebersprungen' 0 $em.Substring(5) | Out-Null; continue }
                     $failed++
-                    W ("      FEHLER  {0}: {1}" -f $it.Label, $em) 'Red'
+                    W ((T '      ERROR  {0}: {1}') -f $it.Label, $em) 'Red'
                     Add-ActionRecord $r.Id $it.Label 'Fehler' 0 $em | Out-Null
                 }
             }
         } catch {
-            if ($_.Exception.Message -eq 'SKIPRULE') { W '    Regel uebersprungen' 'DarkYellow'; Add-ActionRecord $r.Id '(Regel)' 'Uebersprungen' | Out-Null } else { throw }
+            if ($_.Exception.Message -eq 'SKIPRULE') { W (T '    Rule skipped') 'DarkYellow'; Add-ActionRecord $r.Id (T '(rule)') 'Uebersprungen' | Out-Null } else { throw }
         }
     }
     return [pscustomobject]@{ Befunde = $findings.ToArray(); Aktionen = $total; OK = $done; Fehler = $failed; Uebersprungen = $skipped; Bytes = $bytes }
 }
 
-# Legt einen Wiederherstellungspunkt an. Gibt $null (Erfolg) oder die Fehlermeldung zurueck.
-# Enable-ComputerRestore nur im Notfall: es setzt das Speicherlimit fuer Schattenkopien auf den Standard zurueck.
+# Creates a restore point. Returns $null (success) or the error message.
+# Enable-ComputerRestore only as a last resort: it resets the storage limit for shadow copies to the default.
 function Invoke-Checkpoint {
     $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
     $altFreq = (Get-ItemProperty $k -ErrorAction SilentlyContinue).SystemRestorePointCreationFrequency
@@ -2180,16 +2238,16 @@ function Invoke-Checkpoint {
 
 function New-RestorePoint {
     if ($NoRestorePoint) { return }
-    W '  Lege Wiederherstellungspunkt an ...' 'DarkGray'
+    W (T '  Creating restore point ...') 'DarkGray'
     $err = Invoke-Checkpoint
-    if (-not $err) { W '  Wiederherstellungspunkt angelegt.' 'Green'; Add-ActionRecord 'CORE' 'Wiederherstellungspunkt' 'OK' | Out-Null; return }
-    W "  Wiederherstellungspunkt fehlgeschlagen: $err" 'Red'
-    Add-ActionRecord 'CORE' 'Wiederherstellungspunkt' 'Fehler' 0 $err | Out-Null
-    if (-not $Yes) { $a = Read-Host '  Trotzdem fortfahren? [j/N]'; if ($a -notmatch '^(j|ja|y)$') { throw 'Abbruch durch Benutzer' } } else { throw 'Kein Wiederherstellungspunkt - Abbruch (mit -NoRestorePoint erzwingbar)' }
+    if (-not $err) { W (T '  Restore point created.') 'Green'; Add-ActionRecord 'CORE' (T 'Restore point') 'OK' | Out-Null; return }
+    W (T '  Restore point failed: {0}' $err) 'Red'
+    Add-ActionRecord 'CORE' (T 'Restore point') 'Fehler' 0 $err | Out-Null
+    if (-not $Yes) { $a = Read-Host (T '  Continue anyway? [y/N]'); if ($a -notmatch '^(j|ja|y|yes)$') { throw (T 'Cancelled by the user') } } else { throw (T 'No restore point - cancelled (can be forced with -NoRestorePoint)') }
 }
 
 # =============================================================================
-#  Vergleich
+#  Comparison
 # =============================================================================
 function Get-Snapshots { @(Get-ChildItem $Script:SnapDir -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name) }
 function Read-Snapshot($f) { Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json }
@@ -2203,74 +2261,81 @@ function Get-CompareMetrics($a, $b) {
     $sysB = $b.Laufwerke | Where-Object { $_.LW -eq $env:SystemDrive.Substring(0, 1) } | Select-Object -First 1
     $freeA = ($a.Laufwerke | Measure-Object FreiGB -Sum).Sum; $freeB = ($b.Laufwerke | Measure-Object FreiGB -Sum).Sum
     @(
-        (M 'Health-Score' $a.Score.Wert $b.Score.Wert 'Punkte' 'higher'),
-        (M 'Start Ø letzte 5 Starts' $(if ($a.Boot.Mittel5) { [math]::Round($a.Boot.Mittel5 / 1000, 1) }) $(if ($b.Boot.Mittel5) { [math]::Round($b.Boot.Mittel5 / 1000, 1) }) 's' 'lower'),
-        (M "Frei auf $($env:SystemDrive)" $sysA.FreiGB $sysB.FreiGB 'GB' 'higher'),
-        (M 'Frei gesamt (feste Laufwerke)' ([math]::Round($freeA, 1)) ([math]::Round($freeB, 1)) 'GB' 'higher'),
-        (M 'Aktive Autostarts' $a.Autostart.Aktiv $b.Autostart.Aktiv '' 'lower'),
-        (M 'Verwaiste Autostarts' $a.Autostart.Verwaist $b.Autostart.Verwaist '' 'lower'),
-        (M 'Laufende Dienste' $a.Dienste.Laufend $b.Dienste.Laufend '' 'lower'),
-        (M 'Auto-Dienste von Drittanbietern' $a.Dienste.AutoDrittanbieter $b.Dienste.AutoDrittanbieter '' 'lower'),
-        (M 'Prozesse im Leerlauf' $a.Leerlauf.Prozesse $b.Leerlauf.Prozesse '' 'lower'),
-        (M 'Threads im Leerlauf' $a.Leerlauf.Threads $b.Leerlauf.Threads '' 'lower'),
-        (M 'RAM belegt im Leerlauf' $a.Leerlauf.RamBelegtGB $b.Leerlauf.RamBelegtGB 'GB' 'lower'),
-        (M 'CPU im Leerlauf' $a.Leerlauf.CpuProzent $b.Leerlauf.CpuProzent '%' 'lower'),
-        (M 'Treiberpakete' $a.Treiber.Pakete $b.Treiber.Pakete '' 'lower'),
-        (M 'Alte Treiber-Duplikate' $a.Treiber.Duplikate $b.Treiber.Duplikate '' 'lower'),
-        (M 'Geistergeraete' $a.Treiber.Geistergeraete $b.Treiber.Geistergeraete '' 'lower'),
-        (M 'Fehler System-Log (7 Tage)' $a.Ereignisse.FehlerSystem7T $b.Ereignisse.FehlerSystem7T '' 'lower'),
-        (M 'Fehler Anwendungs-Log (7 Tage)' $a.Ereignisse.FehlerAnwendung7T $b.Ereignisse.FehlerAnwendung7T '' 'lower'),
-        (M 'Installierte Programme' $a.Programme.Installiert $b.Programme.Installiert '' 'lower'),
-        (M 'Store-Apps' $a.Programme.StoreApps $b.Programme.StoreApps '' 'lower'),
-        (M 'Eigene geplante Aufgaben' $a.Aufgaben.Eigene $b.Aufgaben.Eigene '' 'lower'),
-        (M 'Warnsignale (Ereignisprotokoll, 30 Tage)' $(if ($null -ne $a.Stabilitaet) { @($a.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }) $(if ($null -ne $b.Stabilitaet) { @($b.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }) '' 'lower'),
-        (M 'Hardware-Auffaelligkeiten' $(if ($a.Hardware) { @($a.Hardware.Punkte | Where-Object { $_ }).Count }) $(if ($b.Hardware) { @($b.Hardware.Punkte | Where-Object { $_ }).Count }) '' 'lower')
+        (M (T 'Health score') $a.Score.Wert $b.Score.Wert 'Punkte' 'higher'),
+        (M (T 'Start Ø last 5 boots') $(if ($a.Boot.Mittel5) { [math]::Round($a.Boot.Mittel5 / 1000, 1) }) $(if ($b.Boot.Mittel5) { [math]::Round($b.Boot.Mittel5 / 1000, 1) }) 's' 'lower'),
+        (M (T 'Free on {0}' $env:SystemDrive) $sysA.FreiGB $sysB.FreiGB 'GB' 'higher'),
+        (M (T 'Free total (fixed drives)') ([math]::Round($freeA, 1)) ([math]::Round($freeB, 1)) 'GB' 'higher'),
+        (M (T 'Active startup programs') $a.Autostart.Aktiv $b.Autostart.Aktiv '' 'lower'),
+        (M (T 'Orphaned startup entries') $a.Autostart.Verwaist $b.Autostart.Verwaist '' 'lower'),
+        (M (T 'Running services') $a.Dienste.Laufend $b.Dienste.Laufend '' 'lower'),
+        (M (T 'Third-party auto-start services') $a.Dienste.AutoDrittanbieter $b.Dienste.AutoDrittanbieter '' 'lower'),
+        (M (T 'Processes at idle') $a.Leerlauf.Prozesse $b.Leerlauf.Prozesse '' 'lower'),
+        (M (T 'Threads at idle') $a.Leerlauf.Threads $b.Leerlauf.Threads '' 'lower'),
+        (M (T 'RAM used at idle') $a.Leerlauf.RamBelegtGB $b.Leerlauf.RamBelegtGB 'GB' 'lower'),
+        (M (T 'CPU at idle') $a.Leerlauf.CpuProzent $b.Leerlauf.CpuProzent '%' 'lower'),
+        (M (T 'Driver packages') $a.Treiber.Pakete $b.Treiber.Pakete '' 'lower'),
+        (M (T 'Old driver duplicates') $a.Treiber.Duplikate $b.Treiber.Duplikate '' 'lower'),
+        (M (T 'Ghost devices') $a.Treiber.Geistergeraete $b.Treiber.Geistergeraete '' 'lower'),
+        (M (T 'Errors system log (7 days)') $a.Ereignisse.FehlerSystem7T $b.Ereignisse.FehlerSystem7T '' 'lower'),
+        (M (T 'Errors application log (7 days)') $a.Ereignisse.FehlerAnwendung7T $b.Ereignisse.FehlerAnwendung7T '' 'lower'),
+        (M (T 'Installed programs') $a.Programme.Installiert $b.Programme.Installiert '' 'lower'),
+        (M (T 'Store apps') $a.Programme.StoreApps $b.Programme.StoreApps '' 'lower'),
+        (M (T 'Own scheduled tasks') $a.Aufgaben.Eigene $b.Aufgaben.Eigene '' 'lower'),
+        (M (T 'Warning signs (event log, 30 days)') $(if ($null -ne $a.Stabilitaet) { @($a.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }) $(if ($null -ne $b.Stabilitaet) { @($b.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }) '' 'lower'),
+        (M (T 'Hardware irregularities') $(if ($a.Hardware) { @($a.Hardware.Punkte | Where-Object { $_ }).Count }) $(if ($b.Hardware) { @($b.Hardware.Punkte | Where-Object { $_ }).Count }) '' 'lower')
     )
 }
 function Show-Compare($a, $b) {
-    Section ("Vergleich  {0} ({1})  ->  {2} ({3})" -f ([datetime]$a.Zeit).ToString('dd.MM. HH:mm'), $a.Label, ([datetime]$b.Zeit).ToString('dd.MM. HH:mm'), $b.Label)
-    W ("  {0,-34} {1,12} {2,12} {3,12}" -f 'Kennzahl', 'Vorher', 'Nachher', 'Delta') 'White'
+    Section ((T 'Comparison  {0} ({1})  ->  {2} ({3})') -f ([datetime]$a.Zeit).ToString((T 'MM-dd HH:mm')), $a.Label, ([datetime]$b.Zeit).ToString((T 'MM-dd HH:mm')), $b.Label)
+    W ("  {0,-34} {1,12} {2,12} {3,12}" -f (T 'Metric'), (T 'Before'), (T 'After'), 'Delta') 'White'
     foreach ($m in (Get-CompareMetrics $a $b)) {
         $c = switch ($m.Bewertung) { 'besser' { 'Green' } 'schlechter' { 'Red' } default { 'Gray' } }
         $d = if ($null -eq $m.Delta) { '' } elseif ($m.Delta -gt 0) { "+$($m.Delta)" } else { "$($m.Delta)" }
         W ("  {0,-34} {1,12} {2,12} {3,12} {4}" -f $m.Kennzahl, $m.Vorher, $m.Nachher, $d, $m.Einheit) $c
     }
-    if ($a.Boot.Mittel5 -and $b.Boot.Mittel5 -and $a.Boot.Mittel5 -eq $b.Boot.Mittel5) { W '  Hinweis: Startzeiten sind erst nach 2-3 Neustarts aussagekraeftig (danach erneut "Scan").' 'DarkYellow' }
+    if ($a.Boot.Mittel5 -and $b.Boot.Mittel5 -and $a.Boot.Mittel5 -eq $b.Boot.Mittel5) { W (T '  Note: boot times are only meaningful after 2-3 restarts (then run "Scan" again).') 'DarkYellow' }
 }
 
 # =============================================================================
-#  HTML-Bericht
+#  HTML report
 # =============================================================================
 function New-BootSvg($boots, $runs) {
     $pts = @($boots | Where-Object { $_.GesamtMs -gt 0 } | Sort-Object { [datetime]$_.Zeit })
-    if ($pts.Count -lt 2) { return '<p class="muted">Noch zu wenige Startzeiten (Adminrechte noetig, mind. 2 Starts).</p>' }
+    if ($pts.Count -lt 2) { return (T '<p class="muted">Not enough boot times yet (admin rights needed, at least 2 boots).</p>') }
     $W = 960; $H = 280; $pl = 50; $pr = 15; $pt = 15; $pb = 35
     $t0 = ([datetime]$pts[0].Zeit).Ticks; $t1 = ([datetime]$pts[-1].Zeit).Ticks; if ($t1 -eq $t0) { $t1 = $t0 + 1 }
     $max = [math]::Ceiling((($pts | Measure-Object GesamtMs -Maximum).Maximum) / 10000) * 10
     $sx = { param($t) $pl + ($W - $pl - $pr) * (($t - $t0) / ($t1 - $t0)) }
     $sy = { param($ms) $pt + ($H - $pt - $pb) * (1 - ($ms / 1000) / $max) }
     $sb = New-Object Text.StringBuilder
-    [void]$sb.Append("<svg viewBox='0 0 $W $H' class='chart' role='img' aria-label='Startzeiten'>")
+    [void]$sb.Append("<svg viewBox='0 0 $W $H' class='chart' role='img' aria-label='$(T 'Boot times')'>")
     for ($y = 0; $y -le $max; $y += [math]::Max(10, [math]::Ceiling($max / 50) * 10)) { $yy = & $sy ($y * 1000); [void]$sb.Append("<line x1='$pl' x2='$($W-$pr)' y1='$yy' y2='$yy' class='grid'/><text x='$($pl-6)' y='$($yy+4)' class='ax' text-anchor='end'>$y s</text>") }
     foreach ($r in $runs) { $t = ([datetime]$r.Zeit).Ticks; if ($t -ge $t0 -and $t -le $t1) { $x = & $sx $t; [void]$sb.Append("<line x1='$x' x2='$x' y1='$pt' y2='$($H-$pb)' class='run'/><text x='$($x+4)' y='$($pt+10)' class='runlbl'>$(HtmlEnc $r.Name)</text>") } }
     foreach ($series in @(@{ P = 'HauptpfadMs'; C = 'main' }, @{ P = 'GesamtMs'; C = 'total' })) {
         [void]$sb.Append("<polyline points='$(($pts | ForEach-Object { ([string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0},{1:0.0}', (& $sx ([datetime]$_.Zeit).Ticks), (& $sy $_.($series.P)))) }) -join ' ')' class='$($series.C)'/>")
     }
-    foreach ($p in $pts) { $x = [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}', (& $sx ([datetime]$p.Zeit).Ticks)); $y = [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}', (& $sy $p.GesamtMs)); [void]$sb.Append("<circle cx='$x' cy='$y' r='3.5' class='dot'><title>$(([datetime]$p.Zeit).ToString('dd.MM.yyyy HH:mm')): gesamt $([math]::Round($p.GesamtMs/1000,1)) s, bis Desktop $([math]::Round($p.HauptpfadMs/1000,1)) s, danach $([math]::Round($p.NachDesktopMs/1000,1)) s</title></circle>") }
-    [void]$sb.Append("<text x='$pl' y='$($H-8)' class='ax'>$(([datetime]$pts[0].Zeit).ToString('dd.MM.yy'))</text><text x='$($W-$pr)' y='$($H-8)' class='ax' text-anchor='end'>$(([datetime]$pts[-1].Zeit).ToString('dd.MM.yy'))</text>")
-    [void]$sb.Append('</svg><div class="legend"><span class="lg total"></span>Start gesamt <span class="lg main"></span>bis Desktop <span class="lg run"></span>WinTidy-Lauf</div>')
+    $df = T 'yyyy-MM-dd HH:mm'
+    foreach ($p in $pts) { $x = [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}', (& $sx ([datetime]$p.Zeit).Ticks)); $y = [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}', (& $sy $p.GesamtMs)); [void]$sb.Append("<circle cx='$x' cy='$y' r='3.5' class='dot'><title>$(HtmlEnc (T '{0}: total {1} s, to desktop {2} s, after that {3} s' ([datetime]$p.Zeit).ToString($df) ([math]::Round($p.GesamtMs / 1000, 1)) ([math]::Round($p.HauptpfadMs / 1000, 1)) ([math]::Round($p.NachDesktopMs / 1000, 1))))</title></circle>") }
+    $dax = T 'yy-MM-dd'
+    [void]$sb.Append("<text x='$pl' y='$($H-8)' class='ax'>$(([datetime]$pts[0].Zeit).ToString($dax))</text><text x='$($W-$pr)' y='$($H-8)' class='ax' text-anchor='end'>$(([datetime]$pts[-1].Zeit).ToString($dax))</text>")
+    [void]$sb.Append("</svg><div class='legend'><span class='lg total'></span>$(HtmlEnc (T 'Total boot')) <span class='lg main'></span>$(HtmlEnc (T 'To desktop')) <span class='lg run'></span>$(HtmlEnc (T 'WinTidy run'))</div>")
     return $sb.ToString()
 }
 function New-BarRows($rows, [string]$labelProp, [string]$valueProp, [scriptblock]$fmt) {
-    $max = ($rows | Measure-Object $valueProp -Maximum).Maximum; if (-not $max) { return '<p class="muted">Keine Daten.</p>' }
+    $max = ($rows | Measure-Object $valueProp -Maximum).Maximum; if (-not $max) { return "<p class='muted'>$(HtmlEnc (T 'No data.'))</p>" }
     $sb = New-Object Text.StringBuilder
     foreach ($r in $rows) { $pct = [math]::Round(100 * $r.$valueProp / $max, 1); [void]$sb.Append("<div class='bar'><span class='bl'>$(HtmlEnc $r.$labelProp)</span><span class='bt'><span class='bf' style='width:$([string]::Format([Globalization.CultureInfo]::InvariantCulture,'{0:0.0}',$pct))%'></span></span><span class='bv'>$(HtmlEnc (& $fmt $r.$valueProp))</span></div>") }
     $sb.ToString()
 }
+# Display names for internal values in the report
+function Get-SnapshotLabelText([string]$Label) { switch ($Label) { 'vorher' { return (T 'Before').ToLower() } 'nachher' { return (T 'After').ToLower() } 'scan' { return (T 'scan') } }; return $Label }
+function Get-StatusText([string]$Status) { switch ($Status) { 'OK' { return 'OK' } 'Fehler' { return (T 'Error') } 'Uebersprungen' { return (T 'Skipped') } 'Abgebrochen' { return (T 'Cancelled') } }; return $Status }
 
 function New-Report {
     $snaps = Get-Snapshots
-    if (-not $snaps.Count) { W 'Noch keine Snapshots - zuerst "Scan" ausfuehren.' 'Yellow'; return $null }
+    if (-not $snaps.Count) { W (T 'No snapshots yet - run "Scan" first.') 'Yellow'; return $null }
+    function HT([string]$Text) { HtmlEnc (T $Text @args) }
+    $df = T 'yyyy-MM-dd HH:mm'
     $all = @($snaps | ForEach-Object { Read-Snapshot $_ })
     $last = $all[-1]
     $before = ($all | Where-Object { $_.Label -eq 'vorher' } | Select-Object -Last 1); if (-not $before) { $before = $all[0] }
@@ -2314,85 +2379,86 @@ details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding
 @media (max-width:640px){.bar{grid-template-columns:1fr 70px}.bt{grid-column:1/-1;order:3}.score{flex-direction:column;align-items:flex-start}table{display:block;overflow-x:auto}}
 '@
     $sb = New-Object Text.StringBuilder
-    [void]$sb.Append("<!doctype html><html lang='de'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>WinTidy Bericht</title><style>$css</style></head><body><div class='wrap'>")
-    [void]$sb.Append("<h1>WinTidy-Bericht &middot; $(HtmlEnc $last.Computer)</h1><div class='muted'>$(HtmlEnc $last.System.OS) $(HtmlEnc $last.System.Version) (Build $(HtmlEnc $last.System.Build)) &middot; $(HtmlEnc $last.System.CPU) &middot; $($last.System.RamGB) GB RAM &middot; $(HtmlEnc $last.System.Board) &middot; BIOS $(HtmlEnc $last.System.BIOS)<br>Letzter Snapshot: $(([datetime]$last.Zeit).ToString('dd.MM.yyyy HH:mm')) ($(HtmlEnc $last.Label)) &middot; $($all.Count) Snapshots &middot; WinTidy $Script:Version</div>")
+    [void]$sb.Append("<!doctype html><html lang='$Script:Lang'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>$(HT 'WinTidy report')</title><style>$css</style></head><body><div class='wrap'>")
+    [void]$sb.Append("<h1>$(HT 'WinTidy report') &middot; $(HtmlEnc $last.Computer)</h1><div class='muted'>$(HtmlEnc $last.System.OS) $(HtmlEnc $last.System.Version) (Build $(HtmlEnc $last.System.Build)) &middot; $(HtmlEnc $last.System.CPU) &middot; $($last.System.RamGB) GB RAM &middot; $(HtmlEnc $last.System.Board) &middot; BIOS $(HtmlEnc $last.System.BIOS)<br>$(HT 'Last snapshot: {0} ({1})' ([datetime]$last.Zeit).ToString($df) (Get-SnapshotLabelText $last.Label)) &middot; $(HT '{0} snapshots' $all.Count) &middot; WinTidy $Script:Version</div>")
 
     # Score + KPIs
-    [void]$sb.Append("<h2>Zustand</h2><div class='grid4'><div class='card score' style='grid-column:span 2'><div class='ring $scoreClass'>$score</div><div><div class='kl'>Health-Score (0-100)</div>")
-    if (@($last.Score.Abzuege).Count) { [void]$sb.Append('<ul class="items">'); foreach ($z in $last.Score.Abzuege) { [void]$sb.Append("<li>&minus;$([int]$z.Punkte) &nbsp;$(HtmlEnc $z.Grund)</li>") }; [void]$sb.Append('</ul>') } else { [void]$sb.Append('<p>Keine Abzuege.</p>') }
+    [void]$sb.Append("<h2>$(HT 'State')</h2><div class='grid4'><div class='card score' style='grid-column:span 2'><div class='ring $scoreClass'>$score</div><div><div class='kl'>$(HT 'Health score (0-100)')</div>")
+    if (@($last.Score.Abzuege).Count) { [void]$sb.Append('<ul class="items">'); foreach ($z in $last.Score.Abzuege) { [void]$sb.Append("<li>&minus;$([int]$z.Punkte) &nbsp;$(HtmlEnc $z.Grund)</li>") }; [void]$sb.Append('</ul>') } else { [void]$sb.Append("<p>$(HT 'No deductions.')</p>") }
     [void]$sb.Append('</div></div>')
     $bootTxt = if ($last.Boot.Mittel5) { '{0:N1} s' -f ($last.Boot.Mittel5 / 1000) } else { 'n/a' }
     $kpis = @(
-        @('Start (Ø 5)', $bootTxt), @("Frei auf $($sysLW):", $(if ($sysV) { "$($sysV.FreiGB) GB" } else { 'n/a' })), @('Aktive Autostarts', $last.Autostart.Aktiv),
-        @('Fehler im Log (7 T.)', ($last.Ereignisse.FehlerSystem7T + $last.Ereignisse.FehlerAnwendung7T)), @('Aktionen gesamt', "$($okActs.Count) OK"), @('Freigegeben (geschaetzt)', (Fmt-Bytes $freed))
+        @((T 'Boot (Ø 5)'), $bootTxt), @((T 'Free on {0}:' $sysLW), $(if ($sysV) { "$($sysV.FreiGB) GB" } else { 'n/a' })), @((T 'Active startup programs'), $last.Autostart.Aktiv),
+        @((T 'Errors in the log (7 d)'), ($last.Ereignisse.FehlerSystem7T + $last.Ereignisse.FehlerAnwendung7T)), @((T 'Actions total'), "$($okActs.Count) OK"), @((T 'Freed (estimated)'), (Fmt-Bytes $freed))
     )
     foreach ($k in $kpis) { [void]$sb.Append("<div class='card'><div class='kl'>$(HtmlEnc $k[0])</div><div class='kpi'>$(HtmlEnc $k[1])</div></div>") }
     [void]$sb.Append('</div>')
 
-    [void]$sb.Append('<h2>Startzeiten</h2>'); [void]$sb.Append((New-BootSvg $boots $runs))
+    [void]$sb.Append("<h2>$(HT 'Boot times')</h2>"); [void]$sb.Append((New-BootSvg $boots $runs))
 
     if ($cmp.Count) {
-        [void]$sb.Append("<h2>Vorher / Nachher</h2><p class='muted'>$(([datetime]$before.Zeit).ToString('dd.MM.yyyy HH:mm')) ($(HtmlEnc $before.Label)) &rarr; $(([datetime]$last.Zeit).ToString('dd.MM.yyyy HH:mm')) ($(HtmlEnc $last.Label)). Startzeiten aendern sich erst nach Neustarts.</p><table><tr><th>Kennzahl</th><th>Vorher</th><th>Nachher</th><th>Delta</th></tr>")
+        [void]$sb.Append("<h2>$(HT 'Before / after')</h2><p class='muted'>$(([datetime]$before.Zeit).ToString($df)) ($(HtmlEnc (Get-SnapshotLabelText $before.Label))) &rarr; $(([datetime]$last.Zeit).ToString($df)) ($(HtmlEnc (Get-SnapshotLabelText $last.Label))). $(HT 'Boot times only change after restarts.')</p><table><tr><th>$(HT 'Metric')</th><th>$(HT 'Before')</th><th>$(HT 'After')</th><th>Delta</th></tr>")
         foreach ($m in $cmp) { $d = if ($null -eq $m.Delta) { '' } elseif ($m.Delta -gt 0) { "+$($m.Delta)" } else { "$($m.Delta)" }; [void]$sb.Append("<tr><td>$(HtmlEnc $m.Kennzahl)</td><td class='n'>$(HtmlEnc $m.Vorher) $(HtmlEnc $m.Einheit)</td><td class='n'>$(HtmlEnc $m.Nachher) $(HtmlEnc $m.Einheit)</td><td class='n $($m.Bewertung)'>$(HtmlEnc $d)</td></tr>") }
         [void]$sb.Append('</table>')
     }
 
-    [void]$sb.Append('<h2>Befunde (letzter Scan)</h2>')
+    [void]$sb.Append("<h2>$(HT 'Findings (last scan)')</h2>")
     if (@($last.Befunde).Count) {
-        [void]$sb.Append('<table><tr><th>Regel</th><th>Befund</th><th>Risiko</th><th>Anzahl</th><th>Umfang</th></tr>')
+        [void]$sb.Append("<table><tr><th>$(HT 'Rule')</th><th>$(HT 'Finding')</th><th>$(HT 'Risk')</th><th>$(HT 'Count')</th><th>$(HT 'Size')</th></tr>")
         foreach ($b in $last.Befunde) {
             $items = (@($b.Objekte) | ForEach-Object { "<li class='mono'>$(HtmlEnc $_)</li>" }) -join ''
-            [void]$sb.Append("<tr><td class='mono'>$(HtmlEnc $b.Regel)</td><td><details><summary>$(HtmlEnc $b.Titel)</summary><ul class='items'>$items</ul></details></td><td><span class='tag $(if ([string]$b.Risiko -in 'Niedrig', 'Mittel', 'Hoch', 'Info') { [string]$b.Risiko } else { 'Info' })'>$(HtmlEnc $b.Risiko)</span></td><td class='n'>$([int]$b.Anzahl)</td><td class='n'>$(if ($b.Bytes) { Fmt-Bytes $b.Bytes })</td></tr>")
+            [void]$sb.Append("<tr><td class='mono'>$(HtmlEnc $b.Regel)</td><td><details><summary>$(HtmlEnc $b.Titel)</summary><ul class='items'>$items</ul></details></td><td><span class='tag $(if ([string]$b.Risiko -in 'Niedrig', 'Mittel', 'Hoch', 'Info') { [string]$b.Risiko } else { 'Info' })'>$(HtmlEnc (Get-RiskText $b.Risiko))</span></td><td class='n'>$([int]$b.Anzahl)</td><td class='n'>$(if ($b.Bytes) { Fmt-Bytes $b.Bytes })</td></tr>")
         }
         [void]$sb.Append('</table>')
-    } else { [void]$sb.Append('<p class="muted">Keine Befunde gespeichert (Scan ausfuehren).</p>') }
+    } else { [void]$sb.Append("<p class='muted'>$(HT 'No findings saved (run a scan).')</p>") }
 
-    [void]$sb.Append('<h2>Startbremsen laut Windows (60 Tage)</h2>')
+    [void]$sb.Append("<h2>$(HT 'Startup delays according to Windows (60 days)')</h2>")
     $off = @($last.Boot.Bremser)
-    if ($off.Count) { [void]$sb.Append((New-BarRows ($off | Select-Object -First 12 | ForEach-Object { [pscustomobject]@{ L = "$($_.Typ): $(if ($_.Name) { $_.Name } else { $_.Datei }) ($($_.Anzahl)x)"; V = $_.MittelMs } }) 'L' 'V' { param($v) '{0:N1} s' -f ($v / 1000) })) } else { [void]$sb.Append('<p class="muted">Keine Daten (Adminrechte noetig).</p>') }
+    if ($off.Count) { [void]$sb.Append((New-BarRows ($off | Select-Object -First 12 | ForEach-Object { [pscustomobject]@{ L = "$($_.Typ): $(if ($_.Name) { $_.Name } else { $_.Datei }) ($($_.Anzahl)x)"; V = $_.MittelMs } }) 'L' 'V' { param($v) '{0:N1} s' -f ($v / 1000) })) } else { [void]$sb.Append("<p class='muted'>$(HT 'No data (admin rights needed).')</p>") }
 
-    [void]$sb.Append('<h2>Autostart</h2><table><tr><th>Name</th><th>Ort</th><th>Aktiv</th><th>Ziel</th><th>Bremst</th></tr>')
+    [void]$sb.Append("<h2>$(HT 'Startup')</h2><table><tr><th>Name</th><th>$(HT 'Location')</th><th>$(HT 'Active')</th><th>$(HT 'Target')</th><th>$(HT 'Delay')</th></tr>")
     foreach ($s in (@($last.Autostart.Liste) | Sort-Object @{ Expression = { [bool]$_.Aktiv }; Descending = $true }, @{ Expression = { $_.DegradationMs }; Descending = $true })) {
-        [void]$sb.Append("<tr><td>$(HtmlEnc $s.Name)</td><td>$(HtmlEnc $s.Ort)</td><td>$(if ($s.Aktiv) { '<span class=''OK''>an</span>' } else { '<span class=''muted''>aus</span>' })</td><td class='mono'>$(HtmlEnc $s.Ziel)$(if ($s.Zustand -eq 'fehlt') { ' <span class=''Fehler''>(fehlt)</span>' })</td><td class='n'>$(if ($s.DegradationMs) { '{0:N1} s' -f ($s.DegradationMs / 1000) })</td></tr>")
+        [void]$sb.Append("<tr><td>$(HtmlEnc $s.Name)</td><td>$(HtmlEnc $s.Ort)</td><td>$(if ($s.Aktiv) { "<span class='OK'>$(HT 'on')</span>" } else { "<span class='muted'>$(HT 'off')</span>" })</td><td class='mono'>$(HtmlEnc $s.Ziel)$(if ($s.Zustand -eq 'fehlt') { " <span class='Fehler'>$(HT '(missing)')</span>" })</td><td class='n'>$(if ($s.DegradationMs) { '{0:N1} s' -f ($s.DegradationMs / 1000) })</td></tr>")
     }
     [void]$sb.Append('</table>')
 
-    [void]$sb.Append('<h2>Laufwerke</h2>'); [void]$sb.Append((New-BarRows ($last.Laufwerke | ForEach-Object { [pscustomobject]@{ L = "$($_.LW): $($_.Label) $($_.Medium) $($_.Bus) - $($_.FreiGB) von $($_.GroesseGB) GB frei"; V = (100 - $_.FreiProzent) } }) 'L' 'V' { param($v) '{0:N0} % belegt' -f $v }))
+    [void]$sb.Append("<h2>$(HT 'Drives')</h2>"); [void]$sb.Append((New-BarRows ($last.Laufwerke | ForEach-Object { [pscustomobject]@{ L = (T '{0}: {1} {2} {3} - {4} of {5} GB free' $_.LW $_.Label $_.Medium $_.Bus $_.FreiGB $_.GroesseGB); V = (100 - $_.FreiProzent) } }) 'L' 'V' { param($v) T '{0:N0} % used' $v }))
 
     if ($last.Hardware) {
         $hw = $last.Hardware
-        [void]$sb.Append("<h2>Hardware &amp; K&uuml;hlung</h2><table><tr><th>Messwert</th><th>Wert</th></tr>")
+        [void]$sb.Append("<h2>$(HT 'Hardware & cooling')</h2><table><tr><th>$(HT 'Reading')</th><th>$(HT 'Value')</th></tr>")
         $rows = New-Object System.Collections.Generic.List[object]
-        $rows.Add(@('Prozessor-Temperatur', $(if ($null -ne $hw.CpuTempC) { '{0:N0} &deg;C (Quelle: {1})' -f $hw.CpuTempC, (HtmlEnc $hw.Sensorquelle) } else { 'nicht verf&uuml;gbar &ndash; Mainboard meldet sie nicht an Windows (LibreHardwareMonitor starten)' })))
-        if ($hw.Gpu) { $rows.Add(@((HtmlEnc $hw.Gpu.Name), ('{0} &deg;C, L&uuml;fter {1} %' -f (HtmlEnc $hw.Gpu.TempC), (HtmlEnc $hw.Gpu.LuefterProzent)))) }
-        $fl = @($hw.Luefter | Where-Object { $_ }); if ($fl.Count) { $rows.Add(@('L&uuml;fter', ((@($fl | ForEach-Object { '{0}: {1} U/min' -f (HtmlEnc $_.Name), $_.Upm })) -join '<br>'))) }
-        $rows.Add(@('Drosselungen durch die Firmware (30 Tage)', [string][int]$hw.Drosselung30T))
-        foreach ($d in @($hw.Laufwerke | Where-Object { $_ })) { $rows.Add(@(('Laufwerk ' + (HtmlEnc $d.Name)), ('{0}{1}{2}' -f $(if ($null -ne $d.TempC) { "$($d.TempC) &deg;C" } else { 'Temperatur unbekannt' }), $(if ($null -ne $d.Verschleiss) { ", $($d.Verschleiss) % verbraucht" } else { '' }), $(if ($d.Zustand) { ', ' + (HtmlEnc $d.Zustand) } else { '' })))) }
-        if ($null -ne $hw.AkkuVerschleiss) { $rows.Add(@('Akku-Kapazit&auml;tsverlust', "$([int]$hw.AkkuVerschleiss) %")) }
+        $rows.Add(@((HT 'Processor temperature'), $(if ($null -ne $hw.CpuTempC) { '{0:N0} &deg;C ({1})' -f $hw.CpuTempC, (HT 'source: {0}' $hw.Sensorquelle) } else { HT 'not available – the motherboard does not report it to Windows (start LibreHardwareMonitor)' })))
+        if ($hw.Gpu) { $rows.Add(@((HtmlEnc $hw.Gpu.Name), ('{0} &deg;C, {1}' -f (HtmlEnc $hw.Gpu.TempC), (HT 'fans {0} %' $hw.Gpu.LuefterProzent)))) }
+        $fl = @($hw.Luefter | Where-Object { $_ }); if ($fl.Count) { $rows.Add(@((HT 'Fans'), ((@($fl | ForEach-Object { HT '{0}: {1} RPM' $_.Name $_.Upm })) -join '<br>'))) }
+        $rows.Add(@((HT 'Throttling by the firmware (30 days)'), [string][int]$hw.Drosselung30T))
+        foreach ($d in @($hw.Laufwerke | Where-Object { $_ })) { $rows.Add(@((HT 'Drive {0}' $d.Name), ('{0}{1}{2}' -f $(if ($null -ne $d.TempC) { "$($d.TempC) &deg;C" } else { HT 'temperature unknown' }), $(if ($null -ne $d.Verschleiss) { ', ' + (HT '{0} % used up' $d.Verschleiss) } else { '' }), $(if ($d.Zustand) { ', ' + (HtmlEnc $d.Zustand) } else { '' })))) }
+        if ($null -ne $hw.AkkuVerschleiss) { $rows.Add(@((HT 'Battery capacity loss'), "$([int]$hw.AkkuVerschleiss) %")) }
         foreach ($r in $rows) { [void]$sb.Append("<tr><td>$($r[0])</td><td>$($r[1])</td></tr>") }
         [void]$sb.Append('</table>')
         $hp = @($hw.Punkte | Where-Object { $_ })
-        if ($hp.Count) { [void]$sb.Append('<ul>'); foreach ($x in $hp) { [void]$sb.Append("<li class='$(if ($x.Stufe -eq 'krit') { 'bad' } else { 'mid' })'>$(HtmlEnc $x.Text)</li>") }; [void]$sb.Append('</ul>') } else { [void]$sb.Append("<p class='muted'>Keine Auff&auml;lligkeiten bei K&uuml;hlung, Laufwerken und Akku.</p>") }
+        if ($hp.Count) { [void]$sb.Append('<ul>'); foreach ($x in $hp) { [void]$sb.Append("<li class='$(if ($x.Stufe -eq 'krit') { 'bad' } else { 'mid' })'>$(HtmlEnc $x.Text)</li>") }; [void]$sb.Append('</ul>') } else { [void]$sb.Append("<p class='muted'>$(HT 'No irregularities in cooling, drives and battery.')</p>") }
         $lt = Get-LastCoolingTest
-        if ($lt) { [void]$sb.Append("<p><b>Letzter K&uuml;hlungstest</b> ($(([datetime]$lt.Zeit).ToString('dd.MM.yyyy HH:mm')), $([int]$lt.Sekunden) s, $([int]$lt.Kerne) Threads):</p><ul>"); foreach ($x in @($lt.Punkte)) { [void]$sb.Append("<li class='$(switch ($x.Stufe) { 'krit' { 'bad' } 'warn' { 'mid' } 'ok' { 'good' } default { 'muted' } })'>$(HtmlEnc $x.Text)</li>") }; [void]$sb.Append('</ul>') }
+        if ($lt) { [void]$sb.Append("<p><b>$(HT 'Last cooling test')</b> ($(([datetime]$lt.Zeit).ToString($df)), $([int]$lt.Sekunden) s, $([int]$lt.Kerne) Threads):</p><ul>"); foreach ($x in @($lt.Punkte)) { [void]$sb.Append("<li class='$(switch ($x.Stufe) { 'krit' { 'bad' } 'warn' { 'mid' } 'ok' { 'good' } default { 'muted' } })'>$(HtmlEnc $x.Text)</li>") }; [void]$sb.Append('</ul>') }
     }
-    if ($perRule.Count) { [void]$sb.Append('<h2>Aufgeraeumt pro Regel</h2>'); [void]$sb.Append((New-BarRows ($perRule | Where-Object Bytes) 'Regel' 'Bytes' { param($v) Fmt-Bytes $v })); [void]$sb.Append('<table><tr><th>Regel</th><th>Aktionen</th><th>Umfang</th></tr>'); foreach ($p in $perRule) { [void]$sb.Append("<tr><td class='mono'>$(HtmlEnc $p.Regel)</td><td class='n'>$($p.Anzahl)</td><td class='n'>$(Fmt-Bytes $p.Bytes)</td></tr>") }; [void]$sb.Append('</table>') }
+    if ($perRule.Count) { [void]$sb.Append("<h2>$(HT 'Cleaned up per rule')</h2>"); [void]$sb.Append((New-BarRows ($perRule | Where-Object Bytes) 'Regel' 'Bytes' { param($v) Fmt-Bytes $v })); [void]$sb.Append("<table><tr><th>$(HT 'Rule')</th><th>$(HT 'Actions')</th><th>$(HT 'Size')</th></tr>"); foreach ($p in $perRule) { [void]$sb.Append("<tr><td class='mono'>$(HtmlEnc $p.Regel)</td><td class='n'>$($p.Anzahl)</td><td class='n'>$(Fmt-Bytes $p.Bytes)</td></tr>") }; [void]$sb.Append('</table>') }
 
-    [void]$sb.Append('<h2>Aktionsprotokoll</h2>')
-    if ($actions.Count) { [void]$sb.Append('<table><tr><th>Zeit</th><th>Regel</th><th>Objekt</th><th>Status</th><th>Umfang</th></tr>'); foreach ($a in ($actions | Sort-Object Zeit -Descending | Select-Object -First 400)) { [void]$sb.Append("<tr><td class='n'>$(([datetime]$a.Zeit).ToString('dd.MM. HH:mm'))</td><td class='mono'>$(HtmlEnc $a.Regel)</td><td>$(HtmlEnc $a.Objekt)$(if ($a.Meldung) { '<div class=''muted''>' + (HtmlEnc $a.Meldung) + '</div>' })</td><td class='$($a.Status)'>$(HtmlEnc $a.Status)</td><td class='n'>$(if ($a.Bytes) { Fmt-Bytes $a.Bytes })</td></tr>") }; [void]$sb.Append('</table>') } else { [void]$sb.Append('<p class="muted">Noch keine Aenderungen ausgefuehrt.</p>') }
+    [void]$sb.Append("<h2>$(HT 'Action log')</h2>")
+    $dfs = T 'MM-dd HH:mm'
+    if ($actions.Count) { [void]$sb.Append("<table><tr><th>$(HT 'Time')</th><th>$(HT 'Rule')</th><th>$(HT 'Item')</th><th>Status</th><th>$(HT 'Size')</th></tr>"); foreach ($a in ($actions | Sort-Object Zeit -Descending | Select-Object -First 400)) { [void]$sb.Append("<tr><td class='n'>$(([datetime]$a.Zeit).ToString($dfs))</td><td class='mono'>$(HtmlEnc $a.Regel)</td><td>$(HtmlEnc $a.Objekt)$(if ($a.Meldung) { "<div class='muted'>$(HtmlEnc $a.Meldung)</div>" })</td><td class='$($a.Status)'>$(HtmlEnc (Get-StatusText $a.Status))</td><td class='n'>$(if ($a.Bytes) { Fmt-Bytes $a.Bytes })</td></tr>") }; [void]$sb.Append('</table>') } else { [void]$sb.Append("<p class='muted'>$(HT 'No changes made yet.')</p>") }
 
-    [void]$sb.Append('<h2>Snapshot-Verlauf</h2><table><tr><th>Zeit</th><th>Typ</th><th>Score</th><th>Start Ø</th><th>Frei System</th><th>Autostarts</th><th>Fehler 7 T.</th></tr>')
-    foreach ($s in ($all | Sort-Object Zeit -Descending)) { $sv = $s.Laufwerke | Where-Object { $_.LW -eq $sysLW } | Select-Object -First 1; [void]$sb.Append("<tr><td class='n'>$(([datetime]$s.Zeit).ToString('dd.MM.yyyy HH:mm'))</td><td>$(HtmlEnc $s.Label)</td><td class='n'>$([int]$s.Score.Wert)</td><td class='n'>$(if ($s.Boot.Mittel5) { '{0:N1} s' -f ($s.Boot.Mittel5 / 1000) })</td><td class='n'>$(if ($sv) { "$($sv.FreiGB) GB" })</td><td class='n'>$($s.Autostart.Aktiv)</td><td class='n'>$($s.Ereignisse.FehlerSystem7T + $s.Ereignisse.FehlerAnwendung7T)</td></tr>") }
+    [void]$sb.Append("<h2>$(HT 'Snapshot history')</h2><table><tr><th>$(HT 'Time')</th><th>$(HT 'Type')</th><th>Score</th><th>$(HT 'Boot Ø')</th><th>$(HT 'Free system')</th><th>$(HT 'Startup programs')</th><th>$(HT 'Errors 7 d')</th></tr>")
+    foreach ($s in ($all | Sort-Object Zeit -Descending)) { $sv = $s.Laufwerke | Where-Object { $_.LW -eq $sysLW } | Select-Object -First 1; [void]$sb.Append("<tr><td class='n'>$(([datetime]$s.Zeit).ToString($df))</td><td>$(HtmlEnc (Get-SnapshotLabelText $s.Label))</td><td class='n'>$([int]$s.Score.Wert)</td><td class='n'>$(if ($s.Boot.Mittel5) { '{0:N1} s' -f ($s.Boot.Mittel5 / 1000) })</td><td class='n'>$(if ($sv) { "$($sv.FreiGB) GB" })</td><td class='n'>$($s.Autostart.Aktiv)</td><td class='n'>$($s.Ereignisse.FehlerSystem7T + $s.Ereignisse.FehlerAnwendung7T)</td></tr>") }
     [void]$sb.Append('</table>')
-    [void]$sb.Append("<p class='muted' style='margin-top:30px'>Daten: <span class='mono'>$(HtmlEnc $Script:DataDir)</span> &middot; erzeugt $(Get-Date -Format 'dd.MM.yyyy HH:mm')</p></div></body></html>")
+    [void]$sb.Append("<p class='muted' style='margin-top:30px'>$(HT 'Data:') <span class='mono'>$(HtmlEnc $Script:DataDir)</span> &middot; $(HT 'created {0}' (Get-Date).ToString($df))</p></div></body></html>")
     $out = Join-Path $Script:DataDir 'WinTidy-Bericht.html'
     [IO.File]::WriteAllText($out, $sb.ToString(), (New-Object Text.UTF8Encoding($true)))
-    W "  Bericht: $out" 'Green'
+    W (T '  Report: {0}' $out) 'Green'
     return $out
 }
 
 # =============================================================================
-#  Wiederherstellen
+#  Restore
 # =============================================================================
 function Resolve-RunDir([string]$Lauf) {
     if (-not $Lauf) { return $null }
@@ -2401,41 +2467,41 @@ function Resolve-RunDir([string]$Lauf) {
     if ($exakt) { return $exakt }
     $treffer = @($runs | Where-Object { $_.Name -like "$Lauf*" })
     if ($treffer.Count -eq 1) { return $treffer[0] }
-    return $null   # nicht eindeutig
+    return $null   # not unique
 }
 function Read-UndoRecords($RunDir) {
     $acts = Join-Path $RunDir.FullName 'actions.jsonl'
     if (-not (Test-Path -LiteralPath $acts)) { return @() }
     @(Get-Content -LiteralPath $acts -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { try { $_ | ConvertFrom-Json } catch { } } | Where-Object { $_ -and $_.Undo })
 }
-# Verstaendlicher Name einer Undo-Info
+# Readable name of an undo record
 function Get-UndoLabel($a) {
     $u = $a.Undo
     switch ([string]$u.Typ) {
         'RegValue' {
             $k = ConvertTo-RegKeyText $u.Key
-            if ($k -match 'GameDVR|GameConfigStore') { return @('Einstellung', 'Spiele-Aufnahme (Xbox Game Bar)') }
-            if ($k -match 'FileSystem$') { return @('Einstellung', 'TRIM für SSDs') }
-            return @('Autostart', ('"{0}"' -f $a.Objekt))
+            if ($k -match 'GameDVR|GameConfigStore') { return @((T 'Setting'), (T 'Game recording (Xbox Game Bar)')) }
+            if ($k -match 'FileSystem$') { return @((T 'Setting'), (T 'TRIM for SSDs')) }
+            return @((T 'Startup'), ('"{0}"' -f $a.Objekt))
         }
-        'Dienst' { return @('Hintergrunddienst', ('"{0}"' -f $u.Name)) }
-        'PowerSetting' { return @('Energieeinstellung', 'Kühlung im Netzbetrieb') }
-        'ExecPolicy' { return @('Einstellung', 'Schutzeinstellung für Skripte') }
-        'Hiber' { return @('Einstellung', 'Ruhezustandsdatei (volle Größe)') }
-        'Datei' { return @('Autostart', ('Verknüpfung "{0}"' -f [IO.Path]::GetFileNameWithoutExtension([string]$u.Ziel))) }
+        'Dienst' { return @((T 'Background service'), ('"{0}"' -f $u.Name)) }
+        'PowerSetting' { return @((T 'Power setting'), (T 'Cooling on mains power')) }
+        'ExecPolicy' { return @((T 'Setting'), (T 'Protection setting for scripts')) }
+        'Hiber' { return @((T 'Setting'), (T 'Hibernation file (full size)')) }
+        'Datei' { return @((T 'Startup'), ((T 'Shortcut "{0}"') -f [IO.Path]::GetFileNameWithoutExtension([string]$u.Ziel))) }
     }
-    return @('Einstellung', [string]$a.Objekt)
+    return @((T 'Setting'), [string]$a.Objekt)
 }
 function Get-RegBackupLabel([string]$Name) {
-    if ($Name -like 'appxkey_*') { return 'Autostart einer App' }
-    if ($Name -like 'approved_*') { return 'Autostart-Einstellungen' }
-    if ($Name -like 'run_*') { return 'Autostart-Einträge' }
-    if ($Name -like 'gameconfigstore*') { return 'Spiele-Aufnahme (Xbox Game Bar)' }
-    if ($Name -like 'appx_*') { return 'Autostart einer App' }
+    if ($Name -like 'appxkey_*') { return (T 'Startup entry of an app') }
+    if ($Name -like 'approved_*') { return (T 'Startup settings') }
+    if ($Name -like 'run_*') { return (T 'Startup entries') }
+    if ($Name -like 'gameconfigstore*') { return (T 'Game recording (Xbox Game Bar)') }
+    if ($Name -like 'appx_*') { return (T 'Startup entry of an app') }
     return ($Name -replace '_', ' ')
 }
-# Registry-Sicherungen (.reg) werden nur noch fuer Laeufe ohne Einzelwert-Undo eingespielt (Laeufe vor 1.3) bzw. fuer
-# komplett entfernte App-Autostart-Schluessel - und nur, wenn alle enthaltenen Schluessel erwartet sind.
+# Registry backups (.reg) are only imported for runs without single-value undo (runs before 1.3) or for
+# completely removed app startup keys - and only if all contained keys are expected.
 function Get-RegBackupFiles($RunDir, $Undos) {
     $hatWerte = [bool]($Undos | Where-Object { $_.Undo.Typ -eq 'RegValue' })
     @(Get-ChildItem (Join-Path $RunDir.FullName 'backup') -Filter '*.reg' -ErrorAction SilentlyContinue | Where-Object { -not $hatWerte -or $_.BaseName -like 'appxkey_*' })
@@ -2449,58 +2515,58 @@ function Test-RegFileAllowed([string]$Path) {
     } catch { return $false }
 }
 
-# Was "Wiederherstellen" fuer einen Lauf zuruecksetzen wuerde (aendert nichts)
+# What "Restore" would reset for a run (changes nothing)
 function Get-RestorePreview([string]$Lauf) {
     $sel = Resolve-RunDir $Lauf
     if (-not $sel) { return @() }
     $undos = Read-UndoRecords $sel
     $r = @()
-    foreach ($f in (Get-RegBackupFiles $sel $undos)) { $r += [pscustomobject]@{ Art = 'Einstellung'; Objekt = (Get-RegBackupLabel $f.BaseName) } }
+    foreach ($f in (Get-RegBackupFiles $sel $undos)) { $r += [pscustomobject]@{ Art = (T 'Setting'); Objekt = (Get-RegBackupLabel $f.BaseName) } }
     $idx = Join-Path $sel.FullName 'backup\tasks\index.jsonl'
-    if (Test-Path $idx) { foreach ($l in (Get-Content $idx -Encoding UTF8 | Where-Object { $_ })) { try { $t = $l | ConvertFrom-Json; $r += [pscustomobject]@{ Art = 'Geplante Aufgabe'; Objekt = ('"{0}"' -f $t.TaskName) } } catch { } } }
+    if (Test-Path $idx) { foreach ($l in (Get-Content $idx -Encoding UTF8 | Where-Object { $_ })) { try { $t = $l | ConvertFrom-Json; $r += [pscustomobject]@{ Art = (T 'Scheduled task'); Objekt = ('"{0}"' -f $t.TaskName) } } catch { } } }
     foreach ($a in $undos) { $lb = Get-UndoLabel $a; $r += [pscustomobject]@{ Art = $lb[0]; Objekt = $lb[1] } }
     return @($r | Sort-Object Art, Objekt -Unique)
 }
 
 function Invoke-Restore {
     if ($Script:IsAdmin -and $Script:DataDirIsDefault -and -not $Script:DataDirProtected) {
-        W 'Der Datenordner ist nicht ausreichend geschuetzt - Wiederherstellen ist zur Sicherheit gesperrt. Bitte die Systemwiederherstellung (rstrui.exe) nutzen.' 'Red'
-        return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = 'Der Datenordner von WinTidy ist nicht ausreichend geschützt. Zur Sicherheit setzt WinTidy deshalb nichts zurück. Bitte die Windows-Systemwiederherstellung nutzen.'; Lauf = $null; Wiederhergestellt = 0; Fehler = 0; Details = @() }
+        W (T 'The data folder is not sufficiently protected - restore is blocked for safety reasons. Please use System Restore (rstrui.exe).') 'Red'
+        return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = (T 'The WinTidy data folder is not sufficiently protected. For safety reasons WinTidy therefore resets nothing. Please use Windows System Restore.'); Lauf = $null; Wiederhergestellt = 0; Fehler = 0; Details = @() }
     }
     $runs = @(Get-ChildItem $Script:RunsDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*_apply' } | Sort-Object Name -Descending)
-    if (-not $runs.Count) { W 'Keine Apply-Laeufe gefunden.' 'Yellow'; return [pscustomobject]@{ Status = 'NICHT-GEFUNDEN'; Lauf = $null; Wiederhergestellt = 0; Fehler = 0; Details = @() } }
+    if (-not $runs.Count) { W (T 'No apply runs found.') 'Yellow'; return [pscustomobject]@{ Status = 'NICHT-GEFUNDEN'; Lauf = $null; Wiederhergestellt = 0; Fehler = 0; Details = @() } }
     $sel = if ($Script:RestoreRunId) { Resolve-RunDir $Script:RestoreRunId } else {
-        W 'Laeufe:'; for ($i = 0; $i -lt [math]::Min(10, $runs.Count); $i++) { W ("  [{0}] {1}" -f ($i + 1), $runs[$i].Name) }
-        $n = Read-Host 'Nummer'; $k = 0; if ([int]::TryParse($n, [ref]$k) -and $k -ge 1 -and $k -le $runs.Count) { $runs[$k - 1] } else { $null }
+        W (T 'Runs:'); for ($i = 0; $i -lt [math]::Min(10, $runs.Count); $i++) { W ("  [{0}] {1}" -f ($i + 1), $runs[$i].Name) }
+        $n = Read-Host (T 'Number'); $k = 0; if ([int]::TryParse($n, [ref]$k) -and $k -ge 1 -and $k -le $runs.Count) { $runs[$k - 1] } else { $null }
     }
-    if (-not $sel) { W 'Lauf nicht gefunden (oder nicht eindeutig).' 'Red'; return [pscustomobject]@{ Status = 'NICHT-GEFUNDEN'; Lauf = $Script:RestoreRunId; Wiederhergestellt = 0; Fehler = 0; Details = @() } }
+    if (-not $sel) { W (T 'Run not found (or not unique).') 'Red'; return [pscustomobject]@{ Status = 'NICHT-GEFUNDEN'; Lauf = $Script:RestoreRunId; Wiederhergestellt = 0; Fehler = 0; Details = @() } }
     $det = New-Object System.Collections.Generic.List[object]
     function R([string]$Art, [string]$Obj, [bool]$Ok, [string]$Msg = '') {
         $det.Add([pscustomobject]@{ Art = $Art; Objekt = $Obj; Status = $(if ($Ok) { 'OK' } else { 'Fehler' }); Meldung = $Msg })
         Add-ActionRecord 'RESTORE' "$Art $Obj" $(if ($Ok) { 'OK' } else { 'Fehler' }) 0 $Msg | Out-Null
-        W ("  {0} {1}: {2}{3}" -f $(if ($Ok) { 'OK    ' } else { 'FEHLER' }), $Art, $Obj, $(if ($Msg) { " ($Msg)" } else { '' })) $(if ($Ok) { 'Green' } else { 'Red' })
+        W ("  {0} {1}: {2}{3}" -f $(if ($Ok) { 'OK    ' } else { (T 'ERROR ') }), $Art, $Obj, $(if ($Msg) { " ($Msg)" } else { '' })) $(if ($Ok) { 'Green' } else { 'Red' })
     }
-    W "Stelle wieder her: $($sel.FullName)" 'Cyan'
-    W 'Hinweis: Geloeschte Dateien, deinstallierte Programme und entfernte Store-Apps lassen sich hier nicht zurueckholen (dafuer: Wiederherstellungspunkt).' 'DarkYellow'
+    W (T 'Restoring: {0}' ($sel.FullName)) 'Cyan'
+    W (T 'Note: deleted files, uninstalled programs and removed Store apps cannot be brought back here (for that: restore point).') 'DarkYellow'
     $neuer = @($runs | Where-Object { $_.Name -gt $sel.Name })
-    if ($neuer.Count) { W ("  Achtung: Danach gab es noch {0} weitere Optimierung(en). Werte, die seitdem geaendert wurden, werden nicht ueberschrieben." -f $neuer.Count) 'DarkYellow' }
+    if ($neuer.Count) { W ((T '  Caution: there were {0} more optimization(s) afterwards. Values changed since then are not overwritten.') -f $neuer.Count) 'DarkYellow' }
     $undos = Read-UndoRecords $sel
     foreach ($f in (Get-RegBackupFiles $sel $undos)) {
         $lb = Get-RegBackupLabel $f.BaseName
-        if (-not (Test-RegFileAllowed $f.FullName)) { R 'Einstellung' $lb $false 'Unerwarteter Registry-Pfad - nicht eingespielt'; continue }
+        if (-not (Test-RegFileAllowed $f.FullName)) { R (T 'Setting') $lb $false (T 'Unexpected registry path - not imported'); continue }
         $null = & reg.exe import $f.FullName 2>&1
-        R 'Einstellung' $lb ($LASTEXITCODE -eq 0) $(if ($LASTEXITCODE -ne 0) { "reg import Fehler $LASTEXITCODE" } else { '' })
+        R (T 'Setting') $lb ($LASTEXITCODE -eq 0) $(if ($LASTEXITCODE -ne 0) { (T 'reg import error {0}' $LASTEXITCODE) } else { '' })
     }
-    # Geplante Aufgaben wurden nur deaktiviert - wieder einschalten statt aus XML neu anzulegen
+    # Scheduled tasks were only disabled - enable them again instead of recreating them from XML
     $idx = Join-Path $sel.FullName 'backup\tasks\index.jsonl'
     if (Test-Path $idx) {
         foreach ($l in (Get-Content $idx -Encoding UTF8 | Where-Object { $_ })) {
             $t = $null; try { $t = $l | ConvertFrom-Json } catch { continue }
-            try { Enable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null; R 'Geplante Aufgabe' $t.TaskName $true }
-            catch { R 'Geplante Aufgabe' $t.TaskName $false $_.Exception.Message }
+            try { Enable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null; R (T 'Scheduled task') $t.TaskName $true }
+            catch { R (T 'Scheduled task') $t.TaskName $false $_.Exception.Message }
         }
     }
-    # Einzelne Aenderungen in umgekehrter Reihenfolge zuruecknehmen
+    # Undo single changes in reverse order
     $liste = @($undos); [array]::Reverse($liste)
     foreach ($a in $liste) {
         if ([string]$a.Undo.Typ -notin 'RegValue', 'Dienst', 'PowerSetting', 'ExecPolicy', 'Hiber', 'Datei') { continue }
@@ -2515,77 +2581,77 @@ function Invoke-Restore {
                 }
                 'PowerSetting' {
                     $null = & powercfg.exe /setacvalueindex $a.Undo.Schema $a.Undo.Sub $a.Undo.Setting ([int]$a.Undo.AC) 2>&1
-                    if ($LASTEXITCODE -ne 0) { throw "powercfg Fehler $LASTEXITCODE" }
+                    if ($LASTEXITCODE -ne 0) { throw (T 'powercfg error {0}' $LASTEXITCODE) }
                     $null = & powercfg.exe /setactive $a.Undo.Schema 2>&1
                 }
                 'ExecPolicy' { if ([string]$a.Undo.Vorher -in 'Restricted', 'AllSigned', 'RemoteSigned', 'Unrestricted', 'Bypass', 'Undefined') { try { Set-ExecutionPolicy ([string]$a.Undo.Vorher) -Scope ([string]$a.Undo.Scope) -Force -ErrorAction Stop } catch { if ($_.Exception.Message -notmatch 'overridden|ueberschrieben|überschrieben') { throw } } } }
-                'Hiber' { $null = & powercfg.exe /h /type full 2>&1; if ($LASTEXITCODE -ne 0) { throw "powercfg Fehler $LASTEXITCODE" } }
+                'Hiber' { $null = & powercfg.exe /h /type full 2>&1; if ($LASTEXITCODE -ne 0) { throw (T 'powercfg error {0}' $LASTEXITCODE) } }
                 'Datei' {
                     $ziel = [IO.Path]::GetFullPath([string]$a.Undo.Ziel); $quelle = [IO.Path]::GetFullPath([string]$a.Undo.Quelle)
                     $erlaubt = @([Environment]::GetFolderPath('Startup'), [Environment]::GetFolderPath('CommonStartup')) | Where-Object { $_ -and ([IO.Path]::GetDirectoryName($ziel)) -ieq $_.TrimEnd('\') }
-                    if (-not $erlaubt) { throw 'Unerwarteter Zielordner - nicht zurueckkopiert' }
-                    if (-not $quelle.StartsWith($sel.FullName.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Sicherung liegt nicht im Laufordner' }
+                    if (-not $erlaubt) { throw (T 'Unexpected target folder - not copied back') }
+                    if (-not $quelle.StartsWith($sel.FullName.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw (T 'Backup is not inside the run folder') }
                     if (-not (Test-Path -LiteralPath $ziel)) { Copy-Item -LiteralPath $quelle -Destination $ziel -ErrorAction Stop }
                 }
             }
             R $lb[0] $lb[1] $true
         } catch { R $lb[0] $lb[1] $false $_.Exception.Message }
     }
-    W 'Fertig. Fuer alles Weitere: Systemwiederherstellung (rstrui.exe) mit dem Punkt "WinTidy <Lauf>".' 'Cyan'
+    W (T 'Done. For everything else: System Restore (rstrui.exe) with the point "WinTidy <run>".') 'Cyan'
     $okN = @($det | Where-Object Status -eq 'OK').Count
     try { [ordered]@{ Zeit = (Get-Date).ToString('o'); Wiederhergestellt = $okN; Fehler = ($det.Count - $okN) } | ConvertTo-Json | Out-File (Join-Path $sel.FullName 'rueckgaengig.json') -Encoding utf8 } catch { }
     return [pscustomobject]@{ Status = 'OK'; Lauf = $sel.Name; Wiederhergestellt = $okN; Fehler = ($det.Count - $okN); Details = $det.ToArray() }
 }
 
 # =============================================================================
-#  API fuer die grafische Oberflaeche (WinTidy-App.ps1)
-#  Die App laedt diese Datei per Dot-Sourcing in einen Hintergrund-Runspace.
+#  API for the graphical interface (WinTidy-App.ps1)
+#  The app loads this file via dot-sourcing into a background runspace.
 # =============================================================================
 $Script:Friendly = @{
-    'CLN-TEMP'            = @('Temporäre Dateien entfernen', 'Programme legen beim Arbeiten Zwischendateien ab und vergessen sie. Gelöscht wird nur, was seit Tagen niemand mehr angelegt oder geändert hat.')
-    'CLN-WINCLEAN'        = @('Windows-Altlasten aufräumen', 'Reste von Windows-Updates, Fehlerberichte und der Update-Zwischenspeicher. Nutzt die Windows-eigene Datenträgerbereinigung.')
-    'CLN-WINOLD'          = @('Vorherige Windows-Version löschen', 'Nach einem großen Windows-Update bleibt die alte Version als Sicherung liegen – oft 10 bis 30 GB. Danach kannst du nicht mehr zur alten Windows-Version zurück. Die Dateien für "Diesen PC zurücksetzen" bleiben erhalten.')
-    'CLN-WINSXS'          = @('Update-Speicher verkleinern', 'Windows behält ersetzte Teile alter Updates. Windows selbst empfiehlt hier eine Bereinigung.')
-    'CLN-DUMPS'           = @('Absturzberichte von Programmen löschen', 'Programme hinterlassen nach Abstürzen große Diagnose-Dateien, die nur Entwickler brauchen.')
-    'CLN-HIBERFIL'        = @('Ruhezustandsdatei verkleinern', 'Auf Desktop-PCs wird der Ruhezustand kaum genutzt, die Datei belegt aber oft viele Gigabyte. Sie wird auf die Größe verkleinert, die der Schnellstart braucht – der Schnellstart bleibt, der Ruhezustand und der hybride Standby entfallen. Lässt sich rückgängig machen.')
-    'CLN-RECYCLE'         = @('Alte Dateien im Papierkorb endgültig löschen', 'Nur Dateien, die schon länger im Papierkorb liegen. Kürzlich Gelöschtes bleibt wiederherstellbar.')
-    'CLN-RECYCLE-ORPHAN'  = @('Papierkörbe alter Benutzerkonten leeren', 'Nach einer Neuinstallation bleiben unsichtbare Papierkörbe früherer Konten auf den Laufwerken liegen.')
-    'CLN-DRIVERSTORE'     = @('Alte Treiber-Versionen entfernen', 'Bei jedem Treiber-Update bleibt die alte Version liegen. Die aktuelle bleibt immer erhalten, benutzte Treiber schützt Windows.')
-    'CLN-ORPHANDIR'       = @('Ordner ohne zugehöriges Programm (Profi)', 'Ordner, die zu keinem installierten Programm zu passen scheinen. Kann Fehltreffer enthalten – nur mit Bedacht auswählen.')
-    'STA-ORPHAN'          = @('Kaputte Autostart-Einträge entfernen', 'Diese Einträge zeigen auf Programme, die es nicht mehr gibt.')
-    'STA-APPROVED-ORPHAN' = @('Überbleibsel im Autostart aufräumen', 'Windows merkt sich Einstellungen für Programme, die längst entfernt wurden.')
-    'STA-HEAVY'           = @('Programme beim Start nicht mehr automatisch öffnen', 'Jedes Programm, das beim Hochfahren mitstartet, verlängert den Start. Die Programme bleiben installiert und lassen sich normal öffnen. Virenschutz, VPN, Backup und Cloud-Speicher bleiben immer an.')
-    'TSK-ORPHAN'          = @('Kaputte geplante Aufgaben abschalten', 'Diese Aufgaben versuchen regelmäßig Programme zu starten, die es nicht mehr gibt.')
-    'TSK-ANTIPATTERN'     = @('Geplante Aufgaben mit unerwünschten Nebenwirkungen', 'Auf diesem PC wurden Aufgaben eingerichtet, die regelmäßig laufen und dabei den PC bremsen oder zu viel löschen. WinTidy ändert sie nicht – bitte von der Person anpassen lassen, die sie eingerichtet hat.')
-    'SVC-ORPHAN'          = @('Kaputte Hintergrunddienste abschalten', 'Reste deinstallierter Programme, die bei jedem Start vergeblich versuchen zu laufen.')
-    'APP-SIDEBYSIDE'      = @('Doppelt installierte Programme bereinigen', 'Von diesen Programmen sind mehrere Versionen installiert. Die neueste bleibt. Es öffnet sich jeweils das Deinstallationsprogramm.')
-    'APP-BLOAT'           = @('Vorinstallierte Apps entfernen', 'Apps, die Windows ungefragt mitbringt (z. B. Spiele-Demos, News). Wenn du eine davon benutzt – etwa Wetter –, lass den Haken weg. Alles lässt sich im Store wieder installieren.')
-    'APP-UPDATES'         = @('Programme aktualisieren', 'Veraltete Programme sind das häufigste Einfallstor für Schadsoftware. Bitte vorher alle Programme schließen – ein Update kann offene Programme beenden.')
-    'SYS-GHOST'           = @('Alte Geräte-Einträge entfernen', 'Geräte, die nicht mehr angeschlossen sind (z. B. alte USB-Sticks, Mäuse, Monitore). Steckst du sie wieder ein, werden sie neu erkannt – eigene Einstellungen dafür (z. B. eine feste IP-Adresse) gehen aber verloren.')
-    'SYS-SHADOW'          = @('Platz für Wiederherstellungspunkte vergrößern', 'Zu wenig Platz führt dazu, dass Windows Wiederherstellungspunkte stillschweigend löscht.')
-    'SYS-TRIM'            = @('SSD auffrischen (TRIM)', 'Teilt der SSD mit, welcher Speicher frei ist, und hält sie schnell. Windows macht das normalerweise selbst – hier ist es abgeschaltet oder lange nicht gelaufen.')
-    'SYS-MAINT'           = @('Windows-Wartung nachholen', 'Die automatische Wartung ist zuletzt nicht durchgelaufen. Danach den PC etwa eine Stunde eingeschaltet lassen.')
-    'SYS-INTEGRITY'       = @('Windows-Systemdateien prüfen und reparieren', 'Prüft, ob Windows-Dateien beschädigt sind, und repariert sie. Dauert 10–30 Minuten.')
-    'SYS-FSCHECK'         = @('Laufwerke auf Fehler prüfen', 'Ergebnis der Dateisystem-Prüfung.')
-    'SYS-GAMEDVR'         = @('Hintergrund-Aufnahme für Spiele abschalten', 'Die Xbox Game Bar nimmt in Spielen ständig die letzten Minuten auf und kostet Leistung. Clips selbst aufnehmen kannst du weiterhin.')
-    'SYS-TWEAKS'          = @('Ungünstige Tuning-Einstellungen', 'Manche Tuning-Programme schalten Windows-Funktionen ab, die den PC eigentlich schneller oder sicherer machen. WinTidy zeigt sie an; zurückstellen sollte es jemand, der sich auskennt.')
-    'SEC-EXECPOLICY'      = @('Schutzeinstellung für Skripte zurücksetzen', 'Stellt eine Windows-Sicherheitseinstellung auf den von Microsoft empfohlenen Wert. Im Alltag merkst du davon nichts. Lässt sich rückgängig machen.')
-    'SEC-CHECKS'          = @('Sicherheit', 'Updates und grundlegende Schutzfunktionen von Windows und des PCs.')
-    'HW-HINTS'            = @('Hinweise zur Hardware', 'Einstellungen, die eine fachkundige Person prüfen kann. Bitte nichts im BIOS ändern, wenn du dir unsicher bist.')
-    'HW-COOLING'          = @('Kühlung und Temperaturen', 'Ob Prozessor, Grafikkarte und Laufwerke zu warm werden, gebremst werden oder ob ein Lüfter steht. Lüfterkurven selbst liegen im BIOS – WinTidy misst ihre Wirkung.')
-    'HW-COOLPOLICY'       = @('Bei Wärme zuerst die Lüfter hochdrehen', 'Im Netzbetrieb sollen zuerst die Lüfter schneller drehen, bevor Windows den Prozessor bremst. Die Einstellung steht hier auf "erst bremsen". Lässt sich rückgängig machen.')
-    'HW-DISPLAY'          = @('Bildschirm', 'Ob dein Bildschirm mit der höchsten Bildwiederholrate läuft, die er kann.')
-    'EVT-HEALTH'          = @('Warnmeldungen von Windows', 'Windows hat in den letzten 30 Tagen Probleme notiert, z. B. Abstürze oder plötzliches Ausschalten. Einzelne Einträge sind kein Grund zur Sorge. Treten sie häufig auf, lass den PC prüfen.')
+    'CLN-TEMP'            = @((T 'Remove temporary files'), (T 'Programs leave temporary files behind while working and forget them. Only what nobody has created or changed for days is deleted.'))
+    'CLN-WINCLEAN'        = @((T 'Clean up Windows leftovers'), (T 'Leftovers of Windows updates, error reports and the update cache. Uses Windows'' own Disk Cleanup.'))
+    'CLN-WINOLD'          = @((T 'Delete the previous Windows version'), (T 'After a major Windows update the old version stays behind as a backup – often 10 to 30 GB. Afterwards you can no longer go back to the old Windows version. The files for "Reset this PC" are kept.'))
+    'CLN-WINSXS'          = @((T 'Shrink the update storage'), (T 'Windows keeps replaced parts of old updates. Windows itself recommends a cleanup here.'))
+    'CLN-DUMPS'           = @((T 'Delete crash reports of programs'), (T 'After crashes, programs leave large diagnostic files behind that only developers need.'))
+    'CLN-HIBERFIL'        = @((T 'Shrink the hibernation file'), (T 'On desktop PCs hibernation is hardly used, but the file often takes up many gigabytes. It is shrunk to the size fast startup needs – fast startup stays, hibernation and hybrid sleep are no longer available. Can be undone.'))
+    'CLN-RECYCLE'         = @((T 'Permanently delete old files in the recycle bin'), (T 'Only files that have been in the recycle bin for a while. Recently deleted items stay recoverable.'))
+    'CLN-RECYCLE-ORPHAN'  = @((T 'Empty recycle bins of old user accounts'), (T 'After a reinstall, invisible recycle bins of earlier accounts remain on the drives.'))
+    'CLN-DRIVERSTORE'     = @((T 'Remove old driver versions'), (T 'With every driver update the old version stays behind. The current one is always kept, Windows protects drivers in use.'))
+    'CLN-ORPHANDIR'       = @((T 'Folders without a matching program (expert)'), (T 'Folders that do not seem to belong to any installed program. May contain false positives – select carefully.'))
+    'STA-ORPHAN'          = @((T 'Remove broken startup entries'), (T 'These entries point to programs that no longer exist.'))
+    'STA-APPROVED-ORPHAN' = @((T 'Clean up leftovers in startup'), (T 'Windows remembers settings for programs that were removed long ago.'))
+    'STA-HEAVY'           = @((T 'Stop opening programs automatically at startup'), (T 'Every program that starts with Windows makes startup longer. The programs stay installed and can be opened normally. Antivirus, VPN, backup and cloud storage always stay on.'))
+    'TSK-ORPHAN'          = @((T 'Turn off broken scheduled tasks'), (T 'These tasks regularly try to start programs that no longer exist.'))
+    'TSK-ANTIPATTERN'     = @((T 'Scheduled tasks with unwanted side effects'), (T 'Tasks were set up on this PC that run regularly and slow the PC down or delete too much. WinTidy does not change them – please have the person who set them up adjust them.'))
+    'SVC-ORPHAN'          = @((T 'Turn off broken background services'), (T 'Leftovers of uninstalled programs that try to run in vain at every startup.'))
+    'APP-SIDEBYSIDE'      = @((T 'Clean up programs installed twice'), (T 'Several versions of these programs are installed. The newest stays. The uninstaller opens for each one.'))
+    'APP-BLOAT'           = @((T 'Remove preinstalled apps'), (T 'Apps that Windows brings along without asking (e.g. game demos, news). If you use one of them – such as Weather – leave it unchecked. Everything can be reinstalled from the Store.'))
+    'APP-UPDATES'         = @((T 'Update programs'), (T 'Outdated programs are the most common entry point for malware. Please close all programs first – an update can close open programs.'))
+    'SYS-GHOST'           = @((T 'Remove old device entries'), (T 'Devices that are no longer connected (e.g. old USB sticks, mice, monitors). If you plug them in again they are detected again – but their own settings (e.g. a fixed IP address) are lost.'))
+    'SYS-SHADOW'          = @((T 'Increase the space for restore points'), (T 'Too little space means Windows silently deletes restore points.'))
+    'SYS-TRIM'            = @((T 'Refresh the SSD (TRIM)'), (T 'Tells the SSD which storage is free and keeps it fast. Windows normally does this itself – here it is turned off or has not run for a long time.'))
+    'SYS-MAINT'           = @((T 'Catch up on Windows maintenance'), (T 'Automatic maintenance did not complete recently. Afterwards leave the PC on for about an hour.'))
+    'SYS-INTEGRITY'       = @((T 'Check and repair Windows system files'), (T 'Checks whether Windows files are damaged and repairs them. Takes 10–30 minutes.'))
+    'SYS-FSCHECK'         = @((T 'Check drives for errors'), (T 'Result of the file system check.'))
+    'SYS-GAMEDVR'         = @((T 'Turn off background recording for games'), (T 'The Xbox Game Bar constantly records the last minutes in games and costs performance. You can still record clips yourself.'))
+    'SYS-TWEAKS'          = @((T 'Unfavorable tuning settings'), (T 'Some tuning programs turn off Windows features that actually make the PC faster or safer. WinTidy shows them; someone who knows what they are doing should reset them.'))
+    'SEC-EXECPOLICY'      = @((T 'Reset the protection setting for scripts'), (T 'Sets a Windows security setting to the value recommended by Microsoft. In everyday use you will not notice anything. Can be undone.'))
+    'SEC-CHECKS'          = @((T 'Security'), (T 'Updates and basic protection features of Windows and the PC.'))
+    'HW-HINTS'            = @((T 'Hardware hints'), (T 'Settings that an expert can check. Please do not change anything in the BIOS if you are unsure.'))
+    'HW-COOLING'          = @((T 'Cooling and temperatures'), (T 'Whether the processor, graphics card and drives get too warm, are throttled or whether a fan has stopped. Fan curves themselves live in the BIOS – WinTidy measures their effect.'))
+    'HW-COOLPOLICY'       = @((T 'Spin up the fans first when it gets warm'), (T 'On mains power the fans should spin faster first before Windows throttles the processor. The setting here is "throttle first". Can be undone.'))
+    'HW-DISPLAY'          = @((T 'Monitor'), (T 'Whether your monitor runs at the highest refresh rate it supports.'))
+    'EVT-HEALTH'          = @((T 'Warning messages from Windows'), (T 'Windows noted problems in the last 30 days, e.g. crashes or sudden power-offs. Single entries are no reason to worry. If they occur often, have the PC checked.'))
 }
-# Mittel-Regeln, die die App vorauswaehlt. Endgueltiges (Loeschen, Deinstallieren, Geraete entfernen, Updates) bewusst nicht.
+# Medium rules that the app preselects. Final actions (deleting, uninstalling, removing devices, updates) deliberately not.
 $Script:GuiPreselectMedium = @('SVC-ORPHAN', 'SEC-EXECPOLICY')
-# Verstaendliche Bereichsnamen fuer den Fortschritt der Pruefung (keine Aktionsverben wie "loeschen")
-$Script:AreaNames = @{ 'Speicher' = 'Speicherplatz'; 'Autostart' = 'Programme beim Start'; 'Aufgaben' = 'geplante Aufgaben'; 'Dienste' = 'Hintergrunddienste'; 'Programme' = 'installierte Programme'; 'System' = 'Windows-System'; 'Sicherheit' = 'Sicherheit'; 'Hardware' = 'Hardware und Kühlung'; 'Stabilitaet' = 'Warnmeldungen von Windows' }
+# Readable area names for the progress of the check (no action verbs like "delete")
+$Script:AreaNames = @{ 'Speicher' = (T 'storage space'); 'Autostart' = (T 'programs at startup'); 'Aufgaben' = (T 'scheduled tasks'); 'Dienste' = (T 'background services'); 'Programme' = (T 'installed software'); 'System' = (T 'Windows system'); 'Sicherheit' = (T 'security settings'); 'Hardware' = (T 'hardware and cooling'); 'Stabilitaet' = (T 'Windows warning messages') }
 $Script:LastFindings = @()
 
 $Script:LastContext = $null
 
-# Darf diese Regel im aktuellen Kontext angeboten werden? (Firmen-PC: nur sichere Aufraeumpunkte und Hinweise)
+# May this rule be offered in the current context? (company PC: only safe cleanup items and hints)
 function Test-RuleAllowed($r, $ctx) {
     if (-not $ctx -or -not $ctx.Verwaltet) { return $true }
     return ($r.Risiko -eq 'Info' -or ($r.Kategorie -eq 'Speicher' -and $r.Risiko -eq 'Niedrig') -or $r.Id -eq 'SYS-TRIM')
@@ -2598,19 +2664,19 @@ function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $nul
     $Script:LastContext = $ctx
     $rules = @($Script:Rules | Where-Object { ($_.Standard -or $Expert) -and (Test-RuleAllowed $_ $ctx) })
     $res = New-Object System.Collections.Generic.List[object]
-    # Hardware zuerst messen, solange der PC noch ruht
-    if ($OnProgress) { try { & $OnProgress 0 $rules.Count 'Prüfe gerade: Hardware und Kühlung …' } catch { } }
+    # Measure hardware first while the PC is still idle
+    if ($OnProgress) { try { & $OnProgress 0 $rules.Count (T 'Checking: hardware and cooling …') } catch { } }
     try { $null = Get-HardwarePoints } catch { }
     $i = 0
     foreach ($r in $rules) {
         $i++
         $fr = $Script:Friendly[$r.Id]; $titel = if ($fr) { $fr[0] } else { $r.Titel }; $text = if ($fr) { $fr[1] } else { $r.Warum }
         $bereich = if ($Script:AreaNames.ContainsKey([string]$r.Kategorie)) { $Script:AreaNames[[string]$r.Kategorie] } else { [string]$r.Kategorie }
-        if ($OnProgress) { try { & $OnProgress $i $rules.Count ("Prüfe gerade: {0} …" -f $bereich) } catch { } }
+        if ($OnProgress) { try { & $OnProgress $i $rules.Count ((T 'Checking: {0} …') -f $bereich) } catch { } }
         if ($r.Admin -and -not $Script:IsAdmin) { continue }
         $items = @()
-        try { $items = @(& $r.Detect | Where-Object { $_ }) } catch { W "Pruefung $($r.Id) fehlgeschlagen: $($_.Exception.Message)" 'Red'; continue }
-        W ("{0}: {1} Befund(e)" -f $r.Id, $items.Count) 'Gray'
+        try { $items = @(& $r.Detect | Where-Object { $_ }) } catch { W (T 'Check {0} failed: {1}' ($r.Id) ($_.Exception.Message)) 'Red'; continue }
+        W ((T '{0}: {1} finding(s)') -f $r.Id, $items.Count) 'Gray'
         if (-not $items.Count) { continue }
         $k = 0
         $its = foreach ($it in $items) {
@@ -2619,7 +2685,7 @@ function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $nul
             elseif ($r.Risiko -eq 'Mittel') {
                 $pre = ($Script:GuiPreselectMedium -contains $r.Id) -or [bool]$it.AutoOk
             }
-            # Lange Schritte nicht vorauswaehlen, solange der PC auf Akku laeuft
+            # Do not preselect long steps while the PC runs on battery
             if ($r.Dauer -and $ctx -and $ctx.Akku) { $pre = $false }
             $stufe = ''
             if ($it.Data -and ($it.Data -is [System.Collections.IDictionary] -or $it.Data -is [pscustomobject]) -and $it.Data.Stufe) { $stufe = [string]$it.Data.Stufe }
@@ -2643,7 +2709,7 @@ function Invoke-GuiScan([bool]$Expert = $false, [bool]$DeepScan = $false, [scrip
     Start-RunLog 'scan'
     try {
         $f = Get-AllFindings $Expert $OnProgress
-        if ($OnProgress) { try { & $OnProgress 1 1 'Fast fertig: Ich messe noch den Zustand deines PCs …' 'CORE' } catch { } }
+        if ($OnProgress) { try { & $OnProgress 1 1 (T 'Almost done: measuring the state of your PC …') 'CORE' } catch { } }
         $snap = New-Snapshot 'scan' (ConvertTo-Befunde $f)
         $rep = New-Report
     } finally { Stop-RunLog }
@@ -2652,21 +2718,21 @@ function Invoke-GuiScan([bool]$Expert = $false, [bool]$DeepScan = $false, [scrip
 
 function New-RestorePointSilent {
     $err = Invoke-Checkpoint
-    if (-not $err) { W 'Wiederherstellungspunkt angelegt.' 'Green'; return $true }
-    W "Wiederherstellungspunkt fehlgeschlagen: $err" 'Red'; return $false
+    if (-not $err) { W (T 'Restore point created.') 'Green'; return $true }
+    W (T 'Restore point failed: {0}' $err) 'Red'; return $false
 }
 
-# Selection: Liste von @{ Id = 'REGEL'; Indexes = @(0,2,...) }
-# Status: OK | ABGEBROCHEN | RP-FEHLT (nichts geaendert, App fragt nach und ruft mit OhneRP erneut auf) | GESPERRT
+# Selection: list of @{ Id = 'RULE'; Indexes = @(0,2,...) }
+# Status: OK | ABGEBROCHEN | RP-FEHLT (nothing changed, the app asks and calls again with OhneRP) | GESPERRT
 function Invoke-FixSelection([object[]]$Selection, [bool]$RestorePoint = $true, [scriptblock]$OnProgress = $null, $Control = $null, [bool]$OhneRP = $false) {
     function Prog($i, $n, $t, $id) { if ($OnProgress) { try { & $OnProgress $i $n $t $id } catch { } } }
-    # Frisch messen: seit der Pruefung kann z. B. das Netzteil gezogen worden sein
+    # Measure fresh: the power adapter may have been unplugged since the check
     $Script:Cache = @{}
     $ctx = $null; try { $ctx = Get-WtContext } catch { }
-    if (-not $ctx -or $ctx.Server) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = 'Auf Windows Server nimmt WinTidy keine Änderungen vor.' } }
-    if (-not $Script:IsAdmin) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = 'Für Änderungen braucht WinTidy Administratorrechte.' } }
+    if (-not $ctx -or $ctx.Server) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = (T 'WinTidy makes no changes on Windows Server.') } }
+    if (-not $Script:IsAdmin) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = (T 'WinTidy needs administrator rights for changes.') } }
 
-    # Auftraege zusammenstellen (noch keine Aenderung)
+    # Collect the jobs (no change yet)
     $jobs = @()
     foreach ($s in $Selection) {
         $f = $Script:LastFindings | Where-Object { $_.Id -eq $s.Id } | Select-Object -First 1
@@ -2677,37 +2743,37 @@ function Invoke-FixSelection([object[]]$Selection, [bool]$RestorePoint = $true, 
 
     $Script:RunId = (Get-Date -Format 'yyyyMMdd-HHmmss')
     $Script:Preview = $false
-    if (-not $OhneRP) { $Script:ComputerschutzEingeschaltet = $false }   # bei OhneRP den Hinweis aus dem ersten Versuch behalten
+    if (-not $OhneRP) { $Script:ComputerschutzEingeschaltet = $false }   # with OhneRP keep the hint from the first attempt
     Start-RunLog 'apply'
     $rp = $null
     if ($RestorePoint -and -not $OhneRP) {
-        Prog 0 1 'Lege einen Wiederherstellungspunkt an ...' 'CORE'
+        Prog 0 1 (T 'Creating a restore point ...') 'CORE'
         $err = Invoke-Checkpoint
         if ($err) {
-            W "Wiederherstellungspunkt fehlgeschlagen: $err" 'Red'
-            # Nichts wurde geaendert: Laufordner wieder entfernen, damit kein leerer Lauf im Verlauf steht
+            W (T 'Restore point failed: {0}' $err) 'Red'
+            # Nothing was changed: remove the run folder again so that no empty run appears in the history
             Stop-RunLog
             try { Remove-Item -LiteralPath $Script:RunDir -Recurse -Force -ErrorAction Stop } catch { }
             $Script:RunDir = $null
             return [pscustomobject]@{ Status = 'RP-FEHLT'; Meldung = [string]$err; ComputerschutzEingeschaltet = [bool]$Script:ComputerschutzEingeschaltet }
         }
         $rp = $true
-        W 'Wiederherstellungspunkt angelegt.' 'Green'
-        Add-ActionRecord 'CORE' 'Wiederherstellungspunkt' 'OK' | Out-Null
+        W (T 'Restore point created.') 'Green'
+        Add-ActionRecord 'CORE' (T 'Restore point') 'OK' | Out-Null
     } elseif ($RestorePoint -and $OhneRP) {
         $rp = $false
-        Add-ActionRecord 'CORE' 'Wiederherstellungspunkt' 'Uebersprungen' 0 'Vom Benutzer ohne Wiederherstellungspunkt bestaetigt' | Out-Null
+        Add-ActionRecord 'CORE' (T 'Restore point') 'Uebersprungen' 0 (T 'Confirmed by the user without a restore point') | Out-Null
     }
 
-    # Schon waehrend des Wiederherstellungspunkts abgebrochen: nichts geaendert, keine Messungen mehr
+    # Cancelled while creating the restore point: nothing changed, no more measurements
     if ($Control -and $Control.Cancel) {
-        $det0 = @($jobs | ForEach-Object { [pscustomobject]@{ Titel = $_.Titel; Objekt = [string]$_.Item.Label; Status = 'Abgebrochen'; Meldung = 'Nicht ausgeführt (abgebrochen)' } })
+        $det0 = @($jobs | ForEach-Object { [pscustomobject]@{ Titel = $_.Titel; Objekt = [string]$_.Item.Label; Status = 'Abgebrochen'; Meldung = (T 'Not carried out (cancelled)') } })
         [ordered]@{ Lauf = $Script:RunId; Aktionen = $jobs.Count; OK = 0; Fehler = 0; Abgebrochen = $true; BytesGeschaetzt = 0; Wiederherstellungspunkt = $rp; Umkehrbar = 0 } | ConvertTo-Json | Out-File (Join-Path $Script:RunDir 'zusammenfassung.json') -Encoding utf8
         Stop-RunLog
         return [pscustomobject]@{ Status = 'ABGEBROCHEN'; RunId = $Script:RunId; Aktionen = $jobs.Count; OK = 0; Fehler = 0; Bytes = 0; Vorher = $null; Nachher = $null; Vergleich = @(); Report = $null; Wiederherstellungspunkt = $rp; ComputerschutzEingeschaltet = [bool]$Script:ComputerschutzEingeschaltet; Details = $det0; Umkehrbar = 0 }
     }
-    W 'Messe Zustand vorher ...' 'Cyan'
-    Prog 0 1 'Messe den Zustand vorher ...' 'CORE'
+    W (T 'Measuring state before ...') 'Cyan'
+    Prog 0 1 (T 'Measuring the state before ...') 'CORE'
     $info = ConvertTo-Befunde $Script:LastFindings -NurInfo
     $pre = New-Snapshot 'vorher' $info
 
@@ -2718,13 +2784,13 @@ function Invoke-FixSelection([object[]]$Selection, [bool]$RestorePoint = $true, 
         $lbl = [string]$j.Item.Label
         if ($abbruch -or ($Control -and $Control.Cancel)) {
             $abbruch = $true
-            $details.Add([pscustomobject]@{ Titel = $j.Titel; Objekt = $lbl; Status = 'Abgebrochen'; Meldung = 'Nicht ausgeführt (abgebrochen)' })
+            $details.Add([pscustomobject]@{ Titel = $j.Titel; Objekt = $lbl; Status = 'Abgebrochen'; Meldung = (T 'Not carried out (cancelled)') })
             Add-ActionRecord $j.Rule.Id $lbl 'Uebersprungen' 0 'Abgebrochen' | Out-Null
             continue
         }
         if ($j.Rule.Dauer -and $ctx -and $ctx.Akku) {
-            $details.Add([pscustomobject]@{ Titel = $j.Titel; Objekt = $lbl; Status = 'Uebersprungen'; Meldung = 'Läuft auf Akku – dieser lange Schritt wird nur mit Netzteil ausgeführt' })
-            Add-ActionRecord $j.Rule.Id $lbl 'Uebersprungen' 0 'Akkubetrieb' | Out-Null
+            $details.Add([pscustomobject]@{ Titel = $j.Titel; Objekt = $lbl; Status = 'Uebersprungen'; Meldung = (T 'Running on battery – this long step only runs with the power adapter connected') })
+            Add-ActionRecord $j.Rule.Id $lbl 'Uebersprungen' 0 (T 'On battery') | Out-Null
             continue
         }
         Prog $n $jobs.Count ("{0}: {1}" -f $j.Titel, $lbl) $j.Rule.Id
@@ -2737,20 +2803,20 @@ function Invoke-FixSelection([object[]]$Selection, [bool]$RestorePoint = $true, 
         } catch {
             $em = $_.Exception.Message
             if ($em -like 'SKIP:*') {
-                # Erwartbar, kein Fehler (z. B. Treiber wird noch benutzt, Deinstallation abgebrochen)
+                # Expected, not an error (e.g. driver still in use, uninstall cancelled)
                 W ("--  [{0}] {1}: {2}" -f $j.Rule.Id, $lbl, $em.Substring(5)) 'DarkYellow'
                 Add-ActionRecord $j.Rule.Id $lbl 'Uebersprungen' 0 $em.Substring(5) | Out-Null
                 $details.Add([pscustomobject]@{ Titel = $j.Titel; Objekt = $lbl; Status = 'Uebersprungen'; Meldung = $em.Substring(5) })
                 continue
             }
             $fail++
-            W ("FEHLER  [{0}] {1}: {2}" -f $j.Rule.Id, $lbl, $em) 'Red'
+            W ((T 'ERROR  [{0}] {1}: {2}') -f $j.Rule.Id, $lbl, $em) 'Red'
             Add-ActionRecord $j.Rule.Id $lbl 'Fehler' 0 $em | Out-Null
             $details.Add([pscustomobject]@{ Titel = $j.Titel; Objekt = $lbl; Status = 'Fehler'; Meldung = $em })
         }
     }
     $Script:Cache = @{}
-    Prog $jobs.Count $jobs.Count 'Messe den Zustand nachher ...' 'CORE'
+    Prog $jobs.Count $jobs.Count (T 'Measuring the state after ...') 'CORE'
     $post = New-Snapshot 'nachher' $info
     $cmp = @(Get-CompareMetrics $pre $post)
     $umk = @(Get-RestorePreview $Script:RunId).Count
@@ -2778,7 +2844,7 @@ function Get-HistoryData {
     [pscustomobject]@{ Snapshots = $snaps; Boots = @($boots | Sort-Object { [datetime]$_.Zeit }); Laeufe = (Get-RunList); Report = (Join-Path $Script:DataDir 'WinTidy-Bericht.html'); DataDir = $Script:DataDir }
 }
 
-# Wie Get-HistoryData, aber ohne die kompletten Snapshots (kleiner Datentransfer zur App)
+# Like Get-HistoryData, but without the full snapshots (small data transfer to the app)
 function Get-HistoryLight {
     $scores = @(); $boots = @(); $seen = @{}
     foreach ($f in (Get-Snapshots)) {
@@ -2797,7 +2863,7 @@ function Invoke-GuiRestore([string]$Lauf) {
     return $r
 }
 
-# Kuehlungstest fuer die App (eigener Laufordner fuer das Protokoll)
+# Cooling test for the app (own run folder for the log)
 function Invoke-GuiCoolingTest([int]$Seconds = 0, [scriptblock]$OnProgress = $null, $Control = $null) {
     if ($Seconds -le 0) { $Seconds = [int]$Script:Cfg.CoolingTestSeconds }
     $Script:RunId = (Get-Date -Format 'yyyyMMdd-HHmmss')
@@ -2807,7 +2873,7 @@ function Invoke-GuiCoolingTest([int]$Seconds = 0, [scriptblock]$OnProgress = $nu
 }
 
 # =============================================================================
-#  Modi
+#  Modes
 # =============================================================================
 function Open-Report([string]$Path) { if (-not $Path) { return }; try { Start-Process -FilePath "$env:windir\explorer.exe" -ArgumentList ('"{0}"' -f $Path) } catch { try { Start-Process $Path } catch { } } }
 
@@ -2818,7 +2884,7 @@ function Show-Header {
     W '  \ \/\/ / | || '' \   | |  | |/ _`| || || |' 'Cyan'
     W '   \_/\_/  |_||_||_|  |_|  |_|\__,_|\_, |' 'Cyan'
     W ("                                    |__/   v{0}" -f $Script:Version) 'Cyan'
-    W ("  {0}  |  Admin: {1}  |  Daten: {2}" -f $env:COMPUTERNAME, $Script:IsAdmin, $Script:DataDir) 'DarkGray'
+    W ((T '  {0}  |  Admin: {1}  |  Data: {2}') -f $env:COMPUTERNAME, $Script:IsAdmin, $Script:DataDir) 'DarkGray'
 }
 
 function Invoke-Mode([string]$m) {
@@ -2826,21 +2892,21 @@ function Invoke-Mode([string]$m) {
     if ($m -in 'Scan', 'Preview', 'Apply') {
         $Script:CliContext = $null; try { $Script:CliContext = Get-WtContext } catch { }
         $Script:LastContext = $Script:CliContext
-        if ($Script:CliContext -and $Script:CliContext.Verwaltet) { W '  Firmen-PC erkannt (Domaene/Intune/Entra/ConfigMgr): nur sichere Aufraeumregeln und Hinweise.' 'DarkYellow' }
-        if ($Script:DataMigrated) { W "  Daten aus der Vorversion uebernommen nach $Script:DataDir" 'DarkGray' }
+        if ($Script:CliContext -and $Script:CliContext.Verwaltet) { W (T '  Company PC detected (domain/Intune/Entra/ConfigMgr): only safe cleanup rules and hints.') 'DarkYellow' }
+        if ($Script:DataMigrated) { W (T '  Data from the previous version migrated to {0}' $Script:DataDir) 'DarkGray' }
     }
     switch ($m) {
         'Rules' {
-            Section 'Regeln'
-            foreach ($r in $Script:Rules) { W ("{0,-20} {1,-8} {2,-12} {3}{4}" -f $r.Id, $r.Risiko, $r.Kategorie, $r.Titel, $(if (-not $r.Standard) { '  (nur mit -Rule)' } elseif (-not $r.Fix) { '  (nur Bericht)' } else { '' })) $(switch ($r.Risiko) { 'Niedrig' { 'Green' } 'Mittel' { 'Yellow' } 'Hoch' { 'Red' } default { 'Cyan' } }) }
+            Section (T 'Rules')
+            foreach ($r in $Script:Rules) { W ("{0,-20} {1,-8} {2,-12} {3}{4}" -f $r.Id, (Get-RiskText $r.Risiko), (Get-CategoryText $r.Kategorie), $r.Titel, $(if (-not $r.Standard) { (T '  (only with -Rule)') } elseif (-not $r.Fix) { (T '  (report only)') } else { '' })) $(switch ($r.Risiko) { 'Niedrig' { 'Green' } 'Mittel' { 'Yellow' } 'Hoch' { 'Red' } default { 'Cyan' } }) }
         }
         'Scan' {
             Start-RunLog 'scan'
-            Section 'Scan (aendert nichts)'
-            if (-not $Script:IsAdmin) { W '  Ohne Adminrechte fehlen Startzeiten und einige Pruefungen. Fuer vollstaendige Ergebnisse als Administrator starten.' 'DarkYellow' }
+            Section (T 'Scan (changes nothing)')
+            if (-not $Script:IsAdmin) { W (T '  Without admin rights boot times and some checks are missing. Run as administrator for complete results.') 'DarkYellow' }
             $res = Invoke-Rules $false
             $snap = New-Snapshot 'scan' $res.Befunde
-            Section ("Health-Score: {0}/100" -f $snap.Score.Wert)
+            Section ((T 'Health score: {0}/100') -f $snap.Score.Wert)
             foreach ($z in $snap.Score.Abzuege) { W ("  -{0,-3} {1}" -f $z.Punkte, $z.Grund) 'Yellow' }
             $prev = Get-Snapshots | Select-Object -SkipLast 1 | Select-Object -Last 1
             if ($prev) { Show-Compare (Read-Snapshot $prev) $snap }
@@ -2849,36 +2915,36 @@ function Invoke-Mode([string]$m) {
         }
         'Preview' {
             Start-RunLog 'preview'
-            Section 'Vorschau (aendert nichts)'
+            Section (T 'Preview (changes nothing)')
             $res = Invoke-Rules $false
-            Section 'Zusammenfassung Vorschau'
-            W ("  {0} Regeln mit Befunden, {1} Objekte, geschaetzt {2}" -f $res.Befunde.Count, (($res.Befunde | Measure-Object Anzahl -Sum).Sum), (Fmt-Bytes (($res.Befunde | Measure-Object Bytes -Sum).Sum))) 'Cyan'
+            Section (T 'Preview summary')
+            W ((T '  {0} rules with findings, {1} items, estimated {2}') -f $res.Befunde.Count, (($res.Befunde | Measure-Object Anzahl -Sum).Sum), (Fmt-Bytes (($res.Befunde | Measure-Object Bytes -Sum).Sum))) 'Cyan'
             Stop-RunLog
         }
         'Apply' {
-            if (-not $Script:IsAdmin) { W 'Apply braucht Adminrechte. Bitte PowerShell als Administrator starten (oder WinTidy.cmd verwenden).' 'Red'; return }
-            if (-not $Script:CliContext -or $Script:CliContext.Server) { W 'Windows Server (oder Systemabfrage fehlgeschlagen): WinTidy prueft hier nur, Aenderungen sind gesperrt.' 'Red'; return }
+            if (-not $Script:IsAdmin) { W (T 'Apply needs admin rights. Please start PowerShell as administrator (or use WinTidy.cmd).') 'Red'; return }
+            if (-not $Script:CliContext -or $Script:CliContext.Server) { W (T 'Windows Server (or system query failed): WinTidy only checks here, changes are blocked.') 'Red'; return }
             Start-RunLog 'apply'
-            Section 'Anwenden'
-            W '  Ablauf: Messung vorher -> Wiederherstellungspunkt -> Regeln (mit Rueckfragen) -> Messung nachher -> Vergleich -> Bericht' 'DarkGray'
-            if ($Yes) { W ("  Unbeaufsichtigt: nur Risiko Niedrig{0}" -f $(if ($IncludeMedium) { ' und Mittel' } else { '' })) 'DarkYellow' }
+            Section (T 'Apply')
+            W (T '  Sequence: measure before -> restore point -> rules (with confirmations) -> measure after -> comparison -> report') 'DarkGray'
+            if ($Yes) { W ((T '  Unattended: only risk Low{0}') -f $(if ($IncludeMedium) { (T ' and Medium') } else { '' })) 'DarkYellow' }
             $pre = New-Snapshot 'vorher'
             try { New-RestorePoint } catch { W "  $($_.Exception.Message)" 'Red'; Stop-RunLog; return }
             $res = Invoke-Rules $true
             $Script:Cache = @{}
             $post = New-Snapshot 'nachher' $res.Befunde
-            Section 'Ergebnis'
-            W ("  Aktionen: {0}  |  OK: {1}  |  Fehler: {2}  |  uebersprungen: {3}  |  geschaetzt freigegeben: {4}" -f $res.Aktionen, $res.OK, $res.Fehler, $res.Uebersprungen, (Fmt-Bytes $res.Bytes)) 'Cyan'
+            Section (T 'Result')
+            W ((T '  Actions: {0}  |  OK: {1}  |  Errors: {2}  |  skipped: {3}  |  estimated freed: {4}') -f $res.Aktionen, $res.OK, $res.Fehler, $res.Uebersprungen, (Fmt-Bytes $res.Bytes)) 'Cyan'
             Show-Compare $pre $post
             [ordered]@{ Lauf = $Script:RunId; Aktionen = $res.Aktionen; OK = $res.OK; Fehler = $res.Fehler; Uebersprungen = $res.Uebersprungen; BytesGeschaetzt = $res.Bytes; ScoreVorher = $pre.Score.Wert; ScoreNachher = $post.Score.Wert } | ConvertTo-Json | Out-File (Join-Path $Script:RunDir 'zusammenfassung.json') -Encoding utf8
             $rep = New-Report
-            W '  Empfehlung: PC neu starten und nach 2-3 Starts erneut "Scan" ausfuehren - erst dann zeigen die Startzeiten die Wirkung.' 'Cyan'
+            W (T '  Recommendation: restart the PC and run "Scan" again after 2-3 boots - only then do the boot times show the effect.') 'Cyan'
             Stop-RunLog
             if ($OpenReport -and $rep) { Open-Report $rep }
         }
         'Compare' {
             $s = Get-Snapshots
-            if ($s.Count -lt 2) { W 'Mindestens zwei Snapshots noetig.' 'Yellow'; return }
+            if ($s.Count -lt 2) { W (T 'At least two snapshots needed.') 'Yellow'; return }
             $a = if ($From) { $s | Where-Object { $_.Name -like "*$From*" } | Select-Object -First 1 } else { ($s | Where-Object { $_.Name -like '*_vorher.json' } | Select-Object -Last 1) }
             if (-not $a) { $a = $s[0] }
             $b = if ($To) { $s | Where-Object { $_.Name -like "*$To*" } | Select-Object -First 1 } else { $s[-1] }
@@ -2888,45 +2954,45 @@ function Invoke-Mode([string]$m) {
         'Restore' { Start-RunLog 'restore'; $null = Invoke-Restore; Stop-RunLog }
         'Hardware' {
             Start-RunLog 'hardware'
-            Section 'Hardware und Kuehlung (aendert nichts)'
-            W '  Hinweis: Luefterkurven liegen im BIOS bzw. in der Firmware und sind fuer Windows nicht lesbar. WinTidy misst deren Wirkung.' 'DarkGray'
+            Section (T 'Hardware and cooling (changes nothing)')
+            W (T '  Note: fan curves live in the BIOS or firmware and cannot be read by Windows. WinTidy measures their effect.') 'DarkGray'
             Show-HwPoints (Get-HardwarePoints)
             foreach ($rid in 'HW-COOLPOLICY', 'HW-DISPLAY') { $r = $Script:Rules | Where-Object Id -eq $rid; try { foreach ($it in @(& $r.Detect | Where-Object { $_ })) { Show-HwPoints @([pscustomobject]@{ Stufe = $(if ($it.Data -and $it.Data.Stufe) { $it.Data.Stufe } else { 'warn' }); Text = $it.Label }) } } catch { } }
             if ($CoolingTest) {
                 $sec = if ($Seconds -gt 0) { $Seconds } else { [int]$Script:Cfg.CoolingTestSeconds }
-                Section ("Kuehlungstest ({0} Sekunden)" -f $sec)
-                W '  Alle Prozessorkerne werden voll belastet - die Luefter werden lauter. Abbrechen mit Strg+C.' 'DarkYellow'
-                $null = Invoke-CoolingTest $sec { param($i, $n, $t) Write-Progress -Activity 'Kuehlungstest' -Status $t -PercentComplete ([math]::Min(100, 100 * $i / [math]::Max(1, $n))) }
-                Write-Progress -Activity 'Kuehlungstest' -Completed
-            } else { W '  Tipp: -CoolingTest prueft zusaetzlich unter Last, ob die Kuehlung mithaelt.' 'DarkGray' }
+                Section ((T 'Cooling test ({0} seconds)') -f $sec)
+                W (T '  All processor cores are fully loaded - the fans get louder. Cancel with Ctrl+C.') 'DarkYellow'
+                $null = Invoke-CoolingTest $sec { param($i, $n, $t) Write-Progress -Activity (T 'Cooling test') -Status $t -PercentComplete ([math]::Min(100, 100 * $i / [math]::Max(1, $n))) }
+                Write-Progress -Activity (T 'Cooling test') -Completed
+            } else { W (T '  Tip: -CoolingTest additionally checks under load whether the cooling keeps up.') 'DarkGray' }
             Stop-RunLog
         }
     }
 }
 
-# Als Bibliothek geladen (Dot-Sourcing durch die App): hier aufhoeren
+# Loaded as a library (dot-sourcing by the app): stop here
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 Show-Header
 if ($Mode -ne 'Menu') { Invoke-Mode $Mode; return }
 while ($true) {
     W ''
-    W '  [1] Scan        - messen und pruefen, Bericht erzeugen (aendert nichts)' 'White'
-    W '  [2] Vorschau    - zeigen, was "Anwenden" tun wuerde' 'White'
-    W '  [3] Anwenden    - interaktiv, mit Wiederherstellungspunkt' 'White'
-    W '  [4] Vergleich   - letzter "vorher"-Snapshot gegen den neuesten' 'White'
-    W '  [5] Bericht     - HTML-Bericht oeffnen' 'White'
-    W '  [6] Regeln      - alle Regeln anzeigen' 'White'
-    W '  [7] Wiederherstellen' 'White'
-    W '  [8] Tiefen-Scan - inkl. Dateisystem-/Integritaetspruefung (langsam)' 'White'
-    W '  [9] Hardware    - Kuehlung, Luefter, Temperaturen; optional Kuehlungstest' 'White'
-    W '  [0] Beenden' 'White'
-    $c = Read-Host '  Auswahl'
+    W (T '  [1] Scan        - measure and check, create a report (changes nothing)') 'White'
+    W (T '  [2] Preview     - show what "Apply" would do') 'White'
+    W (T '  [3] Apply       - interactive, with restore point') 'White'
+    W (T '  [4] Compare     - last "before" snapshot against the newest') 'White'
+    W (T '  [5] Report      - open the HTML report') 'White'
+    W (T '  [6] Rules       - show all rules') 'White'
+    W (T '  [7] Restore') 'White'
+    W (T '  [8] Deep scan   - incl. file system/integrity check (slow)') 'White'
+    W (T '  [9] Hardware    - cooling, fans, temperatures; optional cooling test') 'White'
+    W (T '  [0] Exit') 'White'
+    $c = Read-Host (T '  Choice')
     switch ($c) {
         '1' { Invoke-Mode 'Scan' } '2' { Invoke-Mode 'Preview' } '3' { Invoke-Mode 'Apply' } '4' { Invoke-Mode 'Compare' }
         '5' { Invoke-Mode 'Report' } '6' { Invoke-Mode 'Rules' } '7' { Invoke-Mode 'Restore' }
         '8' { $Deep = $true; Invoke-Mode 'Scan'; $Deep = $false }
-        '9' { $a = Read-Host '  Zusaetzlich Kuehlungstest (ca. 1 Minute Volllast, Luefter werden laut)? [j/N]'; $CoolingTest = ($a -match '^(j|ja|y)$'); Invoke-Mode 'Hardware'; $CoolingTest = $false }
+        '9' { $a = Read-Host (T '  Additionally run the cooling test (about 1 minute full load, fans get loud)? [y/N]'); $CoolingTest = ($a -match '^(j|ja|y|yes)$'); Invoke-Mode 'Hardware'; $CoolingTest = $false }
         '0' { return }
     }
 }

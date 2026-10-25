@@ -1,3 +1,3 @@
 @echo off
-REM WinTidy App starten (grafische Oberflaeche). Fragt einmal nach Administratorrechten.
+REM Start the WinTidy app (graphical interface). Asks once for administrator rights.
 start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0WinTidy-App.ps1"

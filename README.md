@@ -6,8 +6,9 @@
 - Generic rules only. There are no hard-coded paths, user names or programs, so it works on any PC.
 - Everything is logged and backed up. Settings can be rolled back individually.
 - Includes a friendly desktop app for non-technical users and a scriptable command line for IT pros.
+- **English and German.** It follows the Windows display language; you can switch in the app settings or with `-Language en|de`.
 
-> **Language:** The app, reports and detailed docs are in **German**. This page is a short English overview. Full user guide: [ANLEITUNG.md](ANLEITUNG.md). Developer guide: [ENTWICKLUNG.md](ENTWICKLUNG.md).
+> Full user guide: [USAGE.md](USAGE.md). Developer guide: [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Quick start
 
@@ -17,7 +18,7 @@
    Get-ChildItem -Recurse | Unblock-File
    ```
 3. Double-click **`WinTidy App.cmd`** and confirm the Windows admin prompt.
-4. Click **Jetzt prüfen** (*Check now*). This only measures; nothing is changed.
+4. Click **Check now**. This only measures; nothing is changed.
 
 ## What it does
 
@@ -61,11 +62,12 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 .\WinTidy.ps1 -Mode Restore -RunId 20261021-183100
 .\WinTidy.ps1 -Mode Hardware -CoolingTest     # cooling test under load
 .\WinTidy.ps1 -Mode Rules                     # list all rules with risk level
+.\WinTidy.ps1 -Mode Scan -Language de         # German output and report
 ```
 
 `WinTidy.cmd` asks for admin rights and passes any parameters through.
 
-Each run writes a console transcript, a JSON-lines action log, before/after snapshots and an HTML report with a boot-time history. To adapt WinTidy to a device, put only the keys you want to change into `WinTidy.config.json`. All keys and their defaults are listed in `WinTidy.config.beispiel.json`.
+Each run writes a console transcript, a JSON-lines action log, before/after snapshots and an HTML report with a boot-time history. To adapt WinTidy to a device, put only the keys you want to change into `WinTidy.config.local.json` (personal, git-ignored, never overwritten by an update). All keys and their defaults are listed in `WinTidy.config.example.json`.
 
 ## Requirements
 
@@ -77,7 +79,7 @@ Optional: [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHa
 
 ## Development
 
-The engine and CLI are in `WinTidy.ps1`. The WPF app is in `WinTidy-App.ps1`; it loads the engine into a background runspace. The tests use mocked Windows functions, so they also run on Linux/macOS with PowerShell 7:
+The engine and CLI are in `WinTidy.ps1`. The WPF app is in `WinTidy-App.ps1`; it loads the engine into a background runspace. Texts are written in English in the code and translated via `lang/de.psd1`. The tests use mocked Windows functions, so they also run on Linux/macOS with PowerShell 7:
 
 ```powershell
 pwsh ./tests/Test-Parse.ps1
@@ -86,7 +88,7 @@ pwsh ./tests/Test-Hardware.ps1
 pwsh ./tests/Test-GuiApi.ps1
 ```
 
-GitHub Actions runs them on Windows PowerShell 5.1 and PowerShell 7 for every push and pull request. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the rule contract in [ENTWICKLUNG.md](ENTWICKLUNG.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+GitHub Actions runs them on Windows PowerShell 5.1 and PowerShell 7 for every push and pull request. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the rule contract in [DEVELOPMENT.md](DEVELOPMENT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Disclaimer
 

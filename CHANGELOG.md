@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4.1 – 2026-10-25
+- App: the number badge next to "Recommendations" was cut off in English. The sidebar is a bit wider and the badge is anchored on the right, so it is always fully visible.
+
 ## 1.4.0 – 2026-10-25
 **English and German**
 - WinTidy now speaks English and German: app, command line, HTML report and all messages. By default it follows Windows (German Windows → German, otherwise English).

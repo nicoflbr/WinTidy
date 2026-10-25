@@ -309,7 +309,7 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
   </Window.Resources>
 
   <Grid>
-    <Grid.ColumnDefinitions><ColumnDefinition x:Name="NavCol" Width="232"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <Grid.ColumnDefinitions><ColumnDefinition x:Name="NavCol" Width="252"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
 
     <!-- Navigation -->
     <Border Background="{DynamicResource CardBg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0">
@@ -328,7 +328,7 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
         </StackPanel>
         <StackPanel>
           <RadioButton x:Name="NavHome" AutomationProperties.Name="Overview" Style="{StaticResource Nav}" IsChecked="True" ToolTip="Overview"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT1" Text="Overview"/></StackPanel></RadioButton>
-          <RadioButton x:Name="NavRecs" AutomationProperties.Name="Recommendations" Style="{StaticResource Nav}" ToolTip="Recommendations"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE82F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT2" Text="Recommendations"/><Border x:Name="RecsBadge" Background="{DynamicResource Accent}" CornerRadius="9" Padding="7,0" Margin="8,0,0,0" Visibility="Collapsed"><TextBlock x:Name="RecsBadgeText" Foreground="{DynamicResource OnAccent}" FontSize="12"/></Border></StackPanel></RadioButton>
+          <RadioButton x:Name="NavRecs" AutomationProperties.Name="Recommendations" Style="{StaticResource Nav}" ToolTip="Recommendations"><DockPanel LastChildFill="True"><TextBlock DockPanel.Dock="Left" Text="&#xE82F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><Border x:Name="RecsBadge" DockPanel.Dock="Right" Background="{DynamicResource Accent}" CornerRadius="9" Padding="7,0" Margin="6,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"><TextBlock x:Name="RecsBadgeText" Foreground="{DynamicResource OnAccent}" FontSize="12"/></Border><TextBlock x:Name="NavT2" Text="Recommendations" TextTrimming="CharacterEllipsis"/></DockPanel></RadioButton>
           <RadioButton x:Name="NavHistory" AutomationProperties.Name="History" Style="{StaticResource Nav}" ToolTip="History"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT3" Text="History"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavSettings" AutomationProperties.Name="Settings" Style="{StaticResource Nav}" ToolTip="Settings"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT4" Text="Settings"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavHelp" AutomationProperties.Name="Help" Style="{StaticResource Nav}" ToolTip="Help"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE897;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT5" Text="Help"/></StackPanel></RadioButton>
@@ -923,7 +923,7 @@ function Set-Narrow([bool]$narrow) {
     if ($State.Narrow -eq $narrow) { return }
     $State.Narrow = $narrow
     $vis = $(if ($narrow) { 'Collapsed' } else { 'Visible' })
-    $UI.NavCol.Width = New-Object System.Windows.GridLength ($(if ($narrow) { 84 } else { 232 }))
+    $UI.NavCol.Width = New-Object System.Windows.GridLength ($(if ($narrow) { 84 } else { 252 }))
     $UI.NavDock.Margin = $(if ($narrow) { '10,22,10,16' } else { '16,22,16,16' })
     foreach ($n in 'BrandText', 'NavT1', 'NavT2', 'NavT3', 'NavT4', 'NavT5', 'VersionText') { $UI[$n].Visibility = $vis }
 }

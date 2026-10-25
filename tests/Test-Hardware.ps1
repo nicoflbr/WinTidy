@@ -49,7 +49,7 @@ function Run([hashtable]$m) { $Script:Mock = $m; $Script:Cache = @{}; @(Get-Hard
 
 # 1) Erster Test-PC: keine Mainboard-Sensoren, GPU im Leerlauf mit stehendem Luefter, keine Drosselung
 $p = Run @{ Gpus = @(Gpu 36 0 1); Disks = @(Disk 'Samsung SSD' 'SSD' $null) }
-Check 'Ohne Sensoren: Hinweis auf LibreHardwareMonitor' (($p | Where-Object { $_.Bereich -eq 'Lüfter' -and $_.Text -match 'LibreHardwareMonitor' }).Count -eq 1)
+Check 'Ohne Sensoren: Hinweis auf LibreHardwareMonitor' (@($p | Where-Object { $_.Bereich -eq 'Lüfter' -and $_.Text -match 'LibreHardwareMonitor' }).Count -eq 1) ($p | ConvertTo-Json -Depth 4)
 Check 'GPU 36 Grad, Luefter 0 % = ok (Zero-RPM)' ((Levels $p 'Grafikkarte') -contains 'ok' -and -not ((Levels $p 'Grafikkarte') -match 'warn|krit'))
 Check 'Keine Drosselung = ok' ((Levels $p 'CPU') -contains 'ok')
 Check 'Keine warn/krit insgesamt' (-not ((Levels $p) -match 'warn|krit')) ((Levels $p) -join ',')
@@ -138,7 +138,7 @@ function Set-Perf([double[]]$v) { $Script:PerfSeq.Clear(); foreach ($x in $v) { 
 $Script:Mock = @{ Ev37 = 0; Neu37 = 0 }
 Set-Perf (@(120, 120, 120) + @(1..60 | ForEach-Object { 118 }))
 $r = Invoke-CoolingTest 3
-Check 'Kuehlungstest stabil: ok' ($r.Status -eq 'OK' -and ($r.Punkte | Where-Object Stufe -eq 'ok').Count -ge 1 -and -not ($r.Punkte | Where-Object { $_.Stufe -in 'warn', 'krit' })) ($r.Punkte | ConvertTo-Json)
+Check 'Kuehlungstest stabil: ok' ($r.Status -eq 'OK' -and @($r.Punkte | Where-Object Stufe -eq 'ok').Count -ge 1 -and -not @($r.Punkte | Where-Object { $_.Stufe -in 'warn', 'krit' })) ($r.Punkte | ConvertTo-Json)
 Check 'Kuehlungstest speichert JSON' (@(Get-ChildItem (Join-Path $TestData 'kuehltest') -Filter *.json).Count -ge 1)
 
 # b) Leistung faellt um 25 % ohne Hitze-/Drosselsignal und ohne Sensoren: nur Hinweis (Turbo-Limit), kein Alarm
@@ -154,8 +154,8 @@ Set-Perf (@(140, 140, 140) + @(1..8 | ForEach-Object { 140 }) + @(1..60 | ForEac
 $r = Invoke-CoolingTest 3
 $st = @($r.Punkte | ForEach-Object { $_.Stufe })
 Check 'Hitze + Abfall 40 %: krit' ($st -contains 'krit') ($r.Punkte | ConvertTo-Json)
-Check 'Feste Luefterdrehzahl erkannt (warn Luefterkurve)' (($r.Punkte | Where-Object { $_.Text -match 'Lüfterkurve' }).Count -eq 1) ($r.Punkte | ConvertTo-Json)
-Check 'Firmware-Drosselung waehrend des Tests gemeldet' (($r.Punkte | Where-Object { $_.Text -match '2-mal' }).Count -eq 1)
+Check 'Feste Luefterdrehzahl erkannt (warn Luefterkurve)' (@($r.Punkte | Where-Object { $_.Text -match 'Lüfterkurve' }).Count -eq 1) ($r.Punkte | ConvertTo-Json)
+Check 'Firmware-Drosselung waehrend des Tests gemeldet' (@($r.Punkte | Where-Object { $_.Text -match '2-mal' }).Count -eq 1) ($r.Punkte | ConvertTo-Json)
 
 # c2) Benutzer bricht ab: nicht gespeichert, kein "letzter Test"
 $vorher = @(Get-ChildItem (Join-Path $TestData 'kuehltest') -Filter *.json).Count

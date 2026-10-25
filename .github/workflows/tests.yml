@@ -34,9 +34,16 @@ jobs:
           $failed = 0
           foreach ($t in 'Test-Parse', 'Test-Report', 'Test-Hardware', 'Test-GuiApi', 'Test-Update') {
             Write-Host "::group::$t"
-            & ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File "tests/$t.ps1"
+            $out = @(& ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File "tests/$t.ps1" 2>&1 | ForEach-Object { Write-Host $_; "$_" })
             $code = $LASTEXITCODE
             Write-Host '::endgroup::'
-            if ($code -ne 0) { $failed++; Write-Host "::error title=$t::$t failed (exit code $code)" }
+            if ($code -ne 0) {
+              $failed++
+              Write-Host "::error title=$t::$t failed (exit code $code)"
+              # the failed checks (or, if the script itself broke, its last lines) as annotations: visible without opening the log
+              $bad = @($out | Where-Object { $_ -match '^FAILED|Exception|^At |error' } | Select-Object -First 7)
+              if (-not $bad.Count) { $bad = @($out | Where-Object { $_.Trim() } | Select-Object -Last 7) }
+              foreach ($l in $bad) { Write-Host "::error title=$t::$(($l -replace '[\r\n%]', ' ').Trim())" }
+            }
           }
           exit $failed

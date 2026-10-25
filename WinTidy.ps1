@@ -217,6 +217,10 @@ $Script:DefaultConfig = [ordered]@{
     OrphanDirIgnore         = @('Microsoft', 'Windows', 'Packages', 'Temp', 'Package Cache', 'Common Files', 'NVIDIA', 'NVIDIA Corporation', 'Intel', 'AMD', 'Realtek', 'WindowsApps', 'ModifiableWindowsApps', 'Reference Assemblies', 'MSBuild', 'Internet Explorer', 'Windows Defender', 'Windows Mail', 'Windows Media Player', 'Windows NT', 'Windows Photo Viewer', 'Windows Sidebar', 'Uninstall Information', 'WindowsPowerShell', 'PackageManagement', 'dotnet', 'USOShared', 'USOPrivate', 'regid.1991-06.com.microsoft', 'SoftwareDistribution', 'ssh', 'Comms', 'ConnectedDevicesPlatform', 'D3DSCache', 'CrashDumps', 'Programs', 'PlaceholderTileLogoFolder', 'VirtualStore', 'Publishers', 'IsolatedStorage', 'speech', 'ElevatedDiagnostics', 'Adobe', 'Google', 'Mozilla', 'Apple', 'Apple Computer', 'Apple Inc', 'Claude', 'Code', 'Electron', 'NuGet', 'npm', 'npm-cache', 'pip')
     OrphanDirMinMB          = 50
     ExtraTempPaths          = @()      # additional temp folders (e.g. 'C:\Temp'), only if they really contain nothing but disposable files
+    BrowserCacheMinMB       = 500      # CLN-BROWSER: browser caches are only offered from this size per browser
+    BigFileMinMB            = 1024     # CLN-BIGFILES (only shown, never deleted): minimum size of a file in the personal folders
+    DownloadsOldDays        = 90       # CLN-BIGFILES: files in Downloads older than this count as "old"
+    CheckReminderDays       = 30       # app/menu: remind to check again after this many days without a check (0 = never)
     # Hardware/cooling (degrees Celsius). Scan = PC is mostly idle (laptop +5 degrees)
     CpuTempIdleWarnC        = 80
     CpuTempIdleCritC        = 90
@@ -261,7 +265,7 @@ function Merge-Config {
 }
 # Check the configuration for dangerous values (e.g. age limit 0 = delete everything)
 function Test-Config($cfg) {
-    $min = @{ TempAgeDays = 1; RecycleBinAgeDays = 7; CrashDumpAgeDays = 1; WinOldMinAgeDays = 10; OrphanDirMinMB = 10; CoolingTestSeconds = 20; UpdateIntervalHours = 1 }
+    $min = @{ TempAgeDays = 1; RecycleBinAgeDays = 7; CrashDumpAgeDays = 1; WinOldMinAgeDays = 10; OrphanDirMinMB = 10; CoolingTestSeconds = 20; UpdateIntervalHours = 1; BrowserCacheMinMB = 50; BigFileMinMB = 100; DownloadsOldDays = 14; CheckReminderDays = 0 }
     foreach ($k in @($min.Keys)) { $v = 0; if (-not [int]::TryParse([string]$cfg[$k], [ref]$v) -or $v -lt $min[$k]) { Write-Warning (T 'Configuration: {0} invalid ({1}) - default value is used' $k ($cfg[$k])); $cfg[$k] = $Script:DefaultConfig[$k] } }
     $never = 'Microsoft.WindowsStore', 'Microsoft.SecHealthUI', 'Microsoft.DesktopAppInstaller', 'Microsoft.Windows.ShellExperienceHost', 'Microsoft.Windows.StartMenuExperienceHost', 'Microsoft.AAD.BrokerPlugin', 'Microsoft.WindowsAppRuntime', 'Microsoft.VCLibs', 'Microsoft.UI.Xaml', 'Microsoft.NET'
     $cfg.BloatApps = @($cfg.BloatApps | Where-Object { $n = [string]$_; $n -match '^[\w\.\-]+$' -and -not ($never | Where-Object { $n -like "$_*" }) })
@@ -893,6 +897,138 @@ function Get-RecycleBinOld([int]$Days) {
         }
     } catch { }
     return $res
+}
+
+# Joins a relative path written with \ to a base path with the separator of the platform (tests also run on Linux)
+function Join-WtPath([string]$Base, [string]$Rel) { $p = $Base; foreach ($s in @($Rel -split '[\\/]' | Where-Object { $_ })) { $p = [IO.Path]::Combine($p, $s) }; return $p }
+
+# Browser caches (rule CLN-BROWSER). Root = folder below %LOCALAPPDATA%. Art: Chromium = profiles are the subfolders of
+# "User Data" that contain a Preferences file, Single = the root is the only profile, Firefox = every folder in Profiles.
+# Only cache folders are ever touched - cookies, sign-ins, history, passwords, bookmarks and extensions live elsewhere.
+$Script:BrowserCatalog = @(
+    @{ Name = 'Microsoft Edge'; Prozess = 'msedge'; Root = 'Microsoft\Edge\User Data'; Art = 'Chromium' }
+    @{ Name = 'Google Chrome'; Prozess = 'chrome'; Root = 'Google\Chrome\User Data'; Art = 'Chromium' }
+    @{ Name = 'Brave'; Prozess = 'brave'; Root = 'BraveSoftware\Brave-Browser\User Data'; Art = 'Chromium' }
+    @{ Name = 'Vivaldi'; Prozess = 'vivaldi'; Root = 'Vivaldi\User Data'; Art = 'Chromium' }
+    @{ Name = 'Opera'; Prozess = 'opera'; Root = 'Opera Software\Opera Stable'; Art = 'Single' }
+    @{ Name = 'Opera GX'; Prozess = 'opera'; Root = 'Opera Software\Opera GX Stable'; Art = 'Single' }
+    @{ Name = 'Mozilla Firefox'; Prozess = 'firefox'; Root = 'Mozilla\Firefox\Profiles'; Art = 'Firefox' }
+)
+$Script:BrowserCacheProfileDirs = @('Cache', 'Code Cache', 'GPUCache')
+$Script:BrowserCacheRootDirs = @('ShaderCache', 'GrShaderCache', 'GraphiteDawnCache')
+$Script:BrowserCacheFirefoxDirs = @('cache2')
+function Get-BrowserCacheDirs {
+    if ($Script:Cache.ContainsKey('BrowserCaches')) { return $Script:Cache['BrowserCaches'] }
+    $res = @()
+    $base = $env:LOCALAPPDATA
+    if ($base) {
+        foreach ($b in $Script:BrowserCatalog) {
+            $root = Join-WtPath $base $b.Root
+            $ri = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+            if (-not $ri -or -not $ri.PSIsContainer -or (Test-Reparse $ri)) { continue }
+            $profiles = @()
+            if ($b.Art -eq 'Single') { $profiles = @($root) }
+            else {
+                $profiles = @(Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue | Where-Object { -not (Test-Reparse $_) -and ($b.Art -eq 'Firefox' -or (Test-Path -LiteralPath (Join-Path $_.FullName 'Preferences'))) } | ForEach-Object { $_.FullName })
+            }
+            $dirs = @()
+            $sub = if ($b.Art -eq 'Firefox') { $Script:BrowserCacheFirefoxDirs } else { $Script:BrowserCacheProfileDirs }
+            foreach ($p in $profiles) { foreach ($s in $sub) { $dirs += [IO.Path]::Combine($p, $s) } }
+            if ($b.Art -ne 'Firefox') { foreach ($s in $Script:BrowserCacheRootDirs) { $dirs += [IO.Path]::Combine($root, $s) } }
+            $dirs = @($dirs | Select-Object -Unique | Where-Object { $i = Get-Item -LiteralPath $_ -Force -ErrorAction SilentlyContinue; $i -and $i.PSIsContainer -and -not (Test-Reparse $i) })
+            if (-not $dirs.Count) { continue }
+            $bytes = [int64]0; foreach ($d in $dirs) { $bytes += Get-DirSize $d }
+            $res += [pscustomobject]@{ Name = $b.Name; Prozess = $b.Prozess; Root = $root; Dirs = $dirs; Profile = $profiles.Count; Bytes = $bytes }
+        }
+    }
+    $Script:Cache['BrowserCaches'] = $res
+    return $res
+}
+function Test-BrowserRunning([string]$Name) { return [bool](Get-Process -Name $Name -ErrorAction SilentlyContinue) }
+# Empties the cache folders of one browser. Checks everything again: known root below %LOCALAPPDATA%, only known cache
+# folder names, no link on the way, browser closed. Files that are in use stay.
+function Clear-BrowserCache($Data) {
+    $base = $env:LOCALAPPDATA; $root = [string]$Data.Root
+    $known = @($Script:BrowserCatalog | Where-Object { $base -and (Join-WtPath $base $_.Root) -eq $root -and $_.Prozess -eq [string]$Data.Prozess })
+    if (-not $known.Count -or -not (Test-SafeDeleteRoot $root)) { throw (T 'Unexpected path') }
+    if (Test-BrowserRunning ([string]$Data.Prozess)) { throw ('SKIP:' + (T '{0} is still open - close it completely (Edge and Chrome often keep running in the background) and apply again' ([string]$Data.Name))) }
+    $names = @($Script:BrowserCacheProfileDirs) + @($Script:BrowserCacheRootDirs) + @($Script:BrowserCacheFirefoxDirs)
+    $vor = [int64]0; $nach = [int64]0; $gesperrt = 0
+    foreach ($dir in @($Data.Dirs)) {
+        $dir = [string]$dir
+        if ($names -notcontains [IO.Path]::GetFileName($dir) -or -not (Test-PathChainNoReparse $root $dir)) { throw (T 'Unexpected path') }
+        $di = Get-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+        if (-not $di -or -not $di.PSIsContainer -or (Test-Reparse $di)) { continue }
+        $vor += Get-DirSize $dir
+        foreach ($e in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) { if (Test-Reparse $e) { continue }; try { Remove-TreeNoFollow $e.FullName } catch { $gesperrt++ } }
+        $nach += Get-DirSize $dir
+    }
+    $msg = (T '{0} freed' (Fmt-Bytes ([math]::Max(0, $vor - $nach))))
+    if ($gesperrt) { $msg += (T ' ({0} entries in use were kept)' $gesperrt) }
+    return $msg
+}
+
+# Personal folders for the large-file overview (CLN-BIGFILES). Art is an internal name, Pfad the real folder.
+function Get-PersonalFolders {
+    $r = @()
+    $dl = $null
+    try { $v = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).'{374DE290-123F-4565-9164-39C4925E467B}'; if ($v) { $dl = [Environment]::ExpandEnvironmentVariables([string]$v) } } catch { }
+    if (-not $dl -and $env:USERPROFILE) { $dl = Join-Path $env:USERPROFILE 'Downloads' }
+    if ($dl) { $r += [pscustomobject]@{ Art = 'Downloads'; Pfad = $dl } }
+    foreach ($p in @(@('Desktop', 'Desktop'), @('Documents', 'MyDocuments'), @('Videos', 'MyVideos'))) { $x = [Environment]::GetFolderPath($p[1]); if ($x) { $r += [pscustomobject]@{ Art = $p[0]; Pfad = $x } } }
+    $seen = @{}; $out = @()
+    foreach ($x in $r) {
+        $k = ([string]$x.Pfad).TrimEnd('\', '/').ToLower()
+        if (-not $k -or $seen.ContainsKey($k) -or -not (Test-Path -LiteralPath $x.Pfad -PathType Container)) { continue }
+        $seen[$k] = $true; $out += $x
+    }
+    return $out
+}
+# One pass through the personal folders: large files and old files in Downloads. Never follows links and skips files that
+# are only in the cloud (OneDrive "online only" - they take up no space on this PC). Stops after MaxFiles files.
+function Get-PersonalFileStats([int64]$MinBytes, [int]$OldDays, [int]$MaxFiles = 50000) {
+    if ($Script:Cache.ContainsKey('PersonalFiles')) { return $Script:Cache['PersonalFiles'] }
+    $big = New-Object System.Collections.Generic.List[object]
+    $limit = (Get-Date).AddDays(-$OldDays)
+    $cloud = 0x1000 -bor 0x40000 -bor 0x400000   # Offline, RecallOnOpen, RecallOnDataAccess
+    $seenFiles = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $n = 0; $alt = 0; $altBytes = [int64]0; $voll = $false
+    foreach ($f in @(Get-PersonalFolders)) {
+        $ri = New-Object IO.DirectoryInfo $f.Pfad
+        if (-not $ri.Exists -or ($ri.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        $stack = New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'; $stack.Push($ri)
+        while ($stack.Count -and -not $voll) {
+            $d = $stack.Pop()
+            $entries = @(); try { $entries = $d.GetFileSystemInfos() } catch { continue }
+            foreach ($e in $entries) {
+                if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+                if ($e -is [IO.DirectoryInfo]) { $stack.Push($e); continue }
+                if (([int64]$e.Attributes) -band $cloud) { continue }
+                if (-not $seenFiles.Add($e.FullName)) { continue }
+                $n++; if ($n -gt $MaxFiles) { $voll = $true; break }
+                $len = [int64]$e.Length
+                $rel = (Get-PersonalFolderText $f.Art) + $e.FullName.Substring($ri.FullName.TrimEnd([IO.Path]::DirectorySeparatorChar).Length)
+                if ($len -ge $MinBytes) { $big.Add([pscustomobject]@{ Art = $f.Art; Rel = $rel; Pfad = $e.FullName; Bytes = $len; Zeit = $e.LastWriteTime }) }
+                if ($f.Art -eq 'Downloads' -and $e.LastWriteTime -lt $limit -and $e.CreationTime -lt $limit) { $alt++; $altBytes += $len }
+            }
+        }
+    }
+    $r = [pscustomobject]@{ Gross = @($big | Sort-Object Bytes -Descending); AltDownloads = $alt; AltDownloadsBytes = $altBytes; Dateien = [math]::Min($n, $MaxFiles); Abgebrochen = $voll }
+    $Script:Cache['PersonalFiles'] = $r
+    return $r
+}
+function Get-PersonalFolderText([string]$Art) { switch ($Art) { 'Downloads' { return (T 'Downloads') } 'Desktop' { return (T 'Desktop') } 'Documents' { return (T 'Documents') } 'Videos' { return (T 'Videos') } }; return $Art }
+
+# Check reminder: $null if there is no check yet, the reminder is off (CheckReminderDays = 0) or the last check is recent
+function Get-CheckReminder {
+    $days = 0; [void][int]::TryParse([string]$Script:Cfg.CheckReminderDays, [ref]$days)
+    if ($days -le 0) { return $null }
+    $last = Get-Snapshots | Select-Object -Last 1
+    if (-not $last -or $last.Name -notmatch '^(\d{8}-\d{6})_') { return $null }
+    $t = $null; try { $t = [datetime]::ParseExact($Matches[1], 'yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture) } catch { return $null }
+    $alt = [int][math]::Floor(((Get-Date) - $t).TotalDays)
+    if ($alt -lt $days) { return $null }
+    [pscustomobject]@{ Tage = $alt; Zuletzt = $t.ToString('o'); Text = (T 'The last check of this PC was {0} days ago. A new check shows what has changed since - it changes nothing.' $alt) }
 }
 
 # =============================================================================
@@ -1707,6 +1843,43 @@ $Script:Rules = @(
         Fix = { param($it) $n = 0; foreach ($f in (Get-OldFiles $it.Data $Script:Cfg.CrashDumpAgeDays)) { try { if (Test-PathChainNoReparse $it.Data $f.FullName) { $f.Attributes = 'Normal'; $f.Delete(); $n++ } } catch { } }; (T '{0} files' $n) }
     }
 
+    [pscustomobject]@{ Id = 'CLN-BROWSER'; Kategorie = 'Speicher'; Titel = (T 'Large browser caches'); Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $false; Standard = $true; Endgueltig = $true; Vorwahl = $false
+        Warum = (T 'Browsers keep copies of web pages, scripts and graphics shaders and rebuild them automatically. Only the cache folders (Cache, Code Cache, GPUCache, shader caches, Firefox cache2) are emptied - sign-ins, cookies, history, passwords, bookmarks and extensions stay untouched. Only offered from BrowserCacheMinMB per browser and only while the browser is closed. Pages load a little slower the first time afterwards, so nothing is preselected.')
+        Detect = {
+            # Browser data belongs to the signed-in user: not offered if WinTidy runs under a different account
+            if (-not (Test-DebloatUserHive)) { return }
+            foreach ($b in @(Get-BrowserCacheDirs)) {
+                if ($b.Bytes -lt ([int64]$Script:Cfg.BrowserCacheMinMB * 1MB)) { continue }
+                $offen = Test-BrowserRunning $b.Prozess
+                $lbl = (T '{0}: cache {1}' $b.Name (Fmt-Bytes $b.Bytes)) + $(if ($b.Profile -gt 1) { (T ' ({0} profiles)' $b.Profile) } else { '' }) + $(if ($offen) { (T ' - please close the browser before applying') } else { '' })
+                $it = New-Item2 $lbl $b.Bytes @{ Name = $b.Name; Prozess = $b.Prozess; Root = $b.Root; Dirs = @($b.Dirs) } ($b.Root)
+                # Unattended (-Yes) only while the browser is closed (otherwise it would only be skipped)
+                $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue (-not $offen)
+                $it
+            }
+        }
+        Fix = { param($it) Clear-BrowserCache $it.Data }
+    }
+
+    [pscustomobject]@{ Id = 'CLN-BIGFILES'; Kategorie = 'Speicher'; Titel = (T 'Large and old files in your personal folders (only shown)'); Risiko = 'Info'; Wirkung = 'Speicher'; Admin = $false; Standard = $true
+        Warum = (T 'Personal files are never deleted by WinTidy. This overview shows which large files (BigFileMinMB and more) in Downloads, Desktop, Documents and Videos take up the most space and how much the old files in Downloads (older than DownloadsOldDays) take - so you can decide yourself. Files that are only stored in the cloud (OneDrive "online only") are not counted.')
+        Detect = {
+            if (-not (Test-DebloatUserHive)) { return }
+            $st = Get-PersonalFileStats ([int64]$Script:Cfg.BigFileMinMB * 1MB) ([int]$Script:Cfg.DownloadsOldDays)
+            $gross = @($st.Gross)
+            if ($gross.Count) {
+                $sum = [int64](($gross | Measure-Object Bytes -Sum).Sum)
+                $top = @($gross | Select-Object -First 5 | ForEach-Object { '{0} ({1})' -f $_.Rel, (Fmt-Bytes $_.Bytes) })
+                $lbl = (T '{0} large files take up {1} in total, the largest: {2}' $gross.Count (Fmt-Bytes $sum) ($top -join ', '))
+                New-Item2 $lbl 0 @{ Stufe = ''; Anzahl = $gross.Count; Bytes = $sum } (($gross | Select-Object -First 20 | ForEach-Object { $_.Pfad }) -join '; ')
+            }
+            if ($st.AltDownloadsBytes -ge 500MB) {
+                New-Item2 (T 'Downloads: {0} files older than {1} days take up {2}. If you no longer need them, delete them yourself - Windows Storage Sense (Settings > System > Storage) can also do this automatically.' $st.AltDownloads ([int]$Script:Cfg.DownloadsOldDays) (Fmt-Bytes $st.AltDownloadsBytes)) 0 @{ Stufe = ''; Anzahl = $st.AltDownloads; Bytes = [int64]$st.AltDownloadsBytes }
+            }
+        }
+        Fix = $null
+    }
+
     [pscustomobject]@{ Id = 'CLN-HIBERFIL'; Kategorie = 'Speicher'; Titel = (T 'Shrink the hibernation file on desktop PCs'); Risiko = 'Mittel'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Umkehrbar = $true
         Warum = (T 'On desktops hiberfil.sys is often 40 % of the RAM size although hibernation is hardly used. "powercfg /h /type reduced" shrinks it to the size fast startup needs - fast startup stays, only hibernation is no longer available. Can be undone via "Restore". Only preselected if hibernation is not offered in the Start menu.')
         Detect = {
@@ -2394,6 +2567,7 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
     $av = [bool](@(Get-OtherSecurityProducts 'AntiVirusProduct').Count)
     $wsi = $null; try { $wsi = Get-WindowsSupportInfo } catch { }
     $hw = $null; try { $hw = Get-HardwareSnapshot } catch { W (T '  Hardware measurement failed: {0}' ($_.Exception.Message)) 'DarkYellow' }
+    $brw = $null; try { $brw = [int64]((@(Get-BrowserCacheDirs) | Measure-Object Bytes -Sum).Sum) } catch { }
     $warn = @(); try { $warn = @(Get-WarningSignals | ForEach-Object { [ordered]@{ Text = $_.Text; Anzahl = $_.Anzahl } }) } catch { }
     $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
     $snap = [ordered]@{
@@ -2409,7 +2583,7 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
         Treiber = [ordered]@{ Pakete = $drv.Count; Duplikate = @($drv | Group-Object Orig | Where-Object Count -gt 1 | ForEach-Object { $_.Count - 1 } | Measure-Object -Sum).Sum; Geistergeraete = $ghost }
         Ereignisse = [ordered]@{ FehlerSystem7T = $errSys; FehlerAnwendung7T = $errApp; Top = $topErr }
         Leerlauf = $idle
-        Speicher = [ordered]@{ PapierkorbBytes = [int64]$rbSize; TempBytes = (Get-DirSize $env:TEMP); CrashDumpsBytes = (Get-DirSize (Join-Path $env:LOCALAPPDATA 'CrashDumps')) }
+        Speicher = [ordered]@{ PapierkorbBytes = [int64]$rbSize; TempBytes = (Get-DirSize $env:TEMP); CrashDumpsBytes = (Get-DirSize (Join-Path $env:LOCALAPPDATA 'CrashDumps')); BrowserCacheBytes = $brw }
         Sicherheit = [ordered]@{ SecureBoot = $secBoot; DefenderEchtzeit = $def; AndererVirenschutz = $av; AusfuehrungsrichtlinieCU = "$(Get-ExecutionPolicy -Scope CurrentUser)"; WindowsSupportEnde = $(if ($wsi -and $wsi.Ende) { $wsi.Ende.ToString('yyyy-MM-dd') } else { $null }); TageSeitUpdate = $(if ($wsi) { $wsi.TageSeitUpdate } else { $null }); WindowsUpdateAus = $(if ($wsi) { $wsi.WuDeaktiviert } else { $null }) }
         Hardware = $hw
         Stabilitaet = [ordered]@{ Warnsignale = $warn }
@@ -2553,11 +2727,17 @@ function Get-CompareMetrics($a, $b) {
     $sysA = $a.Laufwerke | Where-Object { $_.LW -eq $env:SystemDrive.Substring(0, 1) } | Select-Object -First 1
     $sysB = $b.Laufwerke | Where-Object { $_.LW -eq $env:SystemDrive.Substring(0, 1) } | Select-Object -First 1
     $freeA = ($a.Laufwerke | Measure-Object FreiGB -Sum).Sum; $freeB = ($b.Laufwerke | Measure-Object FreiGB -Sum).Sum
+    # Storage measured by the snapshot itself (MB; old snapshots without the field show no delta)
+    $mb = { param($s, $n) if ($s -and $s.Speicher -and $null -ne $s.Speicher.$n) { [math]::Round([double]$s.Speicher.$n / 1MB, 0) } else { $null } }
     @(
         (M (T 'Health score') $a.Score.Wert $b.Score.Wert 'Punkte' 'higher'),
         (M (T 'Start Ø last 5 boots') $(if ($a.Boot.Mittel5) { [math]::Round($a.Boot.Mittel5 / 1000, 1) }) $(if ($b.Boot.Mittel5) { [math]::Round($b.Boot.Mittel5 / 1000, 1) }) 's' 'lower'),
         (M (T 'Free on {0}' $env:SystemDrive) $sysA.FreiGB $sysB.FreiGB 'GB' 'higher'),
         (M (T 'Free total (fixed drives)') ([math]::Round($freeA, 1)) ([math]::Round($freeB, 1)) 'GB' 'higher'),
+        (M (T 'Temporary files (own temp folder)') (& $mb $a 'TempBytes') (& $mb $b 'TempBytes') 'MB' 'lower'),
+        (M (T 'Recycle bin') (& $mb $a 'PapierkorbBytes') (& $mb $b 'PapierkorbBytes') 'MB' 'lower'),
+        (M (T 'Crash reports of programs') (& $mb $a 'CrashDumpsBytes') (& $mb $b 'CrashDumpsBytes') 'MB' 'lower'),
+        (M (T 'Browser caches') (& $mb $a 'BrowserCacheBytes') (& $mb $b 'BrowserCacheBytes') 'MB' 'lower'),
         (M (T 'Active startup programs') $a.Autostart.Aktiv $b.Autostart.Aktiv '' 'lower'),
         (M (T 'Orphaned startup entries') $a.Autostart.Verwaist $b.Autostart.Verwaist '' 'lower'),
         (M (T 'Running services') $a.Dienste.Laufend $b.Dienste.Laufend '' 'lower'),
@@ -2906,6 +3086,8 @@ $Script:Friendly = @{
     'CLN-WINOLD'          = @((T 'Delete the previous Windows version'), (T 'After a major Windows update the old version stays behind as a backup – often 10 to 30 GB. Afterwards you can no longer go back to the old Windows version. The files for "Reset this PC" are kept.'))
     'CLN-WINSXS'          = @((T 'Shrink the update storage'), (T 'Windows keeps replaced parts of old updates. Windows itself recommends a cleanup here.'))
     'CLN-DUMPS'           = @((T 'Delete crash reports of programs'), (T 'After crashes, programs leave large diagnostic files behind that only developers need.'))
+    'CLN-BROWSER'         = @((T 'Empty large browser caches'), (T 'Browsers store copies of web pages and rebuild them by themselves. Only these copies are deleted - you stay signed in, and history, passwords and bookmarks are kept. Websites load a little slower the first time afterwards. Please close the browser first.'))
+    'CLN-BIGFILES'        = @((T 'Large files in your folders'), (T 'WinTidy never deletes your own files. Here you see what takes up the most space in Downloads, Desktop, Documents and Videos - decide yourself what can go.'))
     'CLN-HIBERFIL'        = @((T 'Shrink the hibernation file'), (T 'On desktop PCs hibernation is hardly used, but the file often takes up many gigabytes. It is shrunk to the size fast startup needs – fast startup stays, hibernation and hybrid sleep are no longer available. Can be undone.'))
     'CLN-RECYCLE'         = @((T 'Permanently delete old files in the recycle bin'), (T 'Only files that have been in the recycle bin for a while. Recently deleted items stay recoverable.'))
     'CLN-RECYCLE-ORPHAN'  = @((T 'Empty recycle bins of old user accounts'), (T 'After a reinstall, invisible recycle bins of earlier accounts remain on the drives.'))
@@ -3685,6 +3867,8 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 
 Show-Header
 if ($Mode -ne 'Menu') { Invoke-Mode $Mode; return }
+$rem = $null; try { $rem = Get-CheckReminder } catch { }
+if ($rem) { W ''; W ('  ' + $rem.Text + (T ' Choose [1] Scan.')) 'Yellow' }
 while ($true) {
     W ''
     W (T '  [1] Scan        - measure and check, create a report (changes nothing)') 'White'

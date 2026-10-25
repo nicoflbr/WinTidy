@@ -42,7 +42,7 @@ jobs:
               Write-Host "::error title=$t::$t failed (exit code $code)"
               # the failed checks (or, if the script itself broke, its last lines) as annotations: visible without opening the log
               $first = 0
-              for ($k = 0; $k -lt $out.Count; $k++) { if ($out[$k] -match '^FAILED|Exception|^At |error') { $first = $k; break } }
+              for ($k = 0; $k -lt $out.Count; $k++) { if ($out[$k] -match '^FAILED|Exception|^At ') { $first = $k; break } }
               $part = @($out | Select-Object -Skip $first -First 14 | ForEach-Object { ($_ -replace '[\r\n]', ' ' -replace '%', '%25').Trim() })
               Write-Host "::error title=$t::$($part -join '%0A')"
             }

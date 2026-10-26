@@ -129,6 +129,15 @@ Check 'Run ID exact = found' ((Resolve-RunDir '20990101-000000').Name -eq '20990
 $h = Get-RunList | Where-Object Lauf -eq '20990101-000000'
 Check 'History knows reversible changes' ($h.Umkehrbar -ge 3)
 
+# 8) Restore with admin rights only applies undo records from a protected data folder (also with -DataPath)
+function Test-WtDataRootSafe([string]$Path) { $Script:SafeMock }
+$Script:SafeMock = $false; $Script:IsAdmin = $true; $Script:DataDirProtected = $false
+$Script:DataDirIsDefault = $false; $Script:RestoreRunId = '20990101-000000'
+Check 'Restore: unprotected -DataPath is blocked' ((Invoke-Restore).Status -eq 'GESPERRT')
+$Script:DataDirIsDefault = $true
+Check 'Restore: unprotected default data folder is blocked' ((Invoke-Restore).Status -eq 'GESPERRT')
+Check 'Restore: blocked runs leave no undo marker' (-not (Test-Path (Join-Path $d 'rueckgaengig.json')))
+
 Remove-Item $TestData -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail) { Write-Host "$fail test(s) failed" -ForegroundColor Red } else { Write-Host 'All API tests passed' -ForegroundColor Green }
 exit $fail

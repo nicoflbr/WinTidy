@@ -2,7 +2,7 @@
 
 This document is the basis for further development. It describes the goal and principles, the architecture, the rule contract, the data formats, the tests, the lessons learned from the first deployment and open ideas.
 
-As of version 1.5.0, 2026-10-25.
+As of version 1.7.0, 2026-10-26.
 
 ---
 

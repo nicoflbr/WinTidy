@@ -67,7 +67,7 @@ if ($Rule) { $Rule = @($Rule | ForEach-Object { $_ -split ',' } | ForEach-Object
 if ($ExcludeRule) { $ExcludeRule = @($ExcludeRule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.6.0'
+$Script:Version = '1.7.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)

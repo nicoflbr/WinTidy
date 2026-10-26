@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.7.0 – 2026-10-26
+**Storage**
+- New rule `CLN-BROWSER` (risk Low, not preselected): empties large browser caches of Edge, Chrome, Brave, Vivaldi, Opera/Opera GX and Firefox (all profiles), from `BrowserCacheMinMB` (500 MB) per browser. Only the cache folders are emptied (`Cache`, `Code Cache`, `GPUCache`, shader caches, Firefox `cache2`) - you stay signed in; cookies, history, passwords, bookmarks and extensions are never touched. Skipped while the browser is still open; before deleting, WinTidy checks the browser folder, the folder names and links again.
+- New rule `CLN-BIGFILES` (info only): shows the largest files (from `BigFileMinMB`, 1 GB) in Downloads, Desktop, Documents and Videos and how much space old files in Downloads (older than `DownloadsOldDays`, 90 days) take. WinTidy never deletes them. Links and OneDrive "online only" files are skipped.
+- Before/after (app, console, report): additionally temp files, recycle bin, crash reports and browser caches in MB - measured by the snapshot (new field `Speicher.BrowserCacheBytes`).
+
+**App and command line**
+- Reminder to check again: if the last check is older than `CheckReminderDays` (30) days, the app shows a banner with **Check now** and the menu shows a hint. `0` switches it off. No scheduled task is created.
+- New configuration keys `BrowserCacheMinMB`, `BigFileMinMB`, `DownloadsOldDays`, `CheckReminderDays`.
+
+**Security and fixes (review)**
+- Restore with administrator rights now also refuses a `-DataPath` folder that programs without admin rights could change (before, only the default data folder was checked).
+- The launchers (`WinTidy.cmd`, `WinTidy App.cmd`) and the app start PowerShell, Explorer, Notepad and shutdown by their full Windows path, so a program with the same name in the WinTidy folder can no longer be started instead (also in the step that requests admin rights). `Test-Parse.ps1` checks this.
+- Updates never contain `WinTidy.config.local.json`; a package with that file is refused (before, it would have overwritten the personal settings).
+- Fix: the one-time move of data from older versions (`WinTidy-Daten`) checked the wrong path, so the note "data migrated" and the hint in the old folder never appeared.
+- Release workflow: the tag name is passed as data instead of being pasted into the script, and must look like `vX.Y.Z`.
+
+**Tests**
+- New `tests/Test-Storage.ps1` (browser caches incl. links and refused paths, large-file overview, comparison, reminder), also run by CI and the release workflow. New checks for the Restore guard, full program paths and the update file list.
+
 ## 1.6.0 – 2026-10-25
 **New page: Debloat**
 - New page **Debloat** in the app (own check, own "Apply selected" button). It removes what Windows and PC makers put in your way: ads and suggestions, tracking, unneeded buttons and preinstalled apps. The selection was compiled with the help of [Win11Debloat](https://github.com/raphire/win11debloat) (MIT, see `THIRD-PARTY-NOTICES.md`) - but WinTidy only takes over what fits its principles: per-user settings from Windows Settings and Explorer options, removable Store apps. No policies for the whole PC, no services, no security features, no telemetry policies, no scripts from the internet.

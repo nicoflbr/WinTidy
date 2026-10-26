@@ -212,6 +212,10 @@
   ],
   "OrphanDirMinMB": 50,
   "ExtraTempPaths": [],
+  "BrowserCacheMinMB": 500,
+  "BigFileMinMB": 1024,
+  "DownloadsOldDays": 90,
+  "CheckReminderDays": 30,
   "CpuTempIdleWarnC": 80,
   "CpuTempIdleCritC": 90,
   "CpuTjMax": {

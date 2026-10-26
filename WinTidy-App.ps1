@@ -1044,6 +1044,7 @@ function Update-Banners {
     # An imminent data loss belongs at the very top, not in the card for experts
     $krit = @(@($State.Findings) + @($State.InfoFindings) | Where-Object { $_ -and "$($_.Id)" -eq 'HW-COOLING' } | ForEach-Object { @($_.Items) } | Where-Object { (Get-ItemLevel $_) -eq 'krit' -and (Get-ItemArea $_) -in 'Laufwerke', 'Speicher' -and (Get-ItemRating $_) -ne 'moment' })
     if ($krit.Count) { Add-Banner ((T 'Important: your PC reports a problem with a drive or the RAM. Back up your photos and documents to a USB stick or the cloud soon and have the PC checked. (') + [string]$krit[0].Label + ')') 'bad' }
+    if ($State.Reminder) { Add-Banner ([string]$State.Reminder) 'info' (T 'Check now') { if (-not (Test-Busy)) { Start-Scan } } }
     if ($State.UpdatedTo) { Add-Banner ((T 'WinTidy was updated to version {0}. The new version is used after the next start.') -f $State.UpdatedTo) 'info' (T 'Restart now') { if (-not (Test-Busy)) { Restart-App } } }
     $UI.BannerPanel.Visibility = $(if ($UI.BannerPanel.Children.Count) { 'Visible' } else { 'Collapsed' })
 }
@@ -1441,8 +1442,9 @@ $r
             Show-ErrorPage (T 'The check could not be completed') (T 'Nothing was changed on your PC. Please try again. If it happens again, copy the error report and send it to the person who gave you WinTidy.') $err { Start-Scan }
             return
         }
-        $State.Findings = @($r.Findings); $State.Snapshot = $r.Snapshot; $State.ScanTime = Get-Date; $State.InfoFindings = @()
-        if ($r.Context) { $State.Context = $r.Context; Update-Banners }
+        $State.Findings = @($r.Findings); $State.Snapshot = $r.Snapshot; $State.ScanTime = Get-Date; $State.InfoFindings = @(); $State.Reminder = ''
+        if ($r.Context) { $State.Context = $r.Context }
+        Update-Banners
         Update-Home; Build-Recs; Go 'NavHome'
     } (T 'Checking your PC …') $hint)
 }
@@ -1897,7 +1899,8 @@ $Script:UiSink = { param($t, $c) $Sync.Log.Enqueue([string]$t) }
 $last = Get-Snapshots | Select-Object -Last 1
 $ctx = $null; if (Get-Command Get-WtContext -ErrorAction SilentlyContinue) { try { $ctx = Get-WtContext } catch { } }
 $upd = $null; if (Get-Command Get-WtUpdateBlocker -ErrorAction SilentlyContinue) { try { $upd = [pscustomobject]@{ Blocker = [string](Get-WtUpdateBlocker); Stunden = [int]$Script:Cfg.UpdateIntervalHours } } catch { } }
-[pscustomobject]@{ Version = $Script:Version; Last = $(if ($last) { Read-Snapshot $last } else { $null }); DataDir = $Script:DataDir; Context = $ctx; Friendly = $Script:Friendly; Migriert = [bool]$Script:DataMigrated; Update = $upd; Ok = [bool](Get-Command Invoke-GuiScan -ErrorAction SilentlyContinue) }
+$rem = $null; if (Get-Command Get-CheckReminder -ErrorAction SilentlyContinue) { try { $rem = Get-CheckReminder } catch { } }
+[pscustomobject]@{ Version = $Script:Version; Last = $(if ($last) { Read-Snapshot $last } else { $null }); DataDir = $Script:DataDir; Context = $ctx; Friendly = $Script:Friendly; Migriert = [bool]$Script:DataMigrated; Update = $upd; Erinnerung = $(if ($rem) { [string]$rem.Text } else { '' }); Ok = [bool](Get-Command Invoke-GuiScan -ErrorAction SilentlyContinue) }
 '@ {
         param($init, $err, $c)
         if (-not $init -or -not $init.Ok -or -not $init.Version) {
@@ -1913,6 +1916,7 @@ $upd = $null; if (Get-Command Get-WtUpdateBlocker -ErrorAction SilentlyContinue)
         if ($State.DataDir -and (Test-Path -LiteralPath $State.DataDir)) { $Script:ErrLog = Join-Path $State.DataDir 'WinTidy-App-Fehler.log' }
         $UI.VersionText.Text = (T 'Version {0}' ($init.Version))
         $UI.AboutText.Text = (T "WinTidy {0} · Data: {1}`nNo installation, no internet connection (except for program updates). Every change is logged.`nError log: {2}" ($init.Version) ($init.DataDir) $ErrLog)
+        $State.Reminder = [string]$init.Erinnerung
         $State.Context = $init.Context; Update-Banners
         if ($init.Last) {
             $State.Snapshot = $init.Last

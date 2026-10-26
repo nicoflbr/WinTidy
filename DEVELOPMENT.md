@@ -47,6 +47,7 @@ WinTidy\
     Test-GuiApi.ps1      # interface engine <-> app with test rules
     Test-Update.ps1      # updater offline: checksums, package checks, install, rollback (built ZIPs, mocked network)
     Test-Debloat.ps1     # Debloat page: catalog, allow-list, detection per build, fix, app removal, contexts (registry and apps replaced)
+    Test-Storage.ps1     # browser caches, large-file overview, storage figures in before/after, check reminder (real temp folders)
     Probe-Hardware.ps1   # diagnosis on real PCs: which sensor sources deliver what (writes probe-hardware.json)
     Probe-Display.ps1    # diagnosis: refresh rates according to driver and EDID
   WinTidy-Daten\         # runtime data up to 1.2 (in .gitignore); since 1.3 see below
@@ -87,7 +88,7 @@ Show-Header
 
 ### Data source helpers
 
-`Get-InstalledApps` (Uninstall keys, without SystemComponent), `Get-StartupItems` (Run keys, startup folders, Store app StartupTasks incl. StartupApproved state and measured delay), `Get-BootEvents` / `Get-BootOffenders` (Diagnostics-Performance 100 and 101–109), `Get-DriverPackages` (pnputil, de/en), `Get-VolumeInfo` (volume + media/bus), `Get-RecycleBinOld` (Shell COM, deletion date), `Resolve-CommandTarget` (real target file from command lines, also behind rundll32/powershell/wscript), `Get-TargetState` (`ok` | `fehlt` | `LaufwerkFehlt` | `unbekannt`).
+`Get-BrowserCacheDirs` (cache folders per browser and profile from `$Script:BrowserCatalog`, sizes), `Get-PersonalFolders` / `Get-PersonalFileStats` (large and old files in Downloads/Desktop/Documents/Videos, no links, no cloud-only files, max. 50,000 files), `Get-CheckReminder` (last snapshot older than `CheckReminderDays`), `Get-InstalledApps` (Uninstall keys, without SystemComponent), `Get-StartupItems` (Run keys, startup folders, Store app StartupTasks incl. StartupApproved state and measured delay), `Get-BootEvents` / `Get-BootOffenders` (Diagnostics-Performance 100 and 101–109), `Get-DriverPackages` (pnputil, de/en), `Get-VolumeInfo` (volume + media/bus), `Get-RecycleBinOld` (Shell COM, deletion date), `Resolve-CommandTarget` (real target file from command lines, also behind rundll32/powershell/wscript), `Get-TargetState` (`ok` | `fehlt` | `LaufwerkFehlt` | `unbekannt`).
 
 ### Graphical interface (WinTidy-App.ps1)
 
@@ -161,6 +162,14 @@ Own page in the app (nav item **Debloat**) with its own check and its own "Apply
 - **Source:** the selection was compiled with the help of Win11Debloat (MIT) - see `THIRD-PARTY-NOTICES.md`. No code copied.
 - **App side:** `Start-DebloatScan` (kind `scan`, so it can be cancelled), `Build-Debloat`, `Update-DebloatSummary`, `Confirm-Apply <page>`, `Start-Fix <ohneRP> <page>`; `$State.DebloatFindings`, `$State.LastFixPage` tells `Show-Result` which page to refresh. Opening the page scans automatically once; after applying, the page must be checked again.
 
+
+### 3d. Browser caches, large files, check reminder (since 1.7)
+
+- **`CLN-BROWSER`** (Speicher, Low, `Endgueltig`, `Vorwahl = $false`): catalog `$Script:BrowserCatalog` (name, process, root below `%LOCALAPPDATA%`, kind Chromium/Single/Firefox). Only the folder names in `$Script:BrowserCacheProfileDirs`, `$Script:BrowserCacheRootDirs` and `$Script:BrowserCacheFirefoxDirs` are ever emptied - never `Network`, `Cookies`, `Login Data`, `History`, `Local Storage`, `IndexedDB` or `Service Worker` (site data and sign-ins). `Clear-BrowserCache` checks everything again before deleting: the root must be a catalog root, every folder must have a known cache name and lie below the root without a link on the way (`Test-PathChainNoReparse`), the browser must not run (`Test-BrowserRunning`, otherwise `SKIP:`). Only the contents are deleted (via `Remove-TreeNoFollow`), the folders stay. `AutoOk` = browser closed, so `-Yes` does not end in a skip. Not offered when WinTidy runs under another account (`Test-DebloatUserHive`).
+- **`CLN-BIGFILES`** (Info, no `Fix`): `Get-PersonalFileStats` walks the personal folders once (own stack, no links, no cloud-only files via the attributes Offline/RecallOnOpen/RecallOnDataAccess, max. 50,000 files) and reports the largest files and the old files in Downloads. Deleting personal files stays out of WinTidy on purpose.
+- **Snapshot:** `Speicher.BrowserCacheBytes` (new field). `Get-CompareMetrics` shows the storage fields in MB (temp, recycle bin, crash reports, browser caches); old snapshots without a field give no delta.
+- **Check reminder:** `Get-CheckReminder` reads only the file names of the snapshots. App: `init` passes `Erinnerung`, `Update-Banners` shows it until the next check (`$State.Reminder`). CLI: hint above the menu. No scheduled task, no background process.
+
 ---
 
 ## 4. Rule contract
@@ -233,7 +242,7 @@ Programme  { Installiert, StoreApps }
 Treiber    { Pakete, Duplikate, Geistergeraete }
 Ereignisse { FehlerSystem7T, FehlerAnwendung7T, Top [ {Quelle, Anzahl} ] }
 Leerlauf   { CpuProzent, RamBelegtProzent, RamBelegtGB, Prozesse, Threads, Handles }
-Speicher   { PapierkorbBytes, TempBytes, CrashDumpsBytes }
+Speicher   { PapierkorbBytes, TempBytes, CrashDumpsBytes, BrowserCacheBytes (1.7) }
 Sicherheit { SecureBoot, DefenderEchtzeit, AndererVirenschutz (1.2), AusfuehrungsrichtlinieCU, WindowsSupportEnde (1.3, yyyy-MM-dd), TageSeitUpdate (1.3), WindowsUpdateAus (1.3) }
 Hardware   (1.2) { Laptop, Sensorquelle, CpuTempC, Luefter [ {Name, Upm} ], Gpu {Name, TempC, LuefterProzent, Gruende},
                    Laufwerke [ {Name, Art, TempC, Verschleiss, Zustand} ], Drosselung30T, Thermalzonen [ {Name, TempC, PassivLimit, Gruende} ],
@@ -298,6 +307,7 @@ pwsh ./tests/Test-Hardware.ps1  # scenarios for cooling/fans/GPU/drives/battery,
 pwsh ./tests/Test-GuiApi.ps1    # app interface: findings, RP-FEHLT, OhneRP, cancel, battery, server/company PC, restore preview
 pwsh ./tests/Test-Update.ps1    # updater: checksums, package checks, zip-slip, install, rollback, journal repair (offline)
 pwsh ./tests/Test-Debloat.ps1   # Debloat page: catalog, detection per Windows build, fix, app removal, never-remove list, contexts
+pwsh ./tests/Test-Storage.ps1   # browser caches (only cache folders, browser open, links, unknown paths), large files, comparison, reminder
 ```
 
 All of them also run on Linux/macOS with PowerShell 7. Functions are loaded via the AST so that Windows-specific startup code is not executed. `Test-Hardware.ps1` replaces the data sources (`Get-HwMonitorSensors`, `Get-NvidiaGpus`, `Get-ThermalZones`, `Get-DiskHealth`, `Get-CpuPerfSample` …) with functions returning synthetic values – so always build new hardware data sources as their own `Get-*` function.
@@ -418,7 +428,9 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 - [ ] Pester tests for `Resolve-CommandTarget`, the `Get-DriverPackages` parser, score and comparison
 - [ ] `-Mode Schedule`: create a monthly scan as a scheduled task (scan only, report as a file)
 - [ ] CSV/JSON export of the findings for multi-PC evaluation
-- [ ] Rule: browser caches (only when the browser is not running; Chrome/Edge/Vivaldi/Brave/Firefox)
+- [x] Rule: browser caches (only when the browser is not running; Chrome/Edge/Vivaldi/Brave/Opera/Firefox) - `CLN-BROWSER` (1.7)
+- [x] Large and old files in the personal folders, only shown - `CLN-BIGFILES` (1.7)
+- [x] Reminder to check again after `CheckReminderDays` (app banner, CLI menu) - without a scheduled task (1.7)
 - [ ] Rule: shrink WSL/Docker VHDX (Optimize-VHD or `diskpart compact`), only with a hint
 - [ ] Rule: Steam shader cache/download leftovers, Ubisoft/EA patch leftovers without an installed game
 - [ ] Rule: inconsistent OneDrive folder backup (two "Documents" folders)

@@ -85,7 +85,7 @@ At prompts: `y` yes · `n` no · `a` all of this rule · `s` skip rule. (`j`/`ja
 
 `.\WinTidy.ps1 -Mode Rules` shows the complete list.
 
-- **Storage:** temp files (by age), Windows Disk Cleanup (update leftovers, error reports …), previous Windows version (Windows.old, own rule, preselected only after 10 days), WinSxS cleanup, crash dumps, old recycle bin items, recycle bins of deleted accounts, old driver packages, *(optional)* orphaned program folders, smaller hibernation file on desktop PCs (Fast Startup keeps working)
+- **Storage:** temp files (by age), Windows Disk Cleanup (update leftovers, error reports …), previous Windows version (Windows.old, own rule, preselected only after 10 days), WinSxS cleanup, crash dumps, old recycle bin items, recycle bins of deleted accounts, old driver packages, *(optional)* orphaned program folders, smaller hibernation file on desktop PCs (Fast Startup keeps working), large browser caches (`CLN-BROWSER`, see below), large and old files in your personal folders (`CLN-BIGFILES`, only shown)
 - **Startup:** entries with a missing file, orphaned state values, active autostarts sorted by **measured** boot delay
 - **Tasks/services:** tasks and services with a missing program file, harmful patterns in home-made maintenance scripts (deleting Prefetch, emptying the whole recycle bin, `winget --all` at every sign-in …)
 - **Programs:** versions installed side by side, bloatware Store apps, outdated programs (winget)
@@ -94,6 +94,16 @@ At prompts: `y` yes · `n` no · `a` all of this rule · `s` skip rule. (`j`/`ja
 - **Hardware & cooling:** processor and graphics card temperature, fan speeds (stopped CPU fan, full speed on a cool PC, pump), throttling due to heat or firmware, several fan tools at once, drive health/temperature/wear, SMART warnings, memory diagnostic and WHEA errors, battery wear, cooling policy, refresh rate
 - **Hardware configuration:** only one RAM module, RAM speed (XMP/EXPO), monitor on the motherboard instead of the graphics card, graphics card with too narrow a PCIe link, missing graphics driver, devices with an error code, power plan limits the processor/turbo off, Intel 13th/14th gen with old microcode, LAN only 100 Mbit/s, system drive vs. free NVMe
 - **Security/stability:** Windows without support or without updates, Secure Boot and the new Secure Boot certificates, antivirus (third-party products too), firewall, UAC, BIOS age, PowerShell policy, unfavorable tuning settings (pagefile off, Prefetch/SysMain off, Defender off by policy), warnings in the event log
+
+## Browser caches and large files
+
+- **Browser caches (`CLN-BROWSER`, risk Low, not preselected):** Edge, Chrome, Brave, Vivaldi, Opera/Opera GX and Firefox, all profiles. Offered per browser from `BrowserCacheMinMB` (default 500 MB). Only the cache folders are emptied (`Cache`, `Code Cache`, `GPUCache`, the shader caches and Firefox `cache2`) – you stay signed in, cookies, history, passwords, bookmarks and extensions are not touched. The browser must be closed: if it is still open (Edge and Chrome often keep running in the background), the item is skipped and nothing is deleted. Websites load a little slower the first time afterwards, which is why nothing is preselected. With `-Yes` only browsers that are closed are cleaned.
+- **Large files (`CLN-BIGFILES`, info only):** lists the largest files (from `BigFileMinMB`, default 1 GB) in Downloads, Desktop, Documents and Videos and how much space files in Downloads older than `DownloadsOldDays` (default 90) take. WinTidy **never deletes** them – you decide. Files that OneDrive keeps "online only" are not counted, links are not followed.
+- **Before/after:** the comparison (app result, console, report) now also shows temp files, recycle bin, crash reports and browser caches in MB – measured, not estimated.
+
+## Reminder to check again
+
+If the last check is older than `CheckReminderDays` (default 30) days, the app shows a banner with **Check now** and the command line menu shows a hint. Checking changes nothing. `"CheckReminderDays": 0` switches the reminder off. WinTidy does not create a scheduled task for this.
 
 ## Cooling and fans – what works and what doesn't
 
@@ -109,7 +119,7 @@ Fan curves are stored in the BIOS or in the motherboard firmware (or in vendor t
 - no registry "cleaners", no "tweaks" without proof of effect
 - no fan or BIOS settings (there is no vendor-neutral, safe way to do this)
 - Defender, updates, UAC, firewall etc. are never switched off
-- no drivers are removed with `/force`, no files in Documents/Pictures/Desktop are touched
+- no drivers are removed with `/force`, no files in Documents/Pictures/Desktop/Downloads are deleted (the large-file overview only reads)
 - nothing on a drive that is currently not connected counts as "orphaned"
 
 ## Data, logs, report

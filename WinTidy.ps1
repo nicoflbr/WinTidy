@@ -184,7 +184,7 @@ if ($Script:IsAdmin -and $Script:DataDirIsDefault) {
         try {
             New-Item -ItemType Directory -Force -Path $DataPath | Out-Null
             Get-ChildItem -LiteralPath $Script:LegacyDataDir -Force -ErrorAction Stop | Copy-Item -Destination $DataPath -Recurse -Force -ErrorAction Stop
-            if (-not (Test-Path -LiteralPath (Join-Path $DataPath 'Migration incomplete'))) { throw 'Uebernahme unvollstaendig' }
+            if (-not (Test-Path -LiteralPath (Join-Path $DataPath 'snapshots'))) { throw 'Uebernahme unvollstaendig' }
             Set-Content -LiteralPath (Join-Path $Script:LegacyDataDir 'UMGEZOGEN.txt') -Value ((T 'The WinTidy data has been stored protected under {0} since version 1.3. This folder can be deleted.' $DataPath)) -Encoding UTF8 -ErrorAction SilentlyContinue
             $Script:DataMigrated = $true
         } catch { }
@@ -3002,7 +3002,8 @@ function Get-RestorePreview([string]$Lauf) {
 }
 
 function Invoke-Restore {
-    if ($Script:IsAdmin -and $Script:DataDirIsDefault -and -not $Script:DataDirProtected) {
+    # With admin rights, undo records are only applied from a folder that only admins can write (also with -DataPath)
+    if ($Script:IsAdmin -and -not $Script:DataDirProtected -and ($Script:DataDirIsDefault -or -not (Test-WtDataRootSafe $Script:DataDir))) {
         W (T 'The data folder is not sufficiently protected - restore is blocked for safety reasons. Please use System Restore (rstrui.exe).') 'Red'
         return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = (T 'The WinTidy data folder is not sufficiently protected. For safety reasons WinTidy therefore resets nothing. Please use Windows System Restore.'); Lauf = $null; Wiederhergestellt = 0; Fehler = 0; Details = @() }
     }
@@ -3502,6 +3503,7 @@ function Get-LatestRelease {
 # Which files may be part of an update package: a few text file types in the program folder or one subfolder (e.g. lang/)
 function Test-WtUpdatePath([string]$Rel) {
     if (-not $Rel -or $Rel -match '\.\.') { return $false }
+    if ($Rel -eq 'WinTidy.config.local.json') { return $false }   # personal settings of this PC: never part of an update
     if ($Rel -eq 'LICENSE') { return $true }
     if (-not ($Rel -match '^([A-Za-z0-9][A-Za-z0-9_\-]*/)?([A-Za-z0-9][A-Za-z0-9 _.\-]*)\.(ps1|psd1|cmd|json|md|txt)$')) { return $false }
     if ($Matches[2] -match '(^(CON|PRN|AUX|NUL|COM\d|LPT\d)(\.|$))|[ .]$') { return $false }   # reserved device names, trailing space or dot

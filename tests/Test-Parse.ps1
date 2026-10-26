@@ -74,4 +74,15 @@ if ($missing.Count) { $fail++; Write-Host "FAILED German translation missing for
 if ($unused.Count) { $fail++; Write-Host "FAILED lang/de.psd1 has $($unused.Count) unused entr(y/ies):" -ForegroundColor Red; $unused | Select-Object -First 20 | ForEach-Object { Write-Host "  '$_'" } }
 if ($ph.Count) { $fail++; Write-Host "FAILED placeholders {0}.. differ between English and German:" -ForegroundColor Red; $ph | Select-Object -First 20 | ForEach-Object { Write-Host "  '$_'" } }
 if (-not ($missing.Count + $unused.Count + $ph.Count)) { Write-Host "OK     German translation complete ($($deCase.Keys.Count) texts)" -ForegroundColor Green }
+
+# Programs are started by full path: cmd.exe and ShellExecute also search the current folder (planted powershell.exe etc.)
+foreach ($c in 'WinTidy.cmd', 'WinTidy App.cmd') {
+    $txt = [IO.File]::ReadAllText((Join-Path $root $c))
+    $alle = [regex]::Matches($txt, '(?i)powershell\.exe').Count
+    $voll = [regex]::Matches($txt, '(?i)(v1\.0\\|\$PSHOME '')powershell\.exe').Count
+    if (-not $alle -or $alle -ne $voll) { $fail++; Write-Host "FAILED $c starts powershell.exe without a full path" -ForegroundColor Red } else { Write-Host "OK     $c starts PowerShell by full path" -ForegroundColor Green }
+}
+$appTxt = [IO.File]::ReadAllText((Join-Path $root 'WinTidy-App.ps1'))
+$bare = @([regex]::Matches($appTxt, '(?i)Start-Process\s+(-FilePath\s+)?(powershell|explorer|notepad|shutdown)\.exe') | ForEach-Object Value)
+if ($bare.Count) { $fail++; Write-Host "FAILED WinTidy-App.ps1 starts programs by bare name: $($bare -join '; ')" -ForegroundColor Red } else { Write-Host 'OK     WinTidy-App.ps1 starts programs by full path' -ForegroundColor Green }
 exit $fail

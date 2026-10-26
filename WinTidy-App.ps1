@@ -78,7 +78,7 @@ if (-not $IsAdmin -and -not $NoElevate) {
         [System.Windows.MessageBox]::Show((T "WinTidy is on a network drive. With administrator rights Windows often cannot find it there.`n`nPlease copy the WinTidy folder to this PC (e.g. into Documents) and start it from there.`n`nWinTidy now starts with limited functions (check only)."), 'WinTidy', 'OK', 'Information') | Out-Null
     } else {
         try {
-            Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate') -ErrorAction Stop
+            Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate') -ErrorAction Stop
             return
         } catch { }   # UAC declined -> continue without admin rights (limited)
     }
@@ -987,7 +987,7 @@ $Win.Add_SizeChanged({ Set-Narrow ($Win.ActualWidth -lt 1000) })
 function Restart-Elevated {
     if ($State.Busy) { return }
     try {
-        Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate', '-Restarted') -ErrorAction Stop
+        Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate', '-Restarted') -ErrorAction Stop
         $State.ForceClose = $true
         $Win.Close()
     } catch { Show-Msg (T 'Windows did not grant administrator rights. WinTidy keeps running with limited functions (check only).') | Out-Null }
@@ -1000,7 +1000,7 @@ function Restart-ForLanguage {
 function Restart-App {
     if ($State.Busy -or $State.Op) { return }
     try {
-        Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate', '-Restarted') -ErrorAction Stop
+        Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$AppPath`"", '-NoElevate', '-Restarted') -ErrorAction Stop
         $State.ForceClose = $true
         $Win.Close()
     } catch { }
@@ -1616,7 +1616,7 @@ function Show-Result($r) {
 }
 $UI.BtnResultHome.Add_Click({ Go 'NavHome' })
 $UI.BtnResultReport.Add_Click({ $p = if ($State.LastResult) { $State.LastResult.Report } else { $null }; if ($p -and (Test-Path -LiteralPath $p)) { Open-AsUser $p } else { Show-Msg (T 'The report was not found.') | Out-Null } })
-$UI.BtnRestartNow.Add_Click({ if ((Show-Msg (T 'The PC will now restart. Please save everything first.') 'OKCancel' 'Information') -eq 'OK') { Start-Process shutdown.exe -ArgumentList '/r /t 5 /c "WinTidy: restart after optimization"' } })
+$UI.BtnRestartNow.Add_Click({ if ((Show-Msg (T 'The PC will now restart. Please save everything first.') 'OKCancel' 'Information') -eq 'OK') { Start-Process -FilePath (Join-Path $env:windir 'System32\shutdown.exe') -ArgumentList '/r /t 5 /c "WinTidy: restart after optimization"' } })
 
 # =============================================================================
 #  Undo
@@ -1748,14 +1748,14 @@ function Draw-Boot($h) {
 }
 $UI.BootCanvas.Add_SizeChanged({ if ($State.History) { Draw-Boot $State.History } })
 $UI.BtnHistReport.Add_Click({ $p = $null; if ($State.History) { $p = [string]$State.History.Report }; if ($p -and (Test-Path -LiteralPath $p)) { Open-AsUser $p } else { Show-Msg (T 'No report yet – please run a check first.') | Out-Null } })
-function Open-Folder([string]$d) { if ($d -and (Test-Path -LiteralPath $d)) { Start-Process -FilePath explorer.exe -ArgumentList ('"{0}"' -f $d) } else { Start-Process -FilePath explorer.exe -ArgumentList ('"{0}"' -f $AppRoot) } }
+function Open-Folder([string]$d) { if ($d -and (Test-Path -LiteralPath $d)) { Start-Process -FilePath (Join-Path $env:windir 'explorer.exe') -ArgumentList ('"{0}"' -f $d) } else { Start-Process -FilePath (Join-Path $env:windir 'explorer.exe') -ArgumentList ('"{0}"' -f $AppRoot) } }
 $UI.BtnHistFolder.Add_Click({ $d = $State.DataDir; if ($State.History -and $State.History.DataDir) { $d = [string]$State.History.DataDir }; Open-Folder $d })
 
 # =============================================================================
 #  Settings
 # =============================================================================
 $UI.BtnDataFolder.Add_Click({ $d = $State.DataDir; if (-not $d) { $d = Join-Path $AppRoot "WinTidy-Daten\$env:COMPUTERNAME" }; Open-Folder $d })
-$UI.BtnConfig.Add_Click({ $p = Join-Path $AppRoot 'WinTidy.config.json'; Start-Process -FilePath notepad.exe -ArgumentList ('"{0}"' -f $p) })
+$UI.BtnConfig.Add_Click({ $p = Join-Path $AppRoot 'WinTidy.config.json'; Start-Process -FilePath (Join-Path $env:windir 'System32\notepad.exe') -ArgumentList ('"{0}"' -f $p) })
 $UI.OptExpert.Add_Click({ $UI.BtnConfig.Visibility = $(if ($UI.OptExpert.IsChecked) { 'Visible' } else { 'Collapsed' }); if ($State.Findings.Count) { Build-Recs } })
 $UI.OptRestorePoint.Add_Click({ Update-SelSummary })
 $UI.BtnShortcut.Add_Click({

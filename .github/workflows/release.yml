@@ -11,13 +11,17 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    env:
+      # The tag name is passed as data, never pasted into script text (a tag may contain quotes or semicolons)
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Check version
         shell: pwsh
         run: |
-          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+$') { Write-Host "::error::Unexpected tag name"; exit 1 }
+          $tag = $env:TAG.TrimStart('v')
           $m = Select-String -Path WinTidy.ps1 -Pattern "^\`$Script:Version = '([^']+)'" | Select-Object -First 1
           if (-not $m) { Write-Host '::error::$Script:Version not found in WinTidy.ps1'; exit 1 }
           $ver = $m.Matches[0].Groups[1].Value
@@ -35,7 +39,7 @@ jobs:
       - name: Build ZIP
         shell: pwsh
         run: |
-          $name = "WinTidy-${{ github.ref_name }}"
+          $name = "WinTidy-$env:TAG"
           $dir = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory -Path $dir | Out-Null
           $files = 'WinTidy.ps1', 'WinTidy-App.ps1', 'WinTidy.cmd', 'WinTidy App.cmd', 'WinTidy.config.json', 'WinTidy.config.example.json', 'README.md', 'USAGE.md', 'CHANGELOG.md', 'THIRD-PARTY-NOTICES.md', 'LICENSE'
@@ -51,10 +55,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $ver = '${{ github.ref_name }}'.TrimStart('v')
+          $ver = $env:TAG.TrimStart('v')
           $lines = Get-Content CHANGELOG.md -Encoding UTF8
           $start = [array]::IndexOf($lines, ($lines | Where-Object { $_ -like "## $ver *" } | Select-Object -First 1))
           $notes = New-Object System.Collections.Generic.List[string]
           for ($i = $start + 1; $i -lt $lines.Count -and $lines[$i] -notlike '## *'; $i++) { $notes.Add($lines[$i]) }
           $notes -join "`n" | Out-File notes.md -Encoding utf8
-          gh release create '${{ github.ref_name }}' "WinTidy-${{ github.ref_name }}.zip" "WinTidy-${{ github.ref_name }}.zip.sha256" --title "WinTidy $ver" --notes-file notes.md
+          gh release create $env:TAG "WinTidy-$env:TAG.zip" "WinTidy-$env:TAG.zip.sha256" --title "WinTidy $ver" --notes-file notes.md

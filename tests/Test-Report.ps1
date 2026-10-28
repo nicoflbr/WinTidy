@@ -42,12 +42,14 @@ $fail = 0
 function Check([string]$Name, [bool]$Cond) { if ($Cond) { Write-Host "OK     $Name" -ForegroundColor Green } else { $script:fail++; Write-Host "FAILED $Name" -ForegroundColor Red } }
 $html = Get-Content $r -Raw -Encoding UTF8
 Check 'Report: hardware section present and HTML-escaped' ($html -match 'Hardware &amp; cooling' -and $html -match 'Test warning &lt;fan&gt;' -and $html -notmatch '<SSD>')
+Check 'Report: health score trend with one colored point per snapshot and fixed 0-100 scale' ($html -match 'Health score over time' -and ([regex]::Matches($html, "class='sdot (good|mid|bad)'")).Count -eq 2 -and ([regex]::Matches($html, "class='lim (good|mid)'")).Count -eq 2 -and $html -match ">100</text>")
 Check 'Report: English by default' ($html -match "<html lang='en'>" -and $html -match 'Findings \(last scan\)')
 # German report
 Set-WtLanguage 'de' (Join-Path $PSScriptRoot '..')
 $r = New-Report
 $html = Get-Content $r -Raw -Encoding UTF8
 Check 'Report: German with -Language de' ($html -match "<html lang='de'>" -and $html -match 'Befunde \(letzter Scan\)' -and $html -match 'Hardware &amp; K')
+Check 'Report: health score trend in German' ($html -match 'Verlauf des Health-Scores')
 Check 'Report: risk shown in German' ($html -match '>Niedrig</span>')
 Set-WtLanguage 'en'
 Remove-Item $TestData -Recurse -Force -ErrorAction SilentlyContinue

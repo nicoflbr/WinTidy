@@ -74,7 +74,7 @@ if ($Rule) { $Rule = @($Rule | ForEach-Object { $_ -split ',' } | ForEach-Object
 if ($ExcludeRule) { $ExcludeRule = @($ExcludeRule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.10.0'
+$Script:Version = '1.11.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)
@@ -3446,6 +3446,34 @@ function New-PerfSpark($Def, $Points, $Boots, $Runs) {
     return $sb.ToString()
 }
 
+# Trend of the health score for the report: fixed scale 0-100, dashed lines at the rating limits 85/65, one point per snapshot
+# (colored by rating), dashed green lines mark optimizations. $Scores = @({ Zeit, Label, Wert }). Returns HTML.
+function New-ScoreSvg($Scores, $Runs) {
+    $pts = @($Scores | Where-Object { $_ -and $null -ne $_.Wert -and "$($_.Wert)" -ne '' } | ForEach-Object { [pscustomobject]@{ T = ([datetime]$_.Zeit).Ticks; V = [double]$_.Wert; Z = [datetime]$_.Zeit; L = [string]$_.Label } } | Sort-Object T)
+    if ($pts.Count -lt 2) { return "<p class='muted'>$(HtmlEnc (T 'Not enough checks yet - the trend appears from the second check on.'))</p>" }
+    $W = 960; $H = 220; $pl = 40; $pr = 15; $pt = 12; $pb = 30
+    $t0 = $pts[0].T; $t1 = $pts[-1].T; if ($t1 -eq $t0) { $t1 = $t0 + 1 }
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $sx = { param($t) $pl + ($W - $pl - $pr) * (($t - $t0) / ($t1 - $t0)) }
+    $sy = { param($v) $pt + ($H - $pt - $pb) * (1 - $v / 100) }
+    $f = { param($v) [string]::Format($inv, '{0:0.0}', $v) }
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.Append("<svg viewBox='0 0 $W $H' class='chart' role='img' aria-label='$(HtmlEnc (T 'Health score'))'>")
+    foreach ($v in 0, 25, 50, 75, 100) { $yy = & $f (& $sy $v); [void]$sb.Append("<line x1='$pl' x2='$($W-$pr)' y1='$yy' y2='$yy' class='grid'/><text x='$($pl-6)' y='$(& $f ([double]$yy + 4))' class='ax' text-anchor='end'>$v</text>") }
+    foreach ($lim in @(@{ V = 85; C = 'good' }, @{ V = 65; C = 'mid' })) { $yy = & $f (& $sy $lim.V); [void]$sb.Append("<line x1='$pl' x2='$($W-$pr)' y1='$yy' y2='$yy' class='lim $($lim.C)'/>") }
+    foreach ($r in $Runs) { $t = ([datetime]$r.Zeit).Ticks; if ($t -ge $t0 -and $t -le $t1) { $x = & $f (& $sx $t); [void]$sb.Append("<line x1='$x' x2='$x' y1='$pt' y2='$($H-$pb)' class='run'/>") } }
+    [void]$sb.Append("<polyline points='$(($pts | ForEach-Object { '{0},{1}' -f (& $f (& $sx $_.T)), (& $f (& $sy $_.V)) }) -join ' ')' class='total'/>")
+    $df = T 'yyyy-MM-dd HH:mm'
+    foreach ($p in $pts) {
+        $cl = if ($p.V -ge 85) { 'good' } elseif ($p.V -ge 65) { 'mid' } else { 'bad' }
+        [void]$sb.Append("<circle cx='$(& $f (& $sx $p.T))' cy='$(& $f (& $sy $p.V))' r='4' class='sdot $cl'><title>$(HtmlEnc ('{0} ({1}): {2}' -f $p.Z.ToString($df), (Get-SnapshotLabelText $p.L), [int]$p.V))</title></circle>")
+    }
+    $dax = T 'yy-MM-dd'
+    [void]$sb.Append("<text x='$pl' y='$($H-8)' class='ax'>$($pts[0].Z.ToString($dax))</text><text x='$($W-$pr)' y='$($H-8)' class='ax' text-anchor='end'>$($pts[-1].Z.ToString($dax))</text></svg>")
+    [void]$sb.Append("<div class='legend'><span class='lg total'></span>$(HtmlEnc (T 'Health score')) <span class='lg lim'></span>$(HtmlEnc (T 'Rating limits: from 85 good, below 65 needs care')) <span class='lg run'></span>$(HtmlEnc (T 'WinTidy run'))</div>")
+    return $sb.ToString()
+}
+
 function New-BarRows($rows, [string]$labelProp, [string]$valueProp, [scriptblock]$fmt) {
     $max = ($rows | Measure-Object $valueProp -Maximum).Maximum; if (-not $max) { return "<p class='muted'>$(HtmlEnc (T 'No data.'))</p>" }
     $sb = New-Object Text.StringBuilder
@@ -3497,10 +3525,10 @@ td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.bess
 .OK{color:var(--good)}.Fehler{color:var(--bad)}.Uebersprungen{color:var(--muted)}
 .chart{width:100%;height:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .chart .grid{stroke:var(--line);stroke-width:1}.chart .ax{fill:var(--muted);font-size:11px}.chart .total{fill:none;stroke:var(--acc);stroke-width:2}.chart .main{fill:none;stroke:var(--main);stroke-width:1.5;stroke-dasharray:4 3}
-.chart .dot{fill:var(--acc)}.chart .run{stroke:var(--good);stroke-width:1.5;stroke-dasharray:6 4}.chart .runlbl{fill:var(--good);font-size:11px}
+.chart .dot{fill:var(--acc)}.chart .sdot{stroke:var(--panel);stroke-width:1.5}.chart .sdot.good{fill:var(--good)}.chart .sdot.mid{fill:var(--mid)}.chart .sdot.bad{fill:var(--bad)}.chart .lim{stroke-width:1;stroke-dasharray:2 4}.chart .lim.good{stroke:var(--good)}.chart .lim.mid{stroke:var(--mid)}.chart .run{stroke:var(--good);stroke-width:1.5;stroke-dasharray:6 4}.chart .runlbl{fill:var(--good);font-size:11px}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}.pc .pv{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}.pc .pd{font-size:13px;margin:2px 0 8px}.pc .kl[title]{cursor:help}
 .verdict{font-size:16px;font-weight:600;margin:6px 0}.verdict.gemischt{color:var(--mid)}.sparkx{display:flex;justify-content:space-between;font-size:11px}.chart.spark{border:0;background:transparent}
-.legend{margin-top:6px;color:var(--muted);font-size:12px}.lg{display:inline-block;width:18px;height:3px;margin:0 6px 3px 14px;vertical-align:middle}.lg.total{background:var(--acc)}.lg.main{background:var(--main)}.lg.run{background:var(--good)}
+.legend{margin-top:6px;color:var(--muted);font-size:12px}.lg{display:inline-block;width:18px;height:3px;margin:0 6px 3px 14px;vertical-align:middle}.lg.total{background:var(--acc)}.lg.main{background:var(--main)}.lg.run{background:var(--good)}.lg.lim{background:repeating-linear-gradient(90deg,var(--mid) 0 3px,transparent 3px 6px)}
 .bar{display:grid;grid-template-columns:minmax(120px,240px) 1fr 90px;gap:10px;align-items:center;margin:5px 0}.bt{background:var(--line);height:10px;border-radius:5px;overflow:hidden}.bf{display:block;height:100%;background:var(--acc)}.bv{text-align:right;font-variant-numeric:tabular-nums}.bl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding:0}
 @media (max-width:640px){.bar{grid-template-columns:1fr 70px}.bt{grid-column:1/-1;order:3}.score{flex-direction:column;align-items:flex-start}table{display:block;overflow-x:auto}}
@@ -3556,6 +3584,9 @@ details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding
         [void]$sb.Append("<div class='card pc'><div class='kl' title='$(HtmlEnc $d.Hinweis)'>$(HtmlEnc $d.Titel)</div><div class='pv'>$(HtmlEnc (Format-PerfValue $cur $d.Stellen $d.Einheit))</div>$sub$(New-PerfSpark $d $perfPts $boots $runs)</div>")
     }
     [void]$sb.Append('</div>')
+
+    $scorePts = @($all | Where-Object { $_.Score } | ForEach-Object { [pscustomobject]@{ Zeit = $_.Zeit; Label = $_.Label; Wert = $_.Score.Wert } })
+    [void]$sb.Append("<h2>$(HT 'Health score over time')</h2><p class='muted'>$(HT 'One point per check. Green dashed lines mark optimizations. Move the mouse over a point for details.')</p>"); [void]$sb.Append((New-ScoreSvg $scorePts $runs))
 
     [void]$sb.Append("<h2>$(HT 'Boot times')</h2>"); [void]$sb.Append((New-BootSvg $boots $runs))
 

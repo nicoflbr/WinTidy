@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.11.0 – 2026-10-28
+**Health score over time**
+- History page in the app: new card "Health score over time" next to the key figure charts. One point per check on a fixed 0-100 scale, colored by rating (green from 85, yellow from 65, red below), dotted lines at the rating limits, green dashed lines for optimizations, tooltip per point and a short summary (first, latest, lowest and highest value).
+- HTML report: new section "Health score over time" with the same chart (`New-ScoreSvg`).
+
 ## 1.10.0 – 2026-10-28
 **Rule review: every rule challenged against the principles**
 

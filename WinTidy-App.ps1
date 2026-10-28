@@ -577,6 +577,14 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
+              <TextBlock Text="Health score over time" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,4,0,0" Text="One point per check. From 85 the PC is in good shape, below 65 it needs some care. Green dashed lines mark optimizations."/>
+              <Canvas x:Name="ScoreCanvas" Height="200" Margin="0,14,0,0" ClipToBounds="True"/>
+              <TextBlock x:Name="ScoreNote" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
               <TextBlock Text="Windows boot until ready" Style="{StaticResource H2}"/>
               <Canvas x:Name="BootCanvas" Height="240" Margin="0,14,0,0" ClipToBounds="True"/>
               <TextBlock x:Name="BootNote" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"/>
@@ -1863,6 +1871,7 @@ if (Get-Command Get-HistoryLight -ErrorAction SilentlyContinue) { Get-HistoryLig
         if ($err) { Write-ErrLog "History: $err" }
         $State.History = $h
         Draw-Perf $h
+        Draw-Score $h
         Draw-Boot $h
         Show-HistoryList $h
     } -Silent
@@ -1897,6 +1906,52 @@ function Show-HistoryList($h) {
     }
     if (-not $entries.Count) { [void]$UI.HistoryList.Children.Add((New-Tb (T 'No entries yet.') 'Muted' 13)) }
 }
+# Health score per check (Get-HistoryLight delivers Scores, the older Get-HistoryData only the snapshots)
+function Get-ScoreSeries($h) {
+    if (-not $h) { return @() }
+    $src = @(); if ($h.Scores) { $src = @($h.Scores) } else { $src = @($h.Snapshots | Where-Object { $_ -and $_.Score } | ForEach-Object { [pscustomobject]@{ Zeit = $_.Zeit; Label = $_.Label; Wert = $_.Score.Wert } }) }
+    $out = @()
+    foreach ($s in $src) { if ($s -and $null -ne $s.Wert -and "$($s.Wert)" -ne '') { $z = [datetime]$s.Zeit; $out += [pscustomobject]@{ T = $z.Ticks; V = [double]$s.Wert; Z = $z; L = [string]$s.Label } } }
+    return @($out | Sort-Object T)
+}
+function Draw-Score($h) {
+    $c = $UI.ScoreCanvas; $c.Children.Clear()
+    $pts = @(Get-ScoreSeries $h)
+    if ($pts.Count -lt 2) { $UI.ScoreNote.Text = (T 'Not enough checks yet - the trend appears from the second check on.'); return }
+    $W = $c.ActualWidth; if ($W -lt 200) { return }   # Layout not finished yet -> SizeChanged redraws
+    $H = $c.Height; $pl = 34; $pr = 10; $pt = 8; $pb = 10
+    $t0 = [double]$pts[0].T; $t1 = [double]$pts[-1].T; if ($t1 -eq $t0) { $t1 = $t0 + 1 }
+    $X = { param($t) $pl + ($W - $pl - $pr) * (($t - $t0) / ($t1 - $t0)) }
+    $Y = { param($v) $pt + ($H - $pt - $pb) * (1 - $v / 100) }
+    foreach ($v in 0, 25, 50, 75, 100) {
+        $yy = & $Y $v
+        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $pl; $ln.X2 = $W - $pr; $ln.Y1 = $yy; $ln.Y2 = $yy; Set-Brush $ln 'Stroke' 'Line'; [void]$c.Children.Add($ln)
+        $lb = New-Tb "$v" 'Muted' 11; $lb.TextWrapping = 'NoWrap'; [System.Windows.Controls.Canvas]::SetLeft($lb, 0); [System.Windows.Controls.Canvas]::SetTop($lb, $yy - 8); [void]$c.Children.Add($lb)
+    }
+    foreach ($lim in @(@{ V = 85; C = 'Good' }, @{ V = 65; C = 'Warn' })) {
+        $yy = & $Y $lim.V
+        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $pl; $ln.X2 = $W - $pr; $ln.Y1 = $yy; $ln.Y2 = $yy; Set-Brush $ln 'Stroke' $lim.C; $ln.StrokeThickness = 1; $ln.Opacity = 0.6; $ln.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('1 3'); [void]$c.Children.Add($ln)
+    }
+    foreach ($l in @($h.Laeufe | Where-Object { $_ })) {
+        $t = [double]([datetime]$l.Zeit).Ticks; if ($t -lt $t0 -or $t -gt $t1) { continue }
+        $x = & $X $t
+        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $x; $ln.X2 = $x; $ln.Y1 = $pt; $ln.Y2 = $H - $pb; Set-Brush $ln 'Stroke' 'Good'; $ln.StrokeThickness = 1.5; $ln.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('4 3'); [void]$c.Children.Add($ln)
+    }
+    $poly = New-Object System.Windows.Shapes.Polyline; Set-Brush $poly 'Stroke' 'Accent'; $poly.StrokeThickness = 2.5; $poly.StrokeLineJoin = 'Round'
+    foreach ($p in $pts) { [void]$poly.Points.Add((New-Object System.Windows.Point (& $X ([double]$p.T)), (& $Y $p.V))) }
+    [void]$c.Children.Add($poly)
+    foreach ($p in $pts) {
+        $e = New-Object System.Windows.Shapes.Ellipse; $e.Width = 9; $e.Height = 9
+        Set-Brush $e 'Fill' $(if ($p.V -ge 85) { 'Good' } elseif ($p.V -ge 65) { 'Warn' } else { 'Bad' })
+        $kind = switch ($p.L) { 'vorher' { T 'before an optimization' } 'nachher' { T 'after an optimization' } default { T 'regular check' } }
+        $e.ToolTip = ((T '{0:yyyy-MM-dd HH:mm} ({1}): health score {2}') -f $p.Z, $kind, [int]$p.V)
+        [System.Windows.Controls.Canvas]::SetLeft($e, (& $X ([double]$p.T)) - 4.5); [System.Windows.Controls.Canvas]::SetTop($e, (& $Y $p.V) - 4.5); [void]$c.Children.Add($e)
+    }
+    $lo = ($pts | Measure-Object V -Minimum).Minimum; $hi = ($pts | Measure-Object V -Maximum).Maximum
+    $UI.ScoreNote.Text = ((T 'First check {0} points, most recently {1} (lowest {2}, highest {3}; {4} checks since {5:yyyy-MM-dd}).') -f [int]$pts[0].V, [int]$pts[-1].V, [int]$lo, [int]$hi, $pts.Count, $pts[0].Z)
+    Set-A11y $c $UI.ScoreNote.Text
+}
+$UI.ScoreCanvas.Add_SizeChanged({ if ($State.History) { try { Draw-Score $State.History } catch { Write-ErrLog "Score: $($_.Exception.Message)" } } })
 function Draw-Boot($h) {
     $c = $UI.BootCanvas; $c.Children.Clear()
     $pts = @(); if ($h) { $pts = @($h.Boots | Where-Object { $_ -and $_.GesamtMs -gt 0 } | Sort-Object { [datetime]$_.Zeit }) }

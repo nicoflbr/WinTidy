@@ -2,7 +2,7 @@
 
 This document is the basis for further development. It describes the goal and principles, the architecture, the rule contract, the data formats, the tests, the lessons learned from the first deployment and open ideas.
 
-As of version 1.10.0, 2026-10-28.
+As of version 1.11.0, 2026-10-28.
 
 ---
 
@@ -180,7 +180,7 @@ Own page in the app (nav item **Debloat**) with its own check and its own "Apply
 - **Start times:** only from boot events **after** `$base.Zeit`, newest 5, at least 2 - otherwise `offen`. A start right after the optimization still shows the old state; the old `Mittel5` of the "after" snapshot is therefore never used for the verdict.
 - **Idle measurement:** `Get-IdleSample` waits up to 8 s until the CPU is at most 15 %, takes 6 readings and uses the median (`Get-Median`); `Ruhig` = median CPU at most 25 %. If `Ruhig` is false in the base or the current snapshot, CPU and drive differences count as `=` and are flagged `Unsicher`. Raw readings come from `Get-IdleCounters` (replaceable in tests). The idle sample is taken first in `New-Snapshot`, before the heavy queries.
 - **History:** `Read-SnapshotHistory` reads all snapshots once (`Punkte` per snapshot via `Get-PerfPoint`, merged `Boots`, `Effekt`). Used by `Get-HistoryData`/`Get-HistoryLight`, the CLI and the app (`Load-Effect`, `Draw-Perf`). New snapshot fields only get added (`Leerlauf.PlatteProzent`, `PlatteOpsProSek`, `Ruhig`); older snapshots without them give `offen` / count as calm.
-- **Display:** console `Show-PerfEffect`; report sections "Did WinTidy help?" and "Trend of the key figures" (`New-PerfSpark`); app: `EffectCard` (home), `PerfCard` (history), `ResultEffect` (result page). `Get-CompareMetrics` rows have an `Id` - look results up by `Id`, never by the (translated) `Kennzahl`.
+- **Display:** console `Show-PerfEffect`; report sections "Did WinTidy help?", "Trend of the key figures" (`New-PerfSpark`) and "Health score over time" (`New-ScoreSvg`, fixed scale 0-100, points colored by the rating limits 85/65); app: `EffectCard` (home), `PerfCard` and the score card (`Draw-Score` from `Scores` of `Get-HistoryLight`, history), `ResultEffect` (result page). `Get-CompareMetrics` rows have an `Id` - look results up by `Id`, never by the (translated) `Kennzahl`.
 
 ---
 

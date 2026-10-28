@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.11.1 – 2026-10-28
+**Fix: trend charts in the app showed no line and no points**
+- The charts "Did WinTidy help?", "Health score over time" and the start time chart on the history page only drew axes and the green optimization markers. PowerShell variable names are case-insensitive: the loop variable `$x` replaced the scaling scriptblock `$X`, so drawing stopped with an error (only visible in `WinTidy-App-Fehler.log`). Renamed to `$rx`.
+- In the health score and start time charts the canvas height `$H` also replaced the parameter `$h`, so the optimization markers were silently skipped. Renamed to `$CanvH`.
+
 ## 1.11.0 – 2026-10-28
 **Health score over time**
 - History page in the app: new card "Health score over time" next to the key figure charts. One point per check on a fixed 0-100 scale, colored by rating (green from 85, yellow from 65, red below), dotted lines at the rating limits, green dashed lines for optimizations, tooltip per point and a short summary (first, latest, lowest and highest value).

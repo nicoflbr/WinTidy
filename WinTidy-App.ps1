@@ -381,6 +381,15 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
               </StackPanel>
             </Border>
           </Expander>
+          <Border x:Name="EffectCard" Style="{StaticResource Card}" Visibility="Collapsed">
+            <StackPanel>
+              <TextBlock Text="Did WinTidy help?" Style="{StaticResource H2}"/>
+              <TextBlock x:Name="EffectHeadline" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource Ink}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+              <TextBlock x:Name="EffectSub" Style="{StaticResource Sub}" FontSize="12" Margin="0,4,0,0" Visibility="Collapsed"/>
+              <StackPanel x:Name="EffectList" Margin="0,12,0,0"/>
+              <Button x:Name="BtnEffectTrend" Style="{StaticResource LinkBtn}" Content="Show the trend over time" HorizontalAlignment="Left" Margin="0,6,0,0" Visibility="Collapsed"/>
+            </StackPanel>
+          </Border>
           <UniformGrid x:Name="KpiGrid" Columns="4" Margin="-7,0,-7,0"/>
           <Border x:Name="HwCard" Style="{StaticResource Card}" Margin="0,14,0,0" Visibility="Collapsed">
             <StackPanel>
@@ -507,6 +516,7 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
             <TextBlock x:Name="ResultTitle" Text="Done!" Style="{StaticResource H1}" Margin="14,0,0,0" VerticalAlignment="Center"/>
           </DockPanel>
           <TextBlock x:Name="ResultSub" Style="{StaticResource Sub}" Margin="0,8,0,20"/>
+          <TextBlock x:Name="ResultEffect" Style="{StaticResource Body}" Margin="0,-8,0,18" Visibility="Collapsed"/>
           <UniformGrid x:Name="ResultGrid" Columns="3" Margin="-7,0,-7,0"/>
           <Border x:Name="ResultNoteCard" Style="{StaticResource Card}" Background="{DynamicResource MidBg}" Visibility="Collapsed">
             <TextBlock x:Name="ResultNote" TextWrapping="Wrap" Foreground="{DynamicResource MidFg}"/>
@@ -556,6 +566,15 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
         <StackPanel Margin="36,22,36,30" MaxWidth="980">
           <TextBlock Text="History" Style="{StaticResource H1}"/>
           <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,20" Text="This is how your PC has developed. Green lines mark optimizations."/>
+          <Border x:Name="PerfCard" Style="{StaticResource Card}" Visibility="Collapsed">
+            <StackPanel>
+              <TextBlock Text="Did WinTidy help?" Style="{StaticResource H2}"/>
+              <TextBlock x:Name="PerfHeadline" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource Ink}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+              <TextBlock x:Name="PerfNote" Style="{StaticResource Sub}" FontSize="12" Margin="0,4,0,0" Visibility="Collapsed"/>
+              <TextBlock Style="{StaticResource Sub}" FontSize="12" Margin="0,4,0,0" Text="One point per check; start times per start. Green dashed lines mark optimizations. Move the mouse over a point for details."/>
+              <UniformGrid x:Name="PerfGrid" Columns="2" Margin="-5,12,-5,0"/>
+            </StackPanel>
+          </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
               <TextBlock Text="Windows boot until ready" Style="{StaticResource H2}"/>
@@ -939,6 +958,7 @@ function Complete-Op($op) {
     }
     # Reload the history if it was requested during the operation
     if ($State.HistoryPending -and -not $State.Busy -and $UI.PageHistory.Visibility -eq 'Visible') { $State.HistoryPending = $false; try { Load-History } catch { } }
+    if ($State.EffectPending -and -not $State.Busy) { $State.EffectPending = $false; try { Load-Effect } catch { } }
 }
 
 # =============================================================================
@@ -1446,6 +1466,7 @@ $r
         if ($r.Context) { $State.Context = $r.Context }
         Update-Banners
         Update-Home; Build-Recs; Go 'NavHome'
+        Load-Effect
     } (T 'Checking your PC …') $hint)
 }
 $UI.BtnScan.Add_Click({ Start-Scan })
@@ -1524,14 +1545,16 @@ $UI.BtnCancel.Add_Click({
     elseif ($op.Kind -eq 'fix') { $Control.Cancel = $true; $op.Cancelled = $true; $UI.BtnCancel.IsEnabled = $false; $UI.CancelNote.Text = (T 'WinTidy stops after the current step. With long steps this can take a while.') }
 })
 
-function New-ResultTile([string]$label, $before, $after, [string]$unit, [string]$better, [int]$dec = 0) {
+function New-ResultTile([string]$label, $before, $after, [string]$unit, [string]$better, [int]$dec = 0, [string]$verdict = '') {
     $d = $null; if ($null -ne $before -and $null -ne $after) { $d = [math]::Round([double]$after - [double]$before, $dec) }
-    $good = $d -and (($better -eq 'lower' -and $d -lt 0) -or ($better -eq 'higher' -and $d -gt 0))
-    $bad = $d -and -not $good
+    # '=' = the engine rates the change as measurement noise: neither green nor red
+    $noise = ($verdict -eq '=')
+    $good = $d -and -not $noise -and (($better -eq 'lower' -and $d -lt 0) -or ($better -eq 'higher' -and $d -gt 0))
+    $bad = $d -and -not $noise -and -not $good
     $b = New-Object System.Windows.Controls.Border; $b.Style = $Win.FindResource('Card'); $b.Margin = '7,0,7,14'
     $sp = New-Object System.Windows.Controls.StackPanel
     $t2 = New-Tb ((Fmt-Num $after $dec) + ' ' + $unit).Trim() 'Ink' 24 'SemiBold'; $t2.Margin = '0,4,0,2'
-    $t3txt = if ($null -eq $d -or $d -eq 0) { (T 'before {0} {1} · unchanged') -f (Fmt-Num $before $dec), $unit } else { (T 'before {0} {1} · {2}{3} {1}') -f (Fmt-Num $before $dec), $unit, $(if ($d -gt 0) { '+' } else { '' }), (Fmt-Num $d $dec) }
+    $t3txt = if ($null -eq $d -or $d -eq 0) { (T 'before {0} {1} · unchanged') -f (Fmt-Num $before $dec), $unit } elseif ($noise) { (T 'before {0} {1} · about the same') -f (Fmt-Num $before $dec), $unit } else { (T 'before {0} {1} · {2}{3} {1}') -f (Fmt-Num $before $dec), $unit, $(if ($d -gt 0) { '+' } else { '' }), (Fmt-Num $d $dec) }
     $t3 = New-Tb $t3txt $(if ($good) { 'Good' } elseif ($bad) { 'Bad' } else { 'Muted' }) 13
     [void]$sp.Children.Add((New-Tb $label 'Muted' 12)); [void]$sp.Children.Add($t2); [void]$sp.Children.Add($t3); $b.Child = $sp
     Set-A11y $b "$label $($t2.Text), $t3txt"; $b
@@ -1575,15 +1598,24 @@ function Show-Result($r) {
     if ($r.Wiederherstellungspunkt -eq $false) { $notes += (T 'No restore point was created.') }
     if ($r.ComputerschutzEingeschaltet) { $notes += (T 'Note: Windows System Restore was switched off. WinTidy switched it on for drive ') + $env:SystemDrive + (T ' so that a restore point could be created.') }
     $UI.ResultNote.Text = ($notes -join "`n"); $UI.ResultNoteCard.Visibility = $(if ($notes.Count) { 'Visible' } else { 'Collapsed' })
+    # Immediate effect (start times can only be measured after restarts, the overview card shows them later)
+    $w = $r.Wirkung
+    if ($w -and $w.Gemessen -and $ok -gt 0) {
+        $UI.ResultEffect.Text = ((T 'Measured right after the optimization: {0} key figures improved, {1} unchanged, {2} got worse. The start time can only be measured after a few restarts - the overview then shows whether Windows starts faster.') -f $w.Besser, $w.Gleich, $w.Schlechter)
+        $UI.ResultEffect.Visibility = 'Visible'
+    } else { $UI.ResultEffect.Visibility = 'Collapsed' }
     # Tiles
     $UI.ResultGrid.Children.Clear()
-    $m = @{}; foreach ($x in @($r.Vergleich)) { if ($x) { $m[$x.Kennzahl] = $x } }
+    $m = @{}; foreach ($x in @($r.Vergleich)) { if ($x -and $x.Id) { $m[[string]$x.Id] = $x } }
     $pick = @(
-        @('Health-Score', (T 'Health score'), '', 'higher', 0),
-        @('Aktive Autostarts', (T 'Startup programs'), '', 'lower', 0),
+        @('Score', (T 'Health score'), '', 'higher', 0),
+        @('Autostart', (T 'Startup programs'), '', 'lower', 0),
+        @('Prozesse', (T 'Background processes at idle'), '', 'lower', 0),
+        @('Ram', (T 'Memory in use at idle'), 'GB', 'lower', 1),
+        @('Platte', (T 'Drive activity at idle'), '%', 'lower', 1),
         @('Treiberpakete', (T 'Driver packages'), '', 'lower', 0),
         @('Geistergeraete', (T 'Old device entries'), '', 'lower', 0),
-        @('Store-Apps', (T 'Store apps'), '', 'lower', 0)
+        @('StoreApps', (T 'Store apps'), '', 'lower', 0)
     )
     $fa = $null; $fb = $null
     if ($r.Vorher -and $r.Nachher) { $fa = (@($r.Vorher.Laufwerke) | Measure-Object FreiGB -Sum).Sum; $fb = (@($r.Nachher.Laufwerke) | Measure-Object FreiGB -Sum).Sum }
@@ -1594,7 +1626,7 @@ function Show-Result($r) {
         Set-Brush $t.Child.Children[2] 'Foreground' 'Muted'
         [void]$UI.ResultGrid.Children.Add($t)
     }
-    foreach ($p in $pick) { $x = $m[$p[0]]; if ($x) { [void]$UI.ResultGrid.Children.Add((New-ResultTile $p[1] $x.Vorher $x.Nachher $p[2] $p[3] $p[4])) } }
+    foreach ($p in $pick) { $x = $m[$p[0]]; if ($x) { [void]$UI.ResultGrid.Children.Add((New-ResultTile $p[1] $x.Vorher $x.Nachher $p[2] $p[3] $p[4] ([string]$x.Bewertung))) } }
     # What exactly happened
     $UI.ResultDetails.Children.Clear()
     $det = @($r.Details | Where-Object { $_ })
@@ -1615,6 +1647,7 @@ function Show-Result($r) {
         $UI.ScoreDetail.Text = (T 'Optimization complete. Please check again for new recommendations.')
     }
     Clear-NavSelection; Show-Page 'PageResult'
+    Load-Effect
 }
 $UI.BtnResultHome.Add_Click({ Go 'NavHome' })
 $UI.BtnResultReport.Add_Click({ $p = if ($State.LastResult) { $State.LastResult.Report } else { $null }; if ($p -and (Test-Path -LiteralPath $p)) { Open-AsUser $p } else { Show-Msg (T 'The report was not found.') | Out-Null } })
@@ -1669,6 +1702,145 @@ $UI.BtnRstrui.Add_Click({ Open-Rstrui })
 $UI.BtnHistRstrui.Add_Click({ Open-Rstrui })
 
 # =============================================================================
+#  Key figures: "Did WinTidy help?" (card on the overview, trend on the history page)
+#  The engine does the measuring and rating (Read-SnapshotHistory); here it is only displayed.
+# =============================================================================
+function Get-EffectColor($e) {
+    if ($e) { switch ([string]$e.Urteil) { 'besser' { return 'Good' } 'schlechter' { return 'Bad' } 'gemischt' { return 'Warn' } } }
+    return 'Ink'
+}
+function Add-EffectRow($panel, $m) {
+    $row = New-Object System.Windows.Controls.DockPanel; $row.Margin = '0,0,0,6'
+    $code = 0xE738; $col = 'Muted'
+    switch ([string]$m.Bewertung) { 'besser' { $code = 0xE73E; $col = 'Good' } 'schlechter' { $code = 0xE7BA; $col = 'Warn' } 'offen' { $code = 0xE946; $col = 'Muted' } }
+    $ic = New-Icon $code $col 14; $ic.Margin = '0,2,10,0'; [System.Windows.Controls.DockPanel]::SetDock($ic, 'Left')
+    $rating = [string]$m.BewertungText
+    if (($m.Bewertung -in 'besser', 'schlechter') -and $m.DeltaText) { $rating = ('{0} · {1}' -f $m.DeltaText, $m.BewertungText) }
+    if ($m.Unsicher) { $rating += ' ' + (T '(PC was busy while measuring)') }
+    $rt = New-Tb $rating $col 13 'SemiBold'; $rt.Width = 200; $rt.Margin = '10,0,0,0'; [System.Windows.Controls.DockPanel]::SetDock($rt, 'Right')
+    $vt = New-Tb ('{0} → {1}' -f $m.VorherText, $m.NachherText) 'Text' 13; $vt.Width = 150; $vt.TextAlignment = 'Right'; [System.Windows.Controls.DockPanel]::SetDock($vt, 'Right')
+    $lb = New-Tb ([string]$m.Kennzahl) 'Text' 14
+    [void]$row.Children.Add($ic); [void]$row.Children.Add($rt); [void]$row.Children.Add($vt); [void]$row.Children.Add($lb)
+    $row.ToolTip = [string]$m.Hinweis
+    Set-A11y $row ('{0}: {1} → {2}, {3}' -f $m.Kennzahl, $m.VorherText, $m.NachherText, $rating) ([string]$m.Hinweis)
+    [void]$panel.Children.Add($row)
+}
+function Update-EffectCard {
+    $e = $State.Effect
+    $UI.EffectList.Children.Clear()
+    if (-not $State.Snapshot) { $UI.EffectCard.Visibility = 'Collapsed'; return }
+    $UI.EffectCard.Visibility = 'Visible'
+    $UI.EffectHeadline.Text = [string]$State.EffectText
+    Set-Brush $UI.EffectHeadline 'Foreground' (Get-EffectColor $e)
+    $UI.EffectSub.Text = $(if ($e) { [string]$e.BootHinweis } else { '' })
+    $UI.EffectSub.Visibility = $(if ($UI.EffectSub.Text) { 'Visible' } else { 'Collapsed' })
+    if ($e) { foreach ($m in @($e.Metriken)) { if ($m) { Add-EffectRow $UI.EffectList $m } } }
+    $UI.BtnEffectTrend.Visibility = $(if ([int]$State.EffectCount -ge 2) { 'Visible' } else { 'Collapsed' })
+}
+function Load-Effect {
+    $started = Start-Op 'silent' @'
+$h = Read-SnapshotHistory
+[pscustomobject]@{ Effekt = $h.Effekt; Text = $h.Kopfzeile; Anzahl = @($h.Punkte).Count }
+'@ {
+        param($r, $err, $c)
+        if ($err) { Write-ErrLog "Effect: $err" }
+        $State.Effect = $(if ($r) { $r.Effekt } else { $null }); $State.EffectText = $(if ($r) { [string]$r.Text } else { '' }); $State.EffectCount = $(if ($r) { [int]$r.Anzahl } else { 0 })
+        Update-EffectCard
+    } -Silent
+    if (-not $started) { $State.EffectPending = $true }
+}
+$UI.BtnEffectTrend.Add_Click({ Go 'NavHistory' })
+
+# Points of one key figure for the trend chart: start times from the boot events, the others from the snapshots
+function Get-PerfSeries($h, $d) {
+    $out = @()
+    if ($d.Boot) {
+        $prop = 'GesamtMs'; if ([string]$d.Id -eq 'BootNach') { $prop = 'NachDesktopMs' }
+        foreach ($b in @($h.Boots)) { if ($b -and [double]$b.$prop -gt 0) { $z = [datetime]$b.Zeit; $out += [pscustomobject]@{ T = $z.Ticks; V = [double]$b.$prop / 1000; Z = $z } } }
+    } else {
+        foreach ($p in @($h.Perf)) { if ($p -and $p.Werte -and $null -ne $p.Werte.($d.Id)) { $z = [datetime]$p.Zeit; $out += [pscustomobject]@{ T = $z.Ticks; V = [double]$p.Werte.($d.Id); Z = $z } } }
+    }
+    return @($out | Sort-Object T)
+}
+function Draw-PerfCanvas($c) {
+    $c.Children.Clear()
+    $tag = $c.Tag
+    if (-not $tag) { return }
+    $pts = @($tag.Pts)
+    $W = $c.ActualWidth; $H = $c.Height
+    if ($pts.Count -lt 2 -or $W -lt 80) { return }   # layout not finished yet -> SizeChanged draws again
+    $pl = 42; $pr = 6; $pt = 10; $pb = 10
+    $t0 = [double]$pts[0].T; $t1 = [double]$pts[-1].T; if ($t1 -eq $t0) { $t1 = $t0 + 1 }
+    $lo = [double]($pts | Measure-Object -Property V -Minimum).Minimum; $hi = [double]($pts | Measure-Object -Property V -Maximum).Maximum
+    if ($hi -eq $lo) { $lo = [math]::Max(0, $lo - 1); $hi = $hi + 1 }
+    $pad = ($hi - $lo) * 0.1; $hi = $hi + $pad; $lo = [math]::Max(0, $lo - $pad)
+    $X = { param($t) $pl + ($W - $pl - $pr) * (($t - $t0) / ($t1 - $t0)) }
+    $Y = { param($v) $pt + ($H - $pt - $pb) * (1 - ($v - $lo) / ($hi - $lo)) }
+    foreach ($v in @($hi, $lo)) {
+        $yy = & $Y $v
+        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $pl; $ln.X2 = $W - $pr; $ln.Y1 = $yy; $ln.Y2 = $yy; Set-Brush $ln 'Stroke' 'Line'; [void]$c.Children.Add($ln)
+        $lb = New-Tb (Fmt-Num $v $tag.Dec) 'Muted' 11; $lb.TextWrapping = 'NoWrap'; [System.Windows.Controls.Canvas]::SetLeft($lb, 0); [System.Windows.Controls.Canvas]::SetTop($lb, $yy - 8); [void]$c.Children.Add($lb)
+    }
+    foreach ($rt in @($tag.Runs)) {
+        $t = [double]$rt; if ($t -lt $t0 -or $t -gt $t1) { continue }
+        $x = & $X $t
+        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $x; $ln.X2 = $x; $ln.Y1 = $pt; $ln.Y2 = $H - $pb; Set-Brush $ln 'Stroke' 'Good'; $ln.StrokeThickness = 1.5; $ln.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('4 3'); [void]$c.Children.Add($ln)
+    }
+    $poly = New-Object System.Windows.Shapes.Polyline; Set-Brush $poly 'Stroke' 'Accent'; $poly.StrokeThickness = 2; $poly.StrokeLineJoin = 'Round'
+    foreach ($p in $pts) { [void]$poly.Points.Add((New-Object System.Windows.Point (& $X ([double]$p.T)), (& $Y ([double]$p.V)))) }
+    [void]$c.Children.Add($poly)
+    foreach ($p in $pts) {
+        $el = New-Object System.Windows.Shapes.Ellipse; $el.Width = 6; $el.Height = 6; Set-Brush $el 'Fill' 'Accent'
+        $el.ToolTip = ((T '{0:yyyy-MM-dd HH:mm}: {1}') -f $p.Z, ((Fmt-Num $p.V $tag.Dec) + ' ' + $tag.Unit).Trim())
+        [System.Windows.Controls.Canvas]::SetLeft($el, (& $X ([double]$p.T)) - 3); [System.Windows.Controls.Canvas]::SetTop($el, (& $Y ([double]$p.V)) - 3); [void]$c.Children.Add($el)
+    }
+}
+function Draw-Perf($h) {
+    $UI.PerfGrid.Children.Clear()
+    if (-not $h -or -not $h.Defs) { $UI.PerfCard.Visibility = 'Collapsed'; return }
+    $e = $h.Effekt
+    $UI.PerfCard.Visibility = 'Visible'
+    $UI.PerfHeadline.Text = [string]$h.Kopfzeile
+    Set-Brush $UI.PerfHeadline 'Foreground' (Get-EffectColor $e)
+    $UI.PerfNote.Text = $(if ($e) { [string]$e.BootHinweis } else { '' })
+    $UI.PerfNote.Visibility = $(if ($UI.PerfNote.Text) { 'Visible' } else { 'Collapsed' })
+    $runs = @($h.Laeufe | Where-Object { $_ } | ForEach-Object { ([datetime]$_.Zeit).Ticks })
+    foreach ($d in @($h.Defs)) {
+        if (-not $d) { continue }
+        $pts = @(Get-PerfSeries $h $d)
+        $m = $null; if ($e) { $m = @($e.Metriken) | Where-Object { $_.Id -eq $d.Id } | Select-Object -First 1 }
+        $tile = New-Object System.Windows.Controls.Border; $tile.Margin = '5,0,5,10'; $tile.Padding = '12'; $tile.CornerRadius = (New-Object System.Windows.CornerRadius 10); $tile.BorderThickness = (New-Object System.Windows.Thickness 1); Set-Brush $tile 'BorderBrush' 'Line'
+        $sp = New-Object System.Windows.Controls.StackPanel
+        $title = New-Tb ([string]$d.Titel) 'Muted' 12 'SemiBold'; $title.ToolTip = [string]$d.Hinweis
+        $nowText = '–'
+        if ($m -and $null -ne $m.Nachher) { $nowText = [string]$m.NachherText }
+        elseif ($pts.Count) { $nowText = ((Fmt-Num $pts[-1].V $d.Stellen) + ' ' + $d.Einheit).Trim() }
+        $val = New-Tb $nowText 'Ink' 22 'SemiBold'; $val.Margin = '0,2,0,0'
+        [void]$sp.Children.Add($title); [void]$sp.Children.Add($val)
+        $chg = ''; $chgCol = 'Muted'
+        if ($m) {
+            switch ([string]$m.Bewertung) {
+                'besser' { $chg = ('{0} · {1}' -f $m.DeltaText, $m.BewertungText); $chgCol = 'Good' }
+                'schlechter' { $chg = ('{0} · {1}' -f $m.DeltaText, $m.BewertungText); $chgCol = 'Warn' }
+                '=' { $chg = [string]$m.BewertungText }
+                default { $chg = [string]$m.BewertungText }
+            }
+            if ($null -ne $m.Vorher) { $chg += ' ' + ((T '(before: {0})') -f $m.VorherText) }
+        }
+        if ($chg) { $ct = New-Tb $chg $chgCol 12; $ct.Margin = '0,0,0,6'; [void]$sp.Children.Add($ct) }
+        if ($pts.Count -ge 2) {
+            $cv = New-Object System.Windows.Controls.Canvas; $cv.Height = 70; $cv.ClipToBounds = $true; $cv.Margin = '0,6,0,0'
+            $cv.Tag = [pscustomobject]@{ Pts = $pts; Runs = $runs; Dec = [int]$d.Stellen; Unit = [string]$d.Einheit }
+            $cv.Add_SizeChanged({ param($s, $ev) try { Draw-PerfCanvas $s } catch { Write-ErrLog "Perf: $($_.Exception.Message)" } })
+            [void]$sp.Children.Add($cv)
+        } else { [void]$sp.Children.Add((New-Tb (T 'Not enough measurements yet.') 'Muted' 12)) }
+        $tile.Child = $sp
+        Set-A11y $tile ('{0}: {1}. {2}' -f $d.Titel, $nowText, $chg) ([string]$d.Hinweis)
+        [void]$UI.PerfGrid.Children.Add($tile)
+    }
+}
+
+# =============================================================================
 #  History (asynchronous)
 # =============================================================================
 function Load-History {
@@ -1680,6 +1852,7 @@ if (Get-Command Get-HistoryLight -ErrorAction SilentlyContinue) { Get-HistoryLig
         param($h, $err, $c)
         if ($err) { Write-ErrLog "History: $err" }
         $State.History = $h
+        Draw-Perf $h
         Draw-Boot $h
         Show-HistoryList $h
     } -Silent
@@ -1932,6 +2105,7 @@ $rem = $null; if (Get-Command Get-CheckReminder -ErrorAction SilentlyContinue) {
         if ($init.Update -and [int]$init.Update.Stunden -gt 0) { $State.UpdateHours = [int]$init.Update.Stunden }
         Update-UpdateUi
         if ($Script:AutoUpdate -and -not $State.UpdateBlocker -and (Test-UpdateDue)) { Start-UpdateCheck 'auto' }
+        Load-Effect
     } -Silent)
 })
 $Win.Add_Closing({

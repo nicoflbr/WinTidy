@@ -67,7 +67,7 @@ if ($Rule) { $Rule = @($Rule | ForEach-Object { $_ -split ',' } | ForEach-Object
 if ($ExcludeRule) { $ExcludeRule = @($ExcludeRule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.7.0'
+$Script:Version = '1.8.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)
@@ -2532,22 +2532,55 @@ function Get-SelectedRules([switch]$ForApply) {
 # =============================================================================
 #  Snapshot (measurement) and score
 # =============================================================================
+function Get-Median([double[]]$Values) {
+    $s = @($Values | Sort-Object)
+    if (-not $s.Count) { return $null }
+    $m = [int][math]::Floor($s.Count / 2)
+    if ($s.Count % 2) { return [double]$s[$m] }
+    return ([double]$s[$m - 1] + [double]$s[$m]) / 2
+}
+
+# Raw idle readings (processor and drive activity of the whole PC in percent). Own function so that tests can replace it.
+function Get-IdleCounters {
+    $r = [ordered]@{ Cpu = $null; Platte = $null; PlatteOps = $null }
+    try { $r.Cpu = [double](Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop).PercentProcessorTime } catch { }
+    try { $d = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter "Name='_Total'" -ErrorAction Stop; $r.Platte = [math]::Min(100.0, [double]$d.PercentDiskTime); $r.PlatteOps = [double]$d.DiskTransfersPersec } catch { }
+    [pscustomobject]$r
+}
+
+# Idle measurement for the before/after comparison. WinTidy itself (checks, DISM, event log queries) keeps the PC busy, so it first
+# waits up to 8 seconds until the processor has calmed down, then takes 6 readings and uses the MEDIAN (single spikes do not count).
+# Ruhig = $false if the PC was still busy: processor and drive values are then not reliable for a comparison.
 function Get-IdleSample {
-    $cpu = @(); for ($i = 0; $i -lt 5; $i++) { try { $cpu += (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop).PercentProcessorTime } catch { }; Start-Sleep -Milliseconds 800 }
+    $null = Get-IdleCounters   # warm-up: the first reading of a performance class is often 0
+    for ($w = 0; $w -lt 8; $w++) { $c = Get-IdleCounters; if ($null -eq $c.Cpu -or $c.Cpu -le 15) { break }; Start-Sleep -Seconds 1 }
+    $cpu = New-Object System.Collections.Generic.List[double]; $dsk = New-Object System.Collections.Generic.List[double]; $ops = New-Object System.Collections.Generic.List[double]
+    for ($i = 0; $i -lt 6; $i++) {
+        $c = Get-IdleCounters
+        if ($null -ne $c.Cpu) { $cpu.Add([double]$c.Cpu) }
+        if ($null -ne $c.Platte) { $dsk.Add([double]$c.Platte); $ops.Add([double]$c.PlatteOps) }
+        Start-Sleep -Milliseconds 700
+    }
+    $cpuMed = Get-Median $cpu.ToArray(); $dskMed = Get-Median $dsk.ToArray(); $opsMed = Get-Median $ops.ToArray()
     $os = Get-CimInstance Win32_OperatingSystem
     [pscustomobject]@{
-        CpuProzent = $(if ($cpu.Count) { [math]::Round(($cpu | Measure-Object -Average).Average, 1) } else { $null })
+        CpuProzent = $(if ($null -ne $cpuMed) { [math]::Round($cpuMed, 1) } else { $null })
         RamBelegtProzent = [math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize), 1)
         RamBelegtGB = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 2)
         Prozesse = (Get-Process).Count
         Threads = ((Get-Process | ForEach-Object { $_.Threads.Count }) | Measure-Object -Sum).Sum
         Handles = ((Get-Process | Measure-Object HandleCount -Sum).Sum)
+        PlatteProzent = $(if ($null -ne $dskMed) { [math]::Round($dskMed, 1) } else { $null })
+        PlatteOpsProSek = $(if ($null -ne $opsMed) { [math]::Round($opsMed, 0) } else { $null })
+        Ruhig = [bool]($null -eq $cpuMed -or $cpuMed -le 25)
     }
 }
 
 function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
     W (T '  Measuring the system (snapshot ''{0}'') ...' $Label) 'DarkGray'
     $os = Get-CimInstance Win32_OperatingSystem; $cs = Get-CimInstance Win32_ComputerSystem; $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+    # Idle values first: the queries below (event log, scheduled tasks, drivers) keep the PC busy for a while
+    $idle = Get-IdleSample
     $boots = @(Get-BootEvents)
     $startup = @(Get-StartupItems)
     $svc = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)
@@ -2559,7 +2592,6 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
     $drv = @(Get-DriverPackages)
     $ghost = 0; try { $ghost = @(Get-GhostDevices).Count } catch { }
     $tasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue)
-    $idle = Get-IdleSample
     $rbSize = 0; try { $rbSize = ((New-Object -ComObject Shell.Application).Namespace(10).Items() | ForEach-Object { $_.Size } | Measure-Object -Sum).Sum } catch { }
     $secBoot = $null; try { $secBoot = Confirm-SecureBootUEFI -ErrorAction Stop } catch { }
     $def = $null; try { $def = (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled } catch { }
@@ -2719,45 +2751,213 @@ function New-RestorePoint {
 function Get-Snapshots { @(Get-ChildItem $Script:SnapDir -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name) }
 function Read-Snapshot($f) { Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json }
 function Get-CompareMetrics($a, $b) {
-    function M($name, $va, $vb, $unit, $better) {
+    # $tol = measurement noise: a change up to this size counts as "unchanged" (e.g. idle CPU 1.2 % -> 1.4 %)
+    function M($id, $name, $va, $vb, $unit, $better, $tol = 0) {
         $d = $null; if ($null -ne $va -and $null -ne $vb) { $d = [math]::Round([double]$vb - [double]$va, 2) }
-        $verdict = '='; if ($d) { if (($better -eq 'lower' -and $d -lt 0) -or ($better -eq 'higher' -and $d -gt 0)) { $verdict = 'besser' } else { $verdict = 'schlechter' } }
-        [pscustomobject]@{ Kennzahl = $name; Vorher = $va; Nachher = $vb; Delta = $d; Einheit = $unit; Bewertung = $verdict }
+        $verdict = '='; if ($d -and [math]::Abs($d) -gt $tol) { if (($better -eq 'lower' -and $d -lt 0) -or ($better -eq 'higher' -and $d -gt 0)) { $verdict = 'besser' } else { $verdict = 'schlechter' } }
+        [pscustomobject]@{ Id = $id; Kennzahl = $name; Vorher = $va; Nachher = $vb; Delta = $d; Einheit = $unit; Bewertung = $verdict }
     }
+    $bootA = $null; if ($a.Boot.Mittel5) { $bootA = [math]::Round($a.Boot.Mittel5 / 1000, 1) }
+    $bootB = $null; if ($b.Boot.Mittel5) { $bootB = [math]::Round($b.Boot.Mittel5 / 1000, 1) }
+    $warnA = $null; if ($null -ne $a.Stabilitaet) { $warnA = @($a.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }
+    $warnB = $null; if ($null -ne $b.Stabilitaet) { $warnB = @($b.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }
+    $hwA = $null; if ($a.Hardware) { $hwA = @($a.Hardware.Punkte | Where-Object { $_ }).Count }
+    $hwB = $null; if ($b.Hardware) { $hwB = @($b.Hardware.Punkte | Where-Object { $_ }).Count }
     $sysA = $a.Laufwerke | Where-Object { $_.LW -eq $env:SystemDrive.Substring(0, 1) } | Select-Object -First 1
     $sysB = $b.Laufwerke | Where-Object { $_.LW -eq $env:SystemDrive.Substring(0, 1) } | Select-Object -First 1
     $freeA = ($a.Laufwerke | Measure-Object FreiGB -Sum).Sum; $freeB = ($b.Laufwerke | Measure-Object FreiGB -Sum).Sum
     # Storage measured by the snapshot itself (MB; old snapshots without the field show no delta)
     $mb = { param($s, $n) if ($s -and $s.Speicher -and $null -ne $s.Speicher.$n) { [math]::Round([double]$s.Speicher.$n / 1MB, 0) } else { $null } }
     @(
-        (M (T 'Health score') $a.Score.Wert $b.Score.Wert 'Punkte' 'higher'),
-        (M (T 'Start Ø last 5 boots') $(if ($a.Boot.Mittel5) { [math]::Round($a.Boot.Mittel5 / 1000, 1) }) $(if ($b.Boot.Mittel5) { [math]::Round($b.Boot.Mittel5 / 1000, 1) }) 's' 'lower'),
-        (M (T 'Free on {0}' $env:SystemDrive) $sysA.FreiGB $sysB.FreiGB 'GB' 'higher'),
-        (M (T 'Free total (fixed drives)') ([math]::Round($freeA, 1)) ([math]::Round($freeB, 1)) 'GB' 'higher'),
-        (M (T 'Temporary files (own temp folder)') (& $mb $a 'TempBytes') (& $mb $b 'TempBytes') 'MB' 'lower'),
-        (M (T 'Recycle bin') (& $mb $a 'PapierkorbBytes') (& $mb $b 'PapierkorbBytes') 'MB' 'lower'),
-        (M (T 'Crash reports of programs') (& $mb $a 'CrashDumpsBytes') (& $mb $b 'CrashDumpsBytes') 'MB' 'lower'),
-        (M (T 'Browser caches') (& $mb $a 'BrowserCacheBytes') (& $mb $b 'BrowserCacheBytes') 'MB' 'lower'),
-        (M (T 'Active startup programs') $a.Autostart.Aktiv $b.Autostart.Aktiv '' 'lower'),
-        (M (T 'Orphaned startup entries') $a.Autostart.Verwaist $b.Autostart.Verwaist '' 'lower'),
-        (M (T 'Running services') $a.Dienste.Laufend $b.Dienste.Laufend '' 'lower'),
-        (M (T 'Third-party auto-start services') $a.Dienste.AutoDrittanbieter $b.Dienste.AutoDrittanbieter '' 'lower'),
-        (M (T 'Processes at idle') $a.Leerlauf.Prozesse $b.Leerlauf.Prozesse '' 'lower'),
-        (M (T 'Threads at idle') $a.Leerlauf.Threads $b.Leerlauf.Threads '' 'lower'),
-        (M (T 'RAM used at idle') $a.Leerlauf.RamBelegtGB $b.Leerlauf.RamBelegtGB 'GB' 'lower'),
-        (M (T 'CPU at idle') $a.Leerlauf.CpuProzent $b.Leerlauf.CpuProzent '%' 'lower'),
-        (M (T 'Driver packages') $a.Treiber.Pakete $b.Treiber.Pakete '' 'lower'),
-        (M (T 'Old driver duplicates') $a.Treiber.Duplikate $b.Treiber.Duplikate '' 'lower'),
-        (M (T 'Ghost devices') $a.Treiber.Geistergeraete $b.Treiber.Geistergeraete '' 'lower'),
-        (M (T 'Errors system log (7 days)') $a.Ereignisse.FehlerSystem7T $b.Ereignisse.FehlerSystem7T '' 'lower'),
-        (M (T 'Errors application log (7 days)') $a.Ereignisse.FehlerAnwendung7T $b.Ereignisse.FehlerAnwendung7T '' 'lower'),
-        (M (T 'Installed programs') $a.Programme.Installiert $b.Programme.Installiert '' 'lower'),
-        (M (T 'Store apps') $a.Programme.StoreApps $b.Programme.StoreApps '' 'lower'),
-        (M (T 'Own scheduled tasks') $a.Aufgaben.Eigene $b.Aufgaben.Eigene '' 'lower'),
-        (M (T 'Warning signs (event log, 30 days)') $(if ($null -ne $a.Stabilitaet) { @($a.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }) $(if ($null -ne $b.Stabilitaet) { @($b.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }) '' 'lower'),
-        (M (T 'Hardware irregularities') $(if ($a.Hardware) { @($a.Hardware.Punkte | Where-Object { $_ }).Count }) $(if ($b.Hardware) { @($b.Hardware.Punkte | Where-Object { $_ }).Count }) '' 'lower')
+        (M 'Score' (T 'Health score') $a.Score.Wert $b.Score.Wert 'Punkte' 'higher'),
+        (M 'BootGesamt' (T 'Start Ø last 5 boots') $bootA $bootB 's' 'lower' 2),
+        (M 'BootNach' (T 'Waiting time after the desktop appears') (Get-PerfValue $a 'BootNach') (Get-PerfValue $b 'BootNach') 's' 'lower' 1.5),
+        (M 'Frei' (T 'Free on {0}' $env:SystemDrive) $sysA.FreiGB $sysB.FreiGB 'GB' 'higher'),
+        (M 'FreiGesamt' (T 'Free total (fixed drives)') ([math]::Round($freeA, 1)) ([math]::Round($freeB, 1)) 'GB' 'higher'),
+        (M 'Temp' (T 'Temporary files (own temp folder)') (& $mb $a 'TempBytes') (& $mb $b 'TempBytes') 'MB' 'lower'),
+        (M 'Papierkorb' (T 'Recycle bin') (& $mb $a 'PapierkorbBytes') (& $mb $b 'PapierkorbBytes') 'MB' 'lower'),
+        (M 'Absturzberichte' (T 'Crash reports of programs') (& $mb $a 'CrashDumpsBytes') (& $mb $b 'CrashDumpsBytes') 'MB' 'lower'),
+        (M 'BrowserCache' (T 'Browser caches') (& $mb $a 'BrowserCacheBytes') (& $mb $b 'BrowserCacheBytes') 'MB' 'lower'),
+        (M 'Autostart' (T 'Active startup programs') $a.Autostart.Aktiv $b.Autostart.Aktiv '' 'lower'),
+        (M 'AutostartVerwaist' (T 'Orphaned startup entries') $a.Autostart.Verwaist $b.Autostart.Verwaist '' 'lower'),
+        (M 'Dienste' (T 'Running services') $a.Dienste.Laufend $b.Dienste.Laufend '' 'lower'),
+        (M 'DiensteDritt' (T 'Third-party auto-start services') $a.Dienste.AutoDrittanbieter $b.Dienste.AutoDrittanbieter '' 'lower'),
+        (M 'Prozesse' (T 'Processes at idle') $a.Leerlauf.Prozesse $b.Leerlauf.Prozesse '' 'lower' 3),
+        (M 'Threads' (T 'Threads at idle') $a.Leerlauf.Threads $b.Leerlauf.Threads '' 'lower' 150),
+        (M 'Ram' (T 'RAM used at idle') $a.Leerlauf.RamBelegtGB $b.Leerlauf.RamBelegtGB 'GB' 'lower' 0.2),
+        (M 'Cpu' (T 'CPU at idle') $a.Leerlauf.CpuProzent $b.Leerlauf.CpuProzent '%' 'lower' 1.5),
+        (M 'Platte' (T 'Drive activity at idle') $a.Leerlauf.PlatteProzent $b.Leerlauf.PlatteProzent '%' 'lower' 3),
+        (M 'Treiberpakete' (T 'Driver packages') $a.Treiber.Pakete $b.Treiber.Pakete '' 'lower'),
+        (M 'TreiberDuplikate' (T 'Old driver duplicates') $a.Treiber.Duplikate $b.Treiber.Duplikate '' 'lower'),
+        (M 'Geistergeraete' (T 'Ghost devices') $a.Treiber.Geistergeraete $b.Treiber.Geistergeraete '' 'lower'),
+        (M 'FehlerSystem' (T 'Errors system log (7 days)') $a.Ereignisse.FehlerSystem7T $b.Ereignisse.FehlerSystem7T '' 'lower'),
+        (M 'FehlerAnwendung' (T 'Errors application log (7 days)') $a.Ereignisse.FehlerAnwendung7T $b.Ereignisse.FehlerAnwendung7T '' 'lower'),
+        (M 'Programme' (T 'Installed programs') $a.Programme.Installiert $b.Programme.Installiert '' 'lower'),
+        (M 'StoreApps' (T 'Store apps') $a.Programme.StoreApps $b.Programme.StoreApps '' 'lower'),
+        (M 'Aufgaben' (T 'Own scheduled tasks') $a.Aufgaben.Eigene $b.Aufgaben.Eigene '' 'lower'),
+        (M 'Warnsignale' (T 'Warning signs (event log, 30 days)') $warnA $warnB '' 'lower'),
+        (M 'Hardware' (T 'Hardware irregularities') $hwA $hwB '' 'lower')
     )
 }
+# =============================================================================
+#  Performance key figures: did WinTidy bring something?
+#  Eight figures that Windows or WinTidy measure themselves and that a cleanup can really influence. Each one has a noise
+#  tolerance (a change inside it counts as "unchanged"). Start times are only compared with starts AFTER the optimization.
+# =============================================================================
+function Get-PerfDefs {
+    # Id = internal, Abs/Rel = tolerance (absolute / share of the old value), Boot = comes from the boot events,
+    # Ruhe = only reliable if the PC was idle during the measurement
+    @(
+        [pscustomobject]@{ Id = 'BootGesamt'; Titel = (T 'Windows start until ready'); Hinweis = (T 'Time from switching on until Windows is ready to use (average of the last 5 starts). Windows measures it at every start.'); Einheit = 's'; Stellen = 1; Besser = 'lower'; Abs = 2; Rel = 0.05; Boot = $true; Ruhe = $false }
+        [pscustomobject]@{ Id = 'BootNach'; Titel = (T 'Waiting time after the desktop appears'); Hinweis = (T 'How long Windows keeps loading programs and services in the background after the desktop is visible. This is where startup programs cost time.'); Einheit = 's'; Stellen = 1; Besser = 'lower'; Abs = 1.5; Rel = 0.1; Boot = $true; Ruhe = $false }
+        [pscustomobject]@{ Id = 'Autostart'; Titel = (T 'Programs starting with Windows'); Hinweis = (T 'Programs that start automatically with Windows and use memory and processor time right from the start.'); Einheit = ''; Stellen = 0; Besser = 'lower'; Abs = 0; Rel = 0; Boot = $false; Ruhe = $false }
+        [pscustomobject]@{ Id = 'Prozesse'; Titel = (T 'Background processes at idle'); Hinweis = (T 'Programs and services running while you do nothing. Fewer means more room for the things you actually use.'); Einheit = ''; Stellen = 0; Besser = 'lower'; Abs = 3; Rel = 0; Boot = $false; Ruhe = $false }
+        [pscustomobject]@{ Id = 'Ram'; Titel = (T 'Memory in use at idle'); Hinweis = (T 'Working memory (RAM) used while the PC is idle. Less leaves more for your programs.'); Einheit = 'GB'; Stellen = 1; Besser = 'lower'; Abs = 0.2; Rel = 0.03; Boot = $false; Ruhe = $false }
+        [pscustomobject]@{ Id = 'Cpu'; Titel = (T 'Processor load at idle'); Hinweis = (T 'How busy the processor is while you do nothing. High values mean something keeps working in the background.'); Einheit = '%'; Stellen = 1; Besser = 'lower'; Abs = 1.5; Rel = 0; Boot = $false; Ruhe = $true }
+        [pscustomobject]@{ Id = 'Platte'; Titel = (T 'Drive activity at idle'); Hinweis = (T 'How busy the drives are while you do nothing. Constant activity makes everything else feel slower.'); Einheit = '%'; Stellen = 1; Besser = 'lower'; Abs = 3; Rel = 0; Boot = $false; Ruhe = $true }
+        [pscustomobject]@{ Id = 'Frei'; Titel = (T 'Free space on the Windows drive'); Hinweis = (T 'Windows needs free space for updates and temporary files. A nearly full drive slows Windows down.'); Einheit = 'GB'; Stellen = 1; Besser = 'higher'; Abs = 0.5; Rel = 0; Boot = $false; Ruhe = $false }
+    )
+}
+
+function ConvertTo-PerfNum($Value, [int]$Digits = 1) {
+    if ($null -eq $Value -or "$Value" -eq '') { return $null }
+    try { return [math]::Round([double]$Value, $Digits) } catch { return $null }
+}
+
+# Average of one property over the newest N boots (boots in any order); Anzahl = how many boots were used
+function Get-BootAvg($Boots, [string]$Prop, [int]$N = 5) {
+    $v = @($Boots | Where-Object { $_ -and [double]$_.$Prop -gt 0 } | Sort-Object { [datetime]$_.Zeit } -Descending | Select-Object -First $N | ForEach-Object { [double]$_.$Prop })
+    $avg = $null; if ($v.Count) { $avg = ($v | Measure-Object -Average).Average }
+    [pscustomobject]@{ Anzahl = $v.Count; Mittel = $avg }
+}
+
+# Value of one key figure from a snapshot ($null if the snapshot does not have it, e.g. older versions)
+function Get-PerfValue($s, [string]$Id) {
+    if (-not $s) { return $null }
+    $idle = $s.Leerlauf
+    switch ($Id) {
+        'BootGesamt' { if ($s.Boot -and $s.Boot.Mittel5) { return (ConvertTo-PerfNum ([double]$s.Boot.Mittel5 / 1000) 1) }; return $null }
+        'BootNach' { if (-not $s.Boot) { return $null }; $a = Get-BootAvg @($s.Boot.Verlauf) 'NachDesktopMs' 5; if ($a.Anzahl) { return (ConvertTo-PerfNum ($a.Mittel / 1000) 1) }; return $null }
+        'Autostart' { if ($s.Autostart) { return (ConvertTo-PerfNum $s.Autostart.Aktiv 0) }; return $null }
+        'Prozesse' { if ($idle) { return (ConvertTo-PerfNum $idle.Prozesse 0) }; return $null }
+        'Ram' { if ($idle) { return (ConvertTo-PerfNum $idle.RamBelegtGB 1) }; return $null }
+        'Cpu' { if ($idle) { return (ConvertTo-PerfNum $idle.CpuProzent 1) }; return $null }
+        'Platte' { if ($idle) { return (ConvertTo-PerfNum $idle.PlatteProzent 1) }; return $null }
+        'Frei' { $sys = @($s.Laufwerke) | Where-Object { $_ -and $_.LW -eq $env:SystemDrive.Substring(0, 1) } | Select-Object -First 1; if ($sys) { return (ConvertTo-PerfNum $sys.FreiGB 1) }; return $null }
+    }
+    return $null
+}
+
+# One point in time of the history: all key figures of a snapshot
+function Get-PerfPoint($s) {
+    $w = [ordered]@{}
+    foreach ($d in (Get-PerfDefs)) { $w[$d.Id] = Get-PerfValue $s $d.Id }
+    $calm = $true; if ($s.Leerlauf -and $s.Leerlauf.Ruhig -eq $false) { $calm = $false }
+    [pscustomobject]@{ Zeit = ([datetime]$s.Zeit).ToString('o'); Label = [string]$s.Label; Ruhig = $calm; Werte = [pscustomobject]$w }
+}
+
+# Compares the state before the first optimization ($base) with the current state ($cur).
+# $boots = all known boot events: start times are only taken from starts AFTER $base (at least 2), because a start right
+# after the optimization still shows the old state. Without such starts the two start figures are 'offen' (open).
+# Bewertung: 'besser' | 'schlechter' | '=' (inside the noise tolerance) | 'offen' (not measurable yet)
+function Get-PerfEffect($base, $cur, $boots) {
+    if (-not $base -or -not $cur) { return $null }
+    $tBase = [datetime]$base.Zeit
+    $after = @($boots | Where-Object { $_ -and [double]$_.GesamtMs -gt 0 -and [datetime]$_.Zeit -gt $tBase })
+    $busy = [bool](($base.Leerlauf -and $base.Leerlauf.Ruhig -eq $false) -or ($cur.Leerlauf -and $cur.Leerlauf.Ruhig -eq $false))
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($d in (Get-PerfDefs)) {
+        $vb = Get-PerfValue $base $d.Id
+        $vc = $null
+        if ($d.Boot) {
+            $prop = 'GesamtMs'; if ($d.Id -eq 'BootNach') { $prop = 'NachDesktopMs' }
+            $avg = Get-BootAvg $after $prop 5
+            if ($avg.Anzahl -ge 2) { $vc = ConvertTo-PerfNum ($avg.Mittel / 1000) 1 }
+        } else { $vc = Get-PerfValue $cur $d.Id }
+        $delta = $null; $bew = 'offen'; $unsure = $false
+        if ($null -ne $vb -and $null -ne $vc) {
+            $delta = [math]::Round([double]$vc - [double]$vb, 2)
+            $tol = [math]::Max([double]$d.Abs, [double]$d.Rel * [math]::Abs([double]$vb))
+            if ([math]::Abs($delta) -le $tol) { $bew = '=' }
+            elseif (($d.Besser -eq 'lower' -and $delta -lt 0) -or ($d.Besser -eq 'higher' -and $delta -gt 0)) { $bew = 'besser' }
+            else { $bew = 'schlechter' }
+            # Processor and drive values from a PC that was still busy are not a reliable basis for a verdict
+            if ($d.Ruhe -and $busy -and $bew -ne '=') { $bew = '='; $unsure = $true }
+        }
+        $dtxt = ''; if ($null -ne $delta) { $dtxt = ('{0:+0.0;-0.0;0.0}' -f [double]$delta) + $(if ($d.Einheit) { ' ' + $d.Einheit } else { '' }) }
+        $rows.Add([pscustomobject]@{ Id = $d.Id; Kennzahl = $d.Titel; Hinweis = $d.Hinweis; Einheit = $d.Einheit; Stellen = $d.Stellen; Vorher = $vb; Nachher = $vc; Delta = $delta; Bewertung = $bew; Unsicher = $unsure
+            VorherText = (Format-PerfValue $vb $d.Stellen $d.Einheit); NachherText = (Format-PerfValue $vc $d.Stellen $d.Einheit); DeltaText = $dtxt; BewertungText = (Get-PerfRatingText $bew) })
+    }
+    $nb = @($rows | Where-Object { $_.Bewertung -eq 'besser' }).Count
+    $ns = @($rows | Where-Object { $_.Bewertung -eq 'schlechter' }).Count
+    $ng = @($rows | Where-Object { $_.Bewertung -eq '=' }).Count
+    $no = @($rows | Where-Object { $_.Bewertung -eq 'offen' }).Count
+    $urteil = 'offen'
+    if ($nb + $ns + $ng) { if ($nb -and $ns) { $urteil = 'gemischt' } elseif ($nb) { $urteil = 'besser' } elseif ($ns) { $urteil = 'schlechter' } else { $urteil = 'gleich' } }
+    $res = [pscustomobject]@{ Basis = ([datetime]$base.Zeit).ToString('o'); Jetzt = ([datetime]$cur.Zeit).ToString('o'); BootsDanach = $after.Count; Metriken = $rows.ToArray(); Besser = $nb; Schlechter = $ns; Gleich = $ng; Offen = $no; Gemessen = ($nb + $ns + $ng); Urteil = $urteil; Kopfzeile = ''; BootHinweis = '' }
+    # Ready-made texts for the app and the report (the engine knows the language)
+    $res.Kopfzeile = Get-PerfHeadline $res
+    $res.BootHinweis = Get-PerfBootNote $res
+    return $res
+}
+
+# The one-sentence answer to "did it bring something?" (translated)
+function Get-PerfHeadline($e) {
+    if (-not $e) { return (T 'Not enough data yet. After your first optimization WinTidy shows here whether it brought something.') }
+    $date = ([datetime]$e.Basis).ToString((T 'yyyy-MM-dd'))
+    switch ($e.Urteil) {
+        'besser' { return (T 'WinTidy helped: {0} of {1} measured key figures improved since the optimization on {2}, none got worse.' $e.Besser $e.Gemessen $date) }
+        'gemischt' { return (T 'Mixed result since the optimization on {2}: {0} key figures improved, {1} got worse.' $e.Besser $e.Schlechter $date) }
+        'schlechter' { return (T 'No improvement since the optimization on {1}: {0} key figures got worse. Often this is only because more programs are running right now - check again after a restart.' $e.Schlechter $date) }
+        'gleich' { return (T 'No measurable change since the optimization on {0}.' $date) }
+    }
+    return (T 'Not measurable yet. Restart the PC a few times and check again - Windows records the start time at every start.')
+}
+
+# Note on the two start-time figures (empty if there is nothing to say)
+function Get-PerfBootNote($e) {
+    if (-not $e) { return '' }
+    if ($e.BootsDanach -lt 2) { return (T 'Start times need at least 2 starts after the optimization (so far: {0}). Use the PC normally and check again in a few days.' $e.BootsDanach) }
+    return (T 'Start times are compared over the starts since the optimization ({0} so far).' $e.BootsDanach)
+}
+
+function Format-PerfValue($v, [int]$Digits, [string]$Unit) {
+    if ($null -eq $v) { return '-' }
+    return ((('{0:N' + $Digits + '}') -f [double]$v) + $(if ($Unit) { ' ' + $Unit } else { '' }))
+}
+
+# Display text of a rating in the report/CLI
+function Get-PerfRatingText([string]$Rating) { switch ($Rating) { 'besser' { return (T 'better') } 'schlechter' { return (T 'worse') } '=' { return (T 'unchanged') } }; return (T 'not measurable yet') }
+
+function Show-PerfEffect($e) {
+    Section (T 'Did WinTidy help?')
+    W ('  ' + (Get-PerfHeadline $e)) $(switch ($(if ($e) { $e.Urteil } else { '' })) { 'besser' { 'Green' } 'schlechter' { 'Red' } 'gemischt' { 'Yellow' } default { 'Gray' } })
+    if (-not $e) { return }
+    W ("  {0,-40} {1,12} {2,12}  {3}" -f (T 'Key figure'), (T 'Before'), (T 'Now'), (T 'Rating')) 'White'
+    foreach ($m in $e.Metriken) {
+        $c = switch ($m.Bewertung) { 'besser' { 'Green' } 'schlechter' { 'Red' } default { 'Gray' } }
+        W ("  {0,-40} {1,12} {2,12}  {3}{4}" -f $m.Kennzahl, $m.VorherText, $m.NachherText, $m.BewertungText, $(if ($m.Unsicher) { ' ' + (T '(PC was busy while measuring)') } else { '' })) $c
+    }
+    $n = Get-PerfBootNote $e; if ($n) { W ('  ' + $n) 'DarkYellow' }
+}
+
+# Reads all snapshots once: scores, key figures per point in time, all boot events and the effect since the first optimization
+function Read-SnapshotHistory {
+    $scores = @(); $punkte = @(); $boots = @(); $seen = @{}; $first = $null; $last = $null
+    foreach ($f in (Get-Snapshots)) {
+        $s = $null; try { $s = Read-Snapshot $f } catch { continue }
+        $scores += [pscustomobject]@{ Zeit = $s.Zeit; Label = $s.Label; Wert = $s.Score.Wert }
+        $punkte += Get-PerfPoint $s
+        foreach ($b in @($s.Boot.Verlauf)) { if ($b -and -not $seen.ContainsKey($b.Zeit)) { $seen[$b.Zeit] = 1; $boots += $b } }
+        if (-not $first -and $s.Label -eq 'vorher') { $first = $s }
+        $last = $s
+    }
+    $boots = @($boots | Sort-Object { [datetime]$_.Zeit })
+    $effekt = $null
+    if ($first -and $last -and $first.Zeit -ne $last.Zeit) { $effekt = Get-PerfEffect $first $last $boots }
+    [pscustomobject]@{ Scores = $scores; Punkte = $punkte; Boots = $boots; Effekt = $effekt; Defs = @(Get-PerfDefs); Kopfzeile = (Get-PerfHeadline $effekt) }
+}
+
 function Show-Compare($a, $b) {
     Section ((T 'Comparison  {0} ({1})  ->  {2} ({3})') -f ([datetime]$a.Zeit).ToString((T 'MM-dd HH:mm')), $a.Label, ([datetime]$b.Zeit).ToString((T 'MM-dd HH:mm')), $b.Label)
     W ("  {0,-34} {1,12} {2,12} {3,12}" -f (T 'Metric'), (T 'Before'), (T 'After'), 'Delta') 'White'
@@ -2794,6 +2994,38 @@ function New-BootSvg($boots, $runs) {
     [void]$sb.Append("</svg><div class='legend'><span class='lg total'></span>$(HtmlEnc (T 'Total boot')) <span class='lg main'></span>$(HtmlEnc (T 'To desktop')) <span class='lg run'></span>$(HtmlEnc (T 'WinTidy run'))</div>")
     return $sb.ToString()
 }
+# Small trend chart of one key figure for the report: the line runs through the snapshots (start times: through the boot events),
+# dashed green lines mark optimizations. Returns HTML.
+function New-PerfSpark($Def, $Points, $Boots, $Runs) {
+    $pts = @()
+    if ($Def.Boot) {
+        $prop = 'GesamtMs'; if ($Def.Id -eq 'BootNach') { $prop = 'NachDesktopMs' }
+        $pts = @($Boots | Where-Object { $_ -and [double]$_.$prop -gt 0 } | ForEach-Object { [pscustomobject]@{ T = ([datetime]$_.Zeit).Ticks; V = [double]$_.$prop / 1000; Z = [datetime]$_.Zeit } } | Sort-Object T)
+    } else {
+        $pts = @($Points | Where-Object { $null -ne $_.Werte.($Def.Id) } | ForEach-Object { [pscustomobject]@{ T = ([datetime]$_.Zeit).Ticks; V = [double]$_.Werte.($Def.Id); Z = [datetime]$_.Zeit } } | Sort-Object T)
+    }
+    if ($pts.Count -lt 2) { return "<p class='muted'>$(HtmlEnc (T 'Not enough measurements yet.'))</p>" }
+    $W = 320; $H = 96; $pl = 44; $pr = 8; $pt = 8; $pb = 8
+    $t0 = $pts[0].T; $t1 = $pts[-1].T; if ($t1 -eq $t0) { $t1 = $t0 + 1 }
+    $lo = ($pts | Measure-Object V -Minimum).Minimum; $hi = ($pts | Measure-Object V -Maximum).Maximum
+    if ($hi -eq $lo) { $lo = [math]::Max(0, $lo - 1); $hi = $hi + 1 }
+    $pad = ($hi - $lo) * 0.1; $hi = $hi + $pad; $lo = [math]::Max(0, $lo - $pad)
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $sx = { param($t) $pl + ($W - $pl - $pr) * (($t - $t0) / ($t1 - $t0)) }
+    $sy = { param($v) $pt + ($H - $pt - $pb) * (1 - ($v - $lo) / ($hi - $lo)) }
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.Append("<svg viewBox='0 0 $W $H' class='chart spark' role='img' aria-label='$(HtmlEnc $Def.Titel)'>")
+    foreach ($v in @($hi, $lo)) { $yy = [string]::Format($inv, '{0:0.0}', (& $sy $v)); [void]$sb.Append("<line x1='$pl' x2='$($W-$pr)' y1='$yy' y2='$yy' class='grid'/><text x='$($pl-4)' y='$([string]::Format($inv, '{0:0.0}', ([double]$yy + 4)))' class='ax' text-anchor='end'>$(HtmlEnc (Format-PerfValue $v $Def.Stellen ''))</text>") }
+    foreach ($r in $Runs) { $t = ([datetime]$r.Zeit).Ticks; if ($t -ge $t0 -and $t -le $t1) { $x = [string]::Format($inv, '{0:0.0}', (& $sx $t)); [void]$sb.Append("<line x1='$x' x2='$x' y1='$pt' y2='$($H-$pb)' class='run'/>") } }
+    [void]$sb.Append("<polyline points='$(($pts | ForEach-Object { [string]::Format($inv, '{0:0.0},{1:0.0}', (& $sx $_.T), (& $sy $_.V)) }) -join ' ')' class='total'/>")
+    $df = T 'yyyy-MM-dd HH:mm'
+    foreach ($p in $pts) { [void]$sb.Append("<circle cx='$([string]::Format($inv, '{0:0.0}', (& $sx $p.T)))' cy='$([string]::Format($inv, '{0:0.0}', (& $sy $p.V)))' r='2.5' class='dot'><title>$(HtmlEnc ('{0}: {1}' -f $p.Z.ToString($df), (Format-PerfValue $p.V $Def.Stellen $Def.Einheit)))</title></circle>") }
+    [void]$sb.Append('</svg>')
+    $dax = T 'yy-MM-dd'
+    [void]$sb.Append("<div class='muted sparkx'><span>$($pts[0].Z.ToString($dax))</span><span>$($pts[-1].Z.ToString($dax))</span></div>")
+    return $sb.ToString()
+}
+
 function New-BarRows($rows, [string]$labelProp, [string]$valueProp, [scriptblock]$fmt) {
     $max = ($rows | Measure-Object $valueProp -Maximum).Maximum; if (-not $max) { return "<p class='muted'>$(HtmlEnc (T 'No data.'))</p>" }
     $sb = New-Object Text.StringBuilder
@@ -2846,6 +3078,8 @@ td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.bess
 .chart{width:100%;height:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .chart .grid{stroke:var(--line);stroke-width:1}.chart .ax{fill:var(--muted);font-size:11px}.chart .total{fill:none;stroke:var(--acc);stroke-width:2}.chart .main{fill:none;stroke:var(--main);stroke-width:1.5;stroke-dasharray:4 3}
 .chart .dot{fill:var(--acc)}.chart .run{stroke:var(--good);stroke-width:1.5;stroke-dasharray:6 4}.chart .runlbl{fill:var(--good);font-size:11px}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}.pc .pv{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}.pc .pd{font-size:13px;margin:2px 0 8px}.pc .kl[title]{cursor:help}
+.verdict{font-size:16px;font-weight:600;margin:6px 0}.verdict.gemischt{color:var(--mid)}.sparkx{display:flex;justify-content:space-between;font-size:11px}.chart.spark{border:0;background:transparent}
 .legend{margin-top:6px;color:var(--muted);font-size:12px}.lg{display:inline-block;width:18px;height:3px;margin:0 6px 3px 14px;vertical-align:middle}.lg.total{background:var(--acc)}.lg.main{background:var(--main)}.lg.run{background:var(--good)}
 .bar{display:grid;grid-template-columns:minmax(120px,240px) 1fr 90px;gap:10px;align-items:center;margin:5px 0}.bt{background:var(--line);height:10px;border-radius:5px;overflow:hidden}.bf{display:block;height:100%;background:var(--acc)}.bv{text-align:right;font-variant-numeric:tabular-nums}.bl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding:0}
@@ -2865,6 +3099,42 @@ details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding
         @((T 'Errors in the log (7 d)'), ($last.Ereignisse.FehlerSystem7T + $last.Ereignisse.FehlerAnwendung7T)), @((T 'Actions total'), "$($okActs.Count) OK"), @((T 'Freed (estimated)'), (Fmt-Bytes $freed))
     )
     foreach ($k in $kpis) { [void]$sb.Append("<div class='card'><div class='kl'>$(HtmlEnc $k[0])</div><div class='kpi'>$(HtmlEnc $k[1])</div></div>") }
+    [void]$sb.Append('</div>')
+
+    # Did WinTidy help? Key figures since the first optimization + trend per key figure
+    $perfPts = @(); $eff = $null
+    try {
+        $perfPts = @($all | ForEach-Object { Get-PerfPoint $_ })
+        $firstVor = ($all | Where-Object { $_.Label -eq 'vorher' } | Select-Object -First 1)
+        if ($firstVor -and $firstVor.Zeit -ne $last.Zeit) { $eff = Get-PerfEffect $firstVor $last @($boots | Sort-Object { [datetime]$_.Zeit }) }
+    } catch { W (T '  Key figures could not be compared: {0}' ($_.Exception.Message)) 'DarkYellow' }
+    [void]$sb.Append("<h2>$(HT 'Did WinTidy help?')</h2>")
+    $vcls = ''; if ($eff) { $vcls = switch ($eff.Urteil) { 'besser' { ' besser' } 'schlechter' { ' schlechter' } 'gemischt' { ' gemischt' } default { '' } } }
+    [void]$sb.Append("<p class='verdict$vcls'>$(HtmlEnc (Get-PerfHeadline $eff))</p>")
+    if ($eff) {
+        $bn = Get-PerfBootNote $eff; if ($bn) { [void]$sb.Append("<p class='muted'>$(HtmlEnc $bn)</p>") }
+        [void]$sb.Append("<table><tr><th>$(HT 'Key figure')</th><th>$(HT 'Before')</th><th>$(HT 'Now')</th><th>$(HT 'Difference')</th><th>$(HT 'Rating')</th></tr>")
+        foreach ($m in $eff.Metriken) {
+            $rt = HtmlEnc $m.BewertungText; if ($m.Unsicher) { $rt += ' <span class="muted">' + (HtmlEnc (T '(PC was busy while measuring)')) + '</span>' }
+            $rcl = ''; if ($m.Bewertung -in 'besser', 'schlechter') { $rcl = $m.Bewertung }
+            [void]$sb.Append("<tr><td><span title='$(HtmlEnc $m.Hinweis)'>$(HtmlEnc $m.Kennzahl)</span></td><td class='n'>$(HtmlEnc $m.VorherText)</td><td class='n'>$(HtmlEnc $m.NachherText)</td><td class='n $rcl'>$(HtmlEnc $m.DeltaText)</td><td class='$rcl'>$rt</td></tr>")
+        }
+        [void]$sb.Append('</table>')
+    }
+    [void]$sb.Append("<h2>$(HT 'Trend of the key figures')</h2><p class='muted'>$(HT 'One point per check, start times per start. Green dashed lines mark optimizations.')</p><div class='pgrid'>")
+    foreach ($d in (Get-PerfDefs)) {
+        $em = $null; if ($eff) { $em = $eff.Metriken | Where-Object { $_.Id -eq $d.Id } | Select-Object -First 1 }
+        $cur = $null; $sub = ''
+        if ($em -and $null -ne $em.Nachher) {
+            $cur = $em.Nachher
+            if ($null -ne $em.Vorher) { $sub = "<div class='pd $(if ($em.Bewertung -in 'besser', 'schlechter') { $em.Bewertung })'>$(HtmlEnc ((T 'before: {0}' $em.VorherText) + ', ' + $em.BewertungText))</div>" }
+        } else {
+            $lp = $perfPts | Where-Object { $null -ne $_.Werte.($d.Id) } | Select-Object -Last 1
+            if ($lp) { $cur = $lp.Werte.($d.Id) }
+            if ($d.Boot) { $bl = Get-BootAvg $boots $(if ($d.Id -eq 'BootNach') { 'NachDesktopMs' } else { 'GesamtMs' }) 5; if ($bl.Anzahl) { $cur = ConvertTo-PerfNum ($bl.Mittel / 1000) 1 } }
+        }
+        [void]$sb.Append("<div class='card pc'><div class='kl' title='$(HtmlEnc $d.Hinweis)'>$(HtmlEnc $d.Titel)</div><div class='pv'>$(HtmlEnc (Format-PerfValue $cur $d.Stellen $d.Einheit))</div>$sub$(New-PerfSpark $d $perfPts $boots $runs)</div>")
+    }
     [void]$sb.Append('</div>')
 
     [void]$sb.Append("<h2>$(HT 'Boot times')</h2>"); [void]$sb.Append((New-BootSvg $boots $runs))
@@ -3319,11 +3589,12 @@ function Invoke-FixSelection([object[]]$Selection, [bool]$RestorePoint = $true, 
     Prog $jobs.Count $jobs.Count (T 'Measuring the state after ...') 'CORE'
     $post = New-Snapshot 'nachher' $info
     $cmp = @(Get-CompareMetrics $pre $post)
+    $wirkung = $null; try { $wirkung = Get-PerfEffect $pre $post @() } catch { W (T '  Key figures could not be compared: {0}' ($_.Exception.Message)) 'DarkYellow' }
     $umk = @(Get-RestorePreview $Script:RunId).Count
     [ordered]@{ Lauf = $Script:RunId; Aktionen = $jobs.Count; OK = $ok; Fehler = $fail; Abgebrochen = $abbruch; BytesGeschaetzt = $bytes; ScoreVorher = $pre.Score.Wert; ScoreNachher = $post.Score.Wert; Wiederherstellungspunkt = $rp; Umkehrbar = $umk; ComputerschutzEingeschaltet = [bool]$Script:ComputerschutzEingeschaltet } | ConvertTo-Json | Out-File (Join-Path $Script:RunDir 'zusammenfassung.json') -Encoding utf8
     $rep = New-Report
     Stop-RunLog
-    [pscustomobject]@{ Status = $(if ($abbruch) { 'ABGEBROCHEN' } else { 'OK' }); RunId = $Script:RunId; Aktionen = $jobs.Count; OK = $ok; Fehler = $fail; Bytes = $bytes; Vorher = $pre; Nachher = $post; Vergleich = $cmp; Report = $rep
+    [pscustomobject]@{ Status = $(if ($abbruch) { 'ABGEBROCHEN' } else { 'OK' }); RunId = $Script:RunId; Aktionen = $jobs.Count; OK = $ok; Fehler = $fail; Bytes = $bytes; Vorher = $pre; Nachher = $post; Vergleich = $cmp; Wirkung = $wirkung; Report = $rep
         Wiederherstellungspunkt = $rp; ComputerschutzEingeschaltet = [bool]$Script:ComputerschutzEingeschaltet; Details = $details.ToArray(); Umkehrbar = $umk }
 }
 
@@ -3341,18 +3612,14 @@ function Get-HistoryData {
     $snaps = @(Get-Snapshots | ForEach-Object { Read-Snapshot $_ })
     $boots = @(); $seen = @{}
     foreach ($s in $snaps) { foreach ($b in @($s.Boot.Verlauf)) { if ($b -and -not $seen.ContainsKey($b.Zeit)) { $seen[$b.Zeit] = 1; $boots += $b } } }
-    [pscustomobject]@{ Snapshots = $snaps; Boots = @($boots | Sort-Object { [datetime]$_.Zeit }); Laeufe = (Get-RunList); Report = (Join-Path $Script:DataDir 'WinTidy-Bericht.html'); DataDir = $Script:DataDir }
+    $ph = Read-SnapshotHistory
+    [pscustomobject]@{ Snapshots = $snaps; Boots = @($boots | Sort-Object { [datetime]$_.Zeit }); Perf = $ph.Punkte; Effekt = $ph.Effekt; Defs = $ph.Defs; Kopfzeile = $ph.Kopfzeile; Laeufe = (Get-RunList); Report = (Join-Path $Script:DataDir 'WinTidy-Bericht.html'); DataDir = $Script:DataDir }
 }
 
 # Like Get-HistoryData, but without the full snapshots (small data transfer to the app)
 function Get-HistoryLight {
-    $scores = @(); $boots = @(); $seen = @{}
-    foreach ($f in (Get-Snapshots)) {
-        $s = $null; try { $s = Read-Snapshot $f } catch { continue }
-        $scores += [pscustomobject]@{ Zeit = $s.Zeit; Label = $s.Label; Wert = $s.Score.Wert }
-        foreach ($b in @($s.Boot.Verlauf)) { if ($b -and -not $seen.ContainsKey($b.Zeit)) { $seen[$b.Zeit] = 1; $boots += $b } }
-    }
-    [pscustomobject]@{ Scores = $scores; Snapshots = @(); Boots = @($boots | Sort-Object { [datetime]$_.Zeit }); Laeufe = (Get-RunList); Report = (Join-Path $Script:DataDir 'WinTidy-Bericht.html'); DataDir = $Script:DataDir }
+    $h = Read-SnapshotHistory
+    [pscustomobject]@{ Scores = $h.Scores; Snapshots = @(); Boots = $h.Boots; Perf = $h.Punkte; Effekt = $h.Effekt; Defs = $h.Defs; Kopfzeile = $h.Kopfzeile; Laeufe = (Get-RunList); Report = (Join-Path $Script:DataDir 'WinTidy-Bericht.html'); DataDir = $Script:DataDir }
 }
 
 function Invoke-GuiRestore([string]$Lauf) {
@@ -3786,6 +4053,7 @@ function Invoke-Mode([string]$m) {
             foreach ($z in $snap.Score.Abzuege) { W ("  -{0,-3} {1}" -f $z.Punkte, $z.Grund) 'Yellow' }
             $prev = Get-Snapshots | Select-Object -SkipLast 1 | Select-Object -Last 1
             if ($prev) { Show-Compare (Read-Snapshot $prev) $snap }
+            $hist = Read-SnapshotHistory; if ($hist.Effekt) { Show-PerfEffect $hist.Effekt }
             $rep = New-Report; Stop-RunLog
             if ($OpenReport -and $rep) { Open-Report $rep }
         }
@@ -3812,6 +4080,7 @@ function Invoke-Mode([string]$m) {
             Section (T 'Result')
             W ((T '  Actions: {0}  |  OK: {1}  |  Errors: {2}  |  skipped: {3}  |  estimated freed: {4}') -f $res.Aktionen, $res.OK, $res.Fehler, $res.Uebersprungen, (Fmt-Bytes $res.Bytes)) 'Cyan'
             Show-Compare $pre $post
+            try { Show-PerfEffect (Get-PerfEffect $pre $post @()) } catch { W (T '  Key figures could not be compared: {0}' ($_.Exception.Message)) 'DarkYellow' }
             [ordered]@{ Lauf = $Script:RunId; Aktionen = $res.Aktionen; OK = $res.OK; Fehler = $res.Fehler; Uebersprungen = $res.Uebersprungen; BytesGeschaetzt = $res.Bytes; ScoreVorher = $pre.Score.Wert; ScoreNachher = $post.Score.Wert } | ConvertTo-Json | Out-File (Join-Path $Script:RunDir 'zusammenfassung.json') -Encoding utf8
             $rep = New-Report
             W (T '  Recommendation: restart the PC and run "Scan" again after 2-3 boots - only then do the boot times show the effect.') 'Cyan'
@@ -3825,6 +4094,7 @@ function Invoke-Mode([string]$m) {
             if (-not $a) { $a = $s[0] }
             $b = if ($To) { $s | Where-Object { $_.Name -like "*$To*" } | Select-Object -First 1 } else { $s[-1] }
             Show-Compare (Read-Snapshot $a) (Read-Snapshot $b)
+            $hist = Read-SnapshotHistory; if ($hist.Effekt) { Show-PerfEffect $hist.Effekt }
         }
         'Report' { $rep = New-Report; if ($rep) { Open-Report $rep } }
         'Restore' { Start-RunLog 'restore'; $null = Invoke-Restore; Stop-RunLog }

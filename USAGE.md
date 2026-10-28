@@ -26,7 +26,7 @@ Double-click `WinTidy App.cmd` → confirm the Windows prompt with **Yes** → t
 3. **"Apply selected"**: creates a restore point, applies the changes and then shows before/after.
 4. **Hardware** (Overview, "For experts"): cooling, fans, temperatures of processor, graphics card and drives, throttling, battery wear and refresh rate. With **"Test cooling"** WinTidy puts the processor under load for about a minute and checks whether the cooling keeps up.
 5. **Debloat**: removes what Windows and PC makers put in your way - ads and suggestions, tracking and personalisation, unneeded taskbar buttons, preinstalled apps. It has its own check and its own "Apply selected" button. Only ads and suggestions are ticked, the rest is up to you. Settings can be undone under History; removed apps can be reinstalled from the Store. Not offered on managed PCs and Windows Server.
-6. **History**: boot time chart across all restarts, all checks and optimizations.
+6. **History**: trend of eight key figures (start time, waiting time after the desktop appears, startup programs, background processes, memory, processor and drive load at idle, free space) plus the boot time chart across all restarts, all checks and optimizations. The home page and the report answer "Did WinTidy help?" at a glance. Start times are only judged from restarts after the optimization (at least 2), so they show "not measurable yet" at first.
 7. **Settings**: appearance (same as Windows, light or dark), language, **updates**, undo, create desktop shortcut, thorough check, expert mode.
 
 The app uses the same logic and the same data as the command line – you can use both alternately.
@@ -37,7 +37,7 @@ The app uses the same logic and the same data as the command line – you can us
 2. Double-click `WinTidy.cmd` → confirm admin rights → menu.
 3. **[1] Scan** → measures, checks all rules, opens the HTML report. Changes nothing.
 4. **[3] Apply** → restore point, then every rule with a confirmation prompt.
-5. Restart the PC normally 2–3 times, then **[1] Scan** again → the report shows before/after including the boot time history.
+5. Restart the PC normally 2–3 times, then **[1] Scan** again → the report shows "Did WinTidy help?" with the key figures, before/after including the boot time history.
 
 ## Modes
 
@@ -100,6 +100,13 @@ At prompts: `y` yes · `n` no · `a` all of this rule · `s` skip rule. (`j`/`ja
 - **Browser caches (`CLN-BROWSER`, risk Low, not preselected):** Edge, Chrome, Brave, Vivaldi, Opera/Opera GX and Firefox, all profiles. Offered per browser from `BrowserCacheMinMB` (default 500 MB). Only the cache folders are emptied (`Cache`, `Code Cache`, `GPUCache`, the shader caches and Firefox `cache2`) – you stay signed in, cookies, history, passwords, bookmarks and extensions are not touched. The browser must be closed: if it is still open (Edge and Chrome often keep running in the background), the item is skipped and nothing is deleted. Websites load a little slower the first time afterwards, which is why nothing is preselected. With `-Yes` only browsers that are closed are cleaned.
 - **Large files (`CLN-BIGFILES`, info only):** lists the largest files (from `BigFileMinMB`, default 1 GB) in Downloads, Desktop, Documents and Videos and how much space files in Downloads older than `DownloadsOldDays` (default 90) take. WinTidy **never deletes** them – you decide. Files that OneDrive keeps "online only" are not counted, links are not followed.
 - **Before/after:** the comparison (app result, console, report) now also shows temp files, recycle bin, crash reports and browser caches in MB – measured, not estimated.
+
+## Did WinTidy help? (performance key figures)
+
+- **Eight key figures**, all measured by Windows or WinTidy itself: start time until ready, waiting time after the desktop appears, programs starting with Windows, background processes at idle, memory in use at idle, processor load at idle, drive activity at idle and free space on the Windows drive.
+- **Baseline and answer:** the first "before" snapshot of an optimization is compared with the latest check. The answer is one sentence (helped / mixed / no measurable change / no improvement) plus a table with before, now and rating.
+- **Honest by design:** small changes inside the measurement noise count as "unchanged". Start times are only taken from restarts after the optimization (at least 2) and show "not measurable yet" until then. If the PC was still busy while measuring, processor and drive values are marked and not counted as worse. For a fair comparison, check with the PC idle and no big program open.
+- Where: home page of the app (card), History page (trend per key figure), result page after an optimization, console after Scan/Apply/Compare and the HTML report.
 
 ## Reminder to check again
 

@@ -71,7 +71,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 
 `WinTidy.cmd` asks for admin rights and passes any parameters through.
 
-Each run writes a console transcript, a JSON-lines action log, before/after snapshots and an HTML report with a boot-time history. To adapt WinTidy to a device, put only the keys you want to change into `WinTidy.config.local.json` (personal, git-ignored, never overwritten by an update). All keys and their defaults are listed in `WinTidy.config.example.json`.
+Each run writes a console transcript, a JSON-lines action log, before/after snapshots and an HTML report with a "Did WinTidy help?" verdict, a trend for eight performance key figures and a boot-time history. To adapt WinTidy to a device, put only the keys you want to change into `WinTidy.config.local.json` (personal, git-ignored, never overwritten by an update). All keys and their defaults are listed in `WinTidy.config.example.json`.
 
 ## Requirements
 
@@ -93,6 +93,7 @@ pwsh ./tests/Test-GuiApi.ps1
 pwsh ./tests/Test-Update.ps1
 pwsh ./tests/Test-Debloat.ps1
 pwsh ./tests/Test-Storage.ps1
+pwsh ./tests/Test-Perf.ps1
 ```
 
 GitHub Actions runs them on Windows PowerShell 5.1 and PowerShell 7 for every push and pull request. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the rule contract in [DEVELOPMENT.md](DEVELOPMENT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).

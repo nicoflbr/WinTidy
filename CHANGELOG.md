@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.8.0 – 2026-10-28
+**Did WinTidy help? - performance key figures with history**
+- WinTidy no longer shows only the boot time. Eight key figures that Windows or WinTidy measure themselves and that a cleanup can really influence are compared before and after, and tracked over time: start time until ready, waiting time after the desktop appears, programs starting with Windows, background processes at idle, memory in use at idle, processor load at idle, drive activity at idle (new) and free space on the Windows drive.
+- One clear answer: "WinTidy helped: 5 of 8 measured key figures improved ..." / mixed / no measurable change / no improvement. The baseline is the first "before" snapshot of an optimization, the current state is the latest snapshot.
+- Honest numbers: every key figure has a noise tolerance (a change inside it counts as "unchanged"). Start times are only judged from starts **after** the optimization (at least 2 - a start right after it still shows the old state); until then they show "not measurable yet" together with a hint. Processor and drive values from a PC that was still busy are not counted as worse (marked "PC was busy while measuring").
+- **App:** new card on the home page (headline, the key figures with before/now/rating, button to the trend), a trend card with one chart per key figure on the History page, and a line under the result of an optimization.
+- **Report:** new sections "Did WinTidy help?" (verdict + table) and "Trend of the key figures" (one small chart per key figure, optimizations marked). **Command line:** the same table after Scan, Apply and Compare.
+- Better idle measurement: WinTidy first waits (max. 8 s) until the processor has calmed down, takes 6 readings and uses the median, so a single spike or WinTidy's own work no longer distorts the value. It is taken first in the snapshot. New snapshot fields `Leerlauf.PlatteProzent`, `Leerlauf.PlatteOpsProSek`, `Leerlauf.Ruhig` (older snapshots work without them).
+- The before/after table now has noise tolerances too (idle CPU, RAM, processes, threads, drive activity, start times) and two new rows (drive activity, waiting time after the desktop appears).
+- Fix: the result tiles of the app (score, startup programs, processes, memory, ...) were looked up by German names and never matched the translated key figure names; they use the internal id now.
+- New `Read-SnapshotHistory` (one pass over all snapshots: key figures per point in time, boots, effect), `Get-PerfEffect`, `Get-PerfDefs`; `Get-HistoryData`/`Get-HistoryLight` return `Perf`, `Effekt`, `Defs`, `Kopfzeile`; `Invoke-FixSelection` returns `Wirkung`.
+- New `tests/Test-Perf.ps1` (median and calm detection, verdicts, tolerance, start times only after the optimization, old snapshots, history, report in English and German), also run by CI and the release workflow.
+
 ## 1.7.0 – 2026-10-26
 **Storage**
 - New rule `CLN-BROWSER` (risk Low, not preselected): empties large browser caches of Edge, Chrome, Brave, Vivaldi, Opera/Opera GX and Firefox (all profiles), from `BrowserCacheMinMB` (500 MB) per browser. Only the cache folders are emptied (`Cache`, `Code Cache`, `GPUCache`, shader caches, Firefox `cache2`) - you stay signed in; cookies, history, passwords, bookmarks and extensions are never touched. Skipped while the browser is still open; before deleting, WinTidy checks the browser folder, the folder names and links again.

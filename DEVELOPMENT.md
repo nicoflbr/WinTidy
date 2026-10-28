@@ -2,7 +2,7 @@
 
 This document is the basis for further development. It describes the goal and principles, the architecture, the rule contract, the data formats, the tests, the lessons learned from the first deployment and open ideas.
 
-As of version 1.7.0, 2026-10-26.
+As of version 1.8.0, 2026-10-28.
 
 ---
 
@@ -48,6 +48,7 @@ WinTidy\
     Test-Update.ps1      # updater offline: checksums, package checks, install, rollback (built ZIPs, mocked network)
     Test-Debloat.ps1     # Debloat page: catalog, allow-list, detection per build, fix, app removal, contexts (registry and apps replaced)
     Test-Storage.ps1     # browser caches, large-file overview, storage figures in before/after, check reminder (real temp folders)
+    Test-Perf.ps1        # performance key figures: idle median, verdict with tolerance, start times after the optimization, history, report
     Probe-Hardware.ps1   # diagnosis on real PCs: which sensor sources deliver what (writes probe-hardware.json)
     Probe-Display.ps1    # diagnosis: refresh rates according to driver and EDID
   WinTidy-Daten\         # runtime data up to 1.2 (in .gitignore); since 1.3 see below
@@ -170,6 +171,15 @@ Own page in the app (nav item **Debloat**) with its own check and its own "Apply
 - **Snapshot:** `Speicher.BrowserCacheBytes` (new field). `Get-CompareMetrics` shows the storage fields in MB (temp, recycle bin, crash reports, browser caches); old snapshots without a field give no delta.
 - **Check reminder:** `Get-CheckReminder` reads only the file names of the snapshots. App: `init` passes `Erinnerung`, `Update-Banners` shows it until the next check (`$State.Reminder`). CLI: hint above the menu. No scheduled task, no background process.
 
+### 3e. Performance key figures: "did WinTidy help?" (since 1.8)
+
+- **Definition:** `Get-PerfDefs` (a function, not a `$Script:` table, because the tests load functions via the AST). Eight figures: `BootGesamt`, `BootNach`, `Autostart`, `Prozesse`, `Ram`, `Cpu`, `Platte`, `Frei`. Each has `Besser` (lower|higher), a noise tolerance (`Abs` absolute, `Rel` share of the old value, the larger one counts), `Boot` (comes from the boot events) and `Ruhe` (only reliable if the PC was idle). Choose figures that (1) Windows or WinTidy measure themselves, (2) a cleanup can really influence and (3) a user understands. Do not add figures that only describe the system (counts of installed programs, driver packages ...) - those stay in the detailed before/after table (`Get-CompareMetrics`).
+- **Verdict:** `Get-PerfEffect $base $cur $boots`. `$base` = first snapshot with label `vorher`, `$cur` = latest snapshot. Rating per figure: `besser` | `schlechter` | `=` (inside the tolerance) | `offen` (not measurable). Verdict `Urteil`: `besser` (some better, none worse), `gemischt`, `schlechter`, `gleich`, `offen`. Ready-made, translated texts (`Kopfzeile`, `BootHinweis`, `*Text`) come from the engine because the app UI thread does not load the engine.
+- **Start times:** only from boot events **after** `$base.Zeit`, newest 5, at least 2 - otherwise `offen`. A start right after the optimization still shows the old state; the old `Mittel5` of the "after" snapshot is therefore never used for the verdict.
+- **Idle measurement:** `Get-IdleSample` waits up to 8 s until the CPU is at most 15 %, takes 6 readings and uses the median (`Get-Median`); `Ruhig` = median CPU at most 25 %. If `Ruhig` is false in the base or the current snapshot, CPU and drive differences count as `=` and are flagged `Unsicher`. Raw readings come from `Get-IdleCounters` (replaceable in tests). The idle sample is taken first in `New-Snapshot`, before the heavy queries.
+- **History:** `Read-SnapshotHistory` reads all snapshots once (`Punkte` per snapshot via `Get-PerfPoint`, merged `Boots`, `Effekt`). Used by `Get-HistoryData`/`Get-HistoryLight`, the CLI and the app (`Load-Effect`, `Draw-Perf`). New snapshot fields only get added (`Leerlauf.PlatteProzent`, `PlatteOpsProSek`, `Ruhig`); older snapshots without them give `offen` / count as calm.
+- **Display:** console `Show-PerfEffect`; report sections "Did WinTidy help?" and "Trend of the key figures" (`New-PerfSpark`); app: `EffectCard` (home), `PerfCard` (history), `ResultEffect` (result page). `Get-CompareMetrics` rows have an `Id` - look results up by `Id`, never by the (translated) `Kennzahl`.
+
 ---
 
 ## 4. Rule contract
@@ -241,7 +251,7 @@ Aufgaben   { Gesamt, Eigene }
 Programme  { Installiert, StoreApps }
 Treiber    { Pakete, Duplikate, Geistergeraete }
 Ereignisse { FehlerSystem7T, FehlerAnwendung7T, Top [ {Quelle, Anzahl} ] }
-Leerlauf   { CpuProzent, RamBelegtProzent, RamBelegtGB, Prozesse, Threads, Handles }
+Leerlauf   { CpuProzent, RamBelegtProzent, RamBelegtGB, Prozesse, Threads, Handles, PlatteProzent (1.8), PlatteOpsProSek (1.8), Ruhig (1.8, false = PC was busy) }  (values are medians of 6 readings)
 Speicher   { PapierkorbBytes, TempBytes, CrashDumpsBytes, BrowserCacheBytes (1.7) }
 Sicherheit { SecureBoot, DefenderEchtzeit, AndererVirenschutz (1.2), AusfuehrungsrichtlinieCU, WindowsSupportEnde (1.3, yyyy-MM-dd), TageSeitUpdate (1.3), WindowsUpdateAus (1.3) }
 Hardware   (1.2) { Laptop, Sensorquelle, CpuTempC, Luefter [ {Name, Upm} ], Gpu {Name, TempC, LuefterProzent, Gruende},
@@ -308,6 +318,7 @@ pwsh ./tests/Test-GuiApi.ps1    # app interface: findings, RP-FEHLT, OhneRP, can
 pwsh ./tests/Test-Update.ps1    # updater: checksums, package checks, zip-slip, install, rollback, journal repair (offline)
 pwsh ./tests/Test-Debloat.ps1   # Debloat page: catalog, detection per Windows build, fix, app removal, never-remove list, contexts
 pwsh ./tests/Test-Storage.ps1   # browser caches (only cache folders, browser open, links, unknown paths), large files, comparison, reminder
+pwsh ./tests/Test-Perf.ps1      # performance key figures: idle median/calm, verdict + tolerance, starts after the optimization, history, report (EN/DE)
 ```
 
 All of them also run on Linux/macOS with PowerShell 7. Functions are loaded via the AST so that Windows-specific startup code is not executed. `Test-Hardware.ps1` replaces the data sources (`Get-HwMonitorSensors`, `Get-NvidiaGpus`, `Get-ThermalZones`, `Get-DiskHealth`, `Get-CpuPerfSample` …) with functions returning synthetic values – so always build new hardware data sources as their own `Get-*` function.
@@ -441,7 +452,7 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 - [ ] More languages (`lang\<code>.psd1` with the same mechanism)
 - [ ] Code signing, so that RemoteSigned/AllSigned is enough without `-ExecutionPolicy Bypass` - and so that updates can be verified by signature, not only by checksum
 - [ ] Combined report across several PCs
-- [ ] Benchmark mode (disk sequential/4K with `winsat` or DiskSpd, app start time measurement) for before/after beyond the boot time
+- [ ] Benchmark mode (disk sequential/4K with `winsat` or DiskSpd, app start time measurement) as additional key figures. The passive key figures (start time, idle load, memory, drive activity ...) are done since 1.8 (section 3e)
 
 **Deliberately not planned:** registry cleaners, telemetry/privacy "hardening" packs, switching off security features, driver updaters from third-party sources.
 

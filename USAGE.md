@@ -70,6 +70,21 @@ Examples:
 .\WinTidy.ps1 -Mode Update                     # look for a new WinTidy version and install it
 ```
 
+## Profiles (save and reuse the rule selection)
+
+```powershell
+.\WinTidy.ps1 -Mode Rules -SavePreset mine.json           # writes the default selection
+.\WinTidy.ps1 -Mode Rules -Rule CLN-TEMP,STA-HEAVY -SavePreset small.json
+.\WinTidy.ps1 -Mode Preview -Preset mine.json             # use it
+.\WinTidy.ps1 -Mode Apply -Preset Safe                    # built-in: default rules without anything that needs confirmation
+```
+
+A profile is a small JSON file (`Format`, `Version`, `Name`, `Regeln`) that you can copy to another PC. Unknown rule IDs are ignored with a note. `-Rule` takes precedence over `-Preset`. Risk levels, confirmations and the company-PC filter still apply, and `-Yes` still only runs risk Low.
+
+## Report for sharing
+
+`.\WinTidy.ps1 -Mode Report -Share` creates `WinTidy-Bericht-teilbar.html` next to the normal report. PC name, user name, profile folder name, domain and the data folder path are replaced by placeholders. With `-Pdf` a PDF is created as well (needs Microsoft Edge or Google Chrome; otherwise print the HTML file from the browser). The app has the same function on the Settings page ("Share report"). Please still read the report before you pass it on - other details (programs, hardware, drive sizes) stay in it.
+
 ## Risk levels
 
 | Level | Meaning | Prompt | with `-Yes` |
@@ -93,6 +108,7 @@ At prompts: `y` yes · `n` no · `a` all of this rule · `s` skip rule. (`j`/`ja
 - **System:** ghost devices, storage for restore points, SSD TRIM, stuck maintenance, system integrity (DISM/SFC), Game Bar background recording
 - **Hardware & cooling:** processor and graphics card temperature, fan speeds (stopped CPU fan, full speed on a cool PC, pump), throttling due to heat or firmware, several fan tools at once, drive health/temperature/wear, SMART warnings, memory diagnostic and WHEA errors, battery wear, cooling policy, refresh rate
 - **Hardware configuration:** only one RAM module, RAM speed (XMP/EXPO), monitor on the motherboard instead of the graphics card, graphics card with too narrow a PCIe link, missing graphics driver, devices with an error code, power plan limits the processor/turbo off, Intel 13th/14th gen with old microcode, LAN only 100 Mbit/s, system drive vs. free NVMe
+- **Security health check, Storage Sense, AI features (info only):** drive encryption, security chip (TPM), memory integrity, Defender tamper protection; whether Storage Sense is on and deletes old downloads; Copilot app and Recall. WinTidy only shows the state, it changes nothing.
 - **Security/stability:** Windows without support or without updates, Secure Boot and the new Secure Boot certificates, antivirus (third-party products too), firewall, UAC, BIOS age, PowerShell policy, unfavorable tuning settings (pagefile off, Prefetch/SysMain off, Defender off by policy), warnings in the event log
 
 ## Browser caches and large files

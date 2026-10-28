@@ -2,7 +2,7 @@
 
 This document is the basis for further development. It describes the goal and principles, the architecture, the rule contract, the data formats, the tests, the lessons learned from the first deployment and open ideas.
 
-As of version 1.8.0, 2026-10-28.
+As of version 1.9.0, 2026-10-28.
 
 ---
 
@@ -49,6 +49,7 @@ WinTidy\
     Test-Debloat.ps1     # Debloat page: catalog, allow-list, detection per build, fix, app removal, contexts (registry and apps replaced)
     Test-Storage.ps1     # browser caches, large-file overview, storage figures in before/after, check reminder (real temp folders)
     Test-Perf.ps1        # performance key figures: idle median, verdict with tolerance, start times after the optimization, history, report
+    Test-Features.ps1    # SEC-HEALTH, SYS-STORAGESENSE, SYS-AI, profiles (export/import), shareable report
     Probe-Hardware.ps1   # diagnosis on real PCs: which sensor sources deliver what (writes probe-hardware.json)
     Probe-Display.ps1    # diagnosis: refresh rates according to driver and EDID
   WinTidy-Daten\         # runtime data up to 1.2 (in .gitignore); since 1.3 see below
@@ -181,6 +182,11 @@ Own page in the app (nav item **Debloat**) with its own check and its own "Apply
 - **Display:** console `Show-PerfEffect`; report sections "Did WinTidy help?" and "Trend of the key figures" (`New-PerfSpark`); app: `EffectCard` (home), `PerfCard` (history), `ResultEffect` (result page). `Get-CompareMetrics` rows have an `Id` - look results up by `Id`, never by the (translated) `Kennzahl`.
 
 ---
+
+### 3f. Security check, Storage Sense, AI inventory, profiles, report for sharing (since 1.9)
+- `SEC-HEALTH`, `SYS-STORAGESENSE` and `SYS-AI` are info rules (`Fix = $null`, `Stufe` ok|warn|krit|''), no influence on the score. Data sources are their own `Get-*` functions (`Get-BitLockerState`, `Get-MemoryIntegrityState`, `Get-TpmState`, `Get-DefenderTamperState`, `Get-StorageSenseState`, `Get-AiFeatureState`) that return `$null` when something is unreadable, so `Test-Features.ps1` can replace them. Deliberately no switches: Recall removal cannot be undone, the Debloat page forbids policies for the whole PC and security switches, and the Storage Sense registry semantics are only partly documented.
+- Profiles: JSON `{ Format = 'WinTidy-Profil', Version = 1, WinTidy, Name, Regeln = [rule IDs] }` (field names stay German like the other stored data). `Resolve-WtPreset` (built-in `Safe`/`Standard` or a file; unknown IDs are dropped and reported, errors throw readable texts), `Save-WtPreset`. `Invoke-Mode` sets `$Script:Rule` from `-Preset` unless `-Rule` is given; an empty result aborts instead of falling back to the default selection.
+- Report for sharing: `New-ShareableReport` builds the normal report first and derives `WinTidy-Bericht-teilbar.html` from it (`Get-ShareReplacements` + `ConvertTo-ShareableHtml`: text and attribute values, never the `<style>` block, terms shorter than 3 characters are skipped, longest term first). PDF via `Convert-HtmlToPdf` (headless Edge/Chrome with its own temporary profile folder, 90 s limit, readable message instead of an exception). Anything new that could identify the person or PC in the report needs an entry in `Get-ShareReplacements`.
 
 ## 4. Rule contract
 
@@ -319,6 +325,7 @@ pwsh ./tests/Test-Update.ps1    # updater: checksums, package checks, zip-slip, 
 pwsh ./tests/Test-Debloat.ps1   # Debloat page: catalog, detection per Windows build, fix, app removal, never-remove list, contexts
 pwsh ./tests/Test-Storage.ps1   # browser caches (only cache folders, browser open, links, unknown paths), large files, comparison, reminder
 pwsh ./tests/Test-Perf.ps1      # performance key figures: idle median/calm, verdict + tolerance, starts after the optimization, history, report (EN/DE)
+pwsh ./tests/Test-Features.ps1  # security health check, Storage Sense, AI inventory, profiles round trip and errors, anonymized report, PDF fallback
 ```
 
 All of them also run on Linux/macOS with PowerShell 7. Functions are loaded via the AST so that Windows-specific startup code is not executed. `Test-Hardware.ps1` replaces the data sources (`Get-HwMonitorSensors`, `Get-NvidiaGpus`, `Get-ThermalZones`, `Get-DiskHealth`, `Get-CpuPerfSample` …) with functions returning synthetic values – so always build new hardware data sources as their own `Get-*` function.
@@ -424,7 +431,7 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 - [ ] `SYS-TWEAKS` with a fix (pagefile automatic, Prefetch/SysMain on) incl. undo
 - [ ] Autostart via scheduled tasks with a logon trigger and services of vendor tools; score only without protected entries
 - [ ] Error counting with an exclusion list (DCOM 10016 etc.) and per day of uptime; score cap per category; mark "coverage" (admin/sensors) and comparability before/after
-- [ ] Report "for sharing" (anonymize user name/PC name/paths)
+- [x] Report "for sharing" (anonymize user name/PC name/paths) (1.9.0, `-Share`/`-Pdf`; best effort - hardware and program names stay)
 - [ ] App: banners can be hidden, time axis in the boot time chart, focus after page change, live region for progress, "larger font", result tiles only on change, plain/technical text separated (`Technik` field)
 - [ ] More than 64 logical processors (processor groups) in the cooling test; option "thorough" (300 s) and SIMD load
 

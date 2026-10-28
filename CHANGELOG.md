@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.0 – 2026-10-28
+**Security check, Storage Sense, AI inventory, profiles, report for sharing**
+- New info rule `SEC-HEALTH` (security health check, read-only): drive encryption of the system drive (BitLocker / device encryption: on, paused, off), security chip (TPM), memory integrity (core isolation) and the tamper protection of Microsoft Defender, each as a traffic light with a plain-language text. No changes to the health score. An encrypted drive that is off is only a warning on laptops; the tamper protection is not judged when another antivirus is active.
+- New info rule `SYS-STORAGESENSE`: shows whether Windows Storage Sense is on and whether it deletes old files from the Downloads folder (with the number of days). Status only - WinTidy never changes it and never preselects anything in Downloads.
+- New info rule `SYS-AI`: inventory of AI features - Copilot app installed or blocked by policy, Recall active / not active / blocked, AI analysis of activity blocked by policy. WinTidy only informs; there are deliberately no switches (removing Recall cannot be undone and policies for the whole PC are not part of the Debloat page).
+- **Profiles:** the rule selection can be saved and loaded. `-Mode Rules -SavePreset mine.json` writes the selection (default selection, or `-Rule`/`-Preset`) as a small JSON file; `-Preset mine.json` (or the built-in `Safe` / `Standard`) uses it with `Scan`, `Preview`, `Apply` and `Rules`. Unknown rule IDs are ignored with a note, `-Rule` takes precedence, and the usual protections stay in place (risk levels, confirmations, company-PC filter, `-Yes` only runs risk Low).
+- **Report for sharing:** `-Mode Report -Share` writes `WinTidy-Bericht-teilbar.html`: PC name, user name, profile folder name, domain and the data folder path are replaced by placeholders (also in tooltips); a note says so. `-Pdf` additionally creates a PDF with the headless Edge/Chrome if one is installed (otherwise a hint to print from the browser). **App:** new card "Share report" on the Settings page with a PDF option.
+- New `tests/Test-Features.ps1` (rules with stubbed data sources, profile round trip and error cases, anonymizing, PDF fallback), also run by CI and the release workflow.
+- Not included on purpose: a profile selector in the app and an interactive setup assistant (the command line has the profiles), switches for Recall/Copilot, changing Storage Sense settings, and a support package.
+
 ## 1.8.0 – 2026-10-28
 **Did WinTidy help? - performance key figures with history**
 - WinTidy no longer shows only the boot time. Eight key figures that Windows or WinTidy measure themselves and that a cleanup can really influence are compared before and after, and tracked over time: start time until ready, waiting time after the desktop appears, programs starting with Windows, background processes at idle, memory in use at idle, processor load at idle, drive activity at idle (new) and free space on the Windows drive.

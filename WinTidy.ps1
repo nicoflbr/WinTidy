@@ -38,6 +38,9 @@
     .\WinTidy.ps1 -Mode Hardware -CoolingTest -Seconds 90   # additionally a cooling test under load
     .\WinTidy.ps1 -Mode Scan -Language de         # German output
     .\WinTidy.ps1 -Mode Update                   # install a newer WinTidy release
+    .\WinTidy.ps1 -Mode Rules -Preset Safe -SavePreset mine.json   # save a rule selection as a profile
+    .\WinTidy.ps1 -Mode Preview -Preset mine.json                  # use a saved profile (or Safe / Standard)
+    .\WinTidy.ps1 -Mode Report -Share -Pdf       # report without PC name, user name and paths (optional PDF)
 #>
 [CmdletBinding()]
 param(
@@ -56,6 +59,10 @@ param(
     [switch]$NoRestorePoint,
     [switch]$OpenReport,
     [switch]$CoolingTest,
+    [string]$Preset,
+    [string]$SavePreset,
+    [switch]$Share,
+    [switch]$Pdf,
     [int]$Seconds = 0,
     [ValidateSet('auto', 'en', 'de')]
     [string]$Language = 'auto'
@@ -67,7 +74,7 @@ if ($Rule) { $Rule = @($Rule | ForEach-Object { $_ -split ',' } | ForEach-Object
 if ($ExcludeRule) { $ExcludeRule = @($ExcludeRule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.8.0'
+$Script:Version = '1.9.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)
@@ -1109,6 +1116,57 @@ function Get-WindowsSupportInfo {
     $name = ("{0} {1}" -f $(if ([int]$build -ge 22000) { 'Windows 11' } else { 'Windows 10' }), $cv.DisplayVersion).Trim()
     $r = [pscustomobject]@{ Build = $build; Edition = $ed; Version = $name; Ende = $ende; TageSeitUpdate = $tage; WuDeaktiviert = [bool]($wu -and $wu.StartMode -eq 'Disabled') }
     $Script:Cache.WinSupport = $r
+    return $r
+}
+
+# --- Read-only data sources of the security health check, Storage Sense and AI inventory (replaceable in tests)
+# Status of the drive encryption of the system drive: Geschuetzt | Ausgesetzt | Aus | $null (unknown)
+function Get-BitLockerState {
+    try {
+        $v = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop | Select-Object -First 1
+        if (-not $v) { return $null }
+        $prot = [string]$v.ProtectionStatus; $vs = [string]$v.VolumeStatus
+        if ($prot -match '^(On|1)$') { return 'Geschuetzt' }
+        if ($prot -match '^(Off|0)$') { if ($vs -match 'Encrypt') { return 'Ausgesetzt' } else { return 'Aus' } }
+        return $null
+    } catch { return $null }
+}
+# Memory integrity (core isolation, HVCI): $true | $false | $null (unknown)
+function Get-MemoryIntegrityState {
+    try {
+        $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\State' -ErrorAction Stop).HVCIEnabled
+        if ($null -eq $v) { return $null }
+        return ([int]$v -eq 1)
+    } catch { return $null }
+}
+# Security chip: @{ Vorhanden; Bereit } or $null
+function Get-TpmState {
+    try { $x = Get-Tpm -ErrorAction Stop; return [pscustomobject]@{ Vorhanden = [bool]$x.TpmPresent; Bereit = [bool]$x.TpmReady } } catch { return $null }
+}
+# Tamper protection of Microsoft Defender: $true | $false | $null
+function Get-DefenderTamperState {
+    try { $m = Get-MpComputerStatus -ErrorAction Stop; if ($null -eq $m.IsTamperProtected) { return $null }; return [bool]$m.IsTamperProtected } catch { return $null }
+}
+# Storage Sense (per user) and its policy: @{ Aktiv; DownloadsTage; PapierkorbTage; Richtlinie } or $null
+function Get-StorageSenseState {
+    $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy'
+    $pol = $null; try { $pv = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\StorageSense' -ErrorAction Stop).AllowStorageSenseGlobal; if ($null -ne $pv) { $pol = [int]$pv } } catch { }
+    if (-not (Test-Path -LiteralPath $k)) { return [pscustomobject]@{ Aktiv = $false; DownloadsTage = 0; PapierkorbTage = 0; Richtlinie = $pol } }
+    try {
+        $p = Get-ItemProperty -LiteralPath $k -ErrorAction Stop
+        $dl = 0; if ($null -ne $p.'512') { $dl = [int]$p.'512' }
+        $rb = 0; if ($null -ne $p.'256') { $rb = [int]$p.'256' }
+        return [pscustomobject]@{ Aktiv = ($p.'01' -eq 1); DownloadsTage = $dl; PapierkorbTage = $rb; Richtlinie = $pol }
+    } catch { return $null }
+}
+# AI features: Copilot app, Recall, policies. Only reads.
+function Get-AiFeatureState {
+    $r = [pscustomobject]@{ CopilotApp = $false; CopilotRichtlinieAus = $false; RecallAktiv = $null; RecallRichtlinie = $null; DatenanalyseAus = $false }
+    try { $r.CopilotApp = [bool](Get-AppxPackage -Name 'Microsoft.Copilot' -ErrorAction Stop) } catch { }
+    try { $r.CopilotRichtlinieAus = ((Get-ItemProperty 'HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot' -ErrorAction Stop).TurnOffWindowsCopilot -eq 1) } catch { }
+    try { $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' -ErrorAction Stop).AllowRecallEnablement; if ($null -ne $v) { $r.RecallRichtlinie = [int]$v } } catch { }
+    foreach ($h in 'HKLM', 'HKCU') { try { if ((Get-ItemProperty "${h}:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" -ErrorAction Stop).DisableAIDataAnalysis -eq 1) { $r.DatenanalyseAus = $true } } catch { } }
+    if ($Script:IsAdmin) { try { $f = Get-WindowsOptionalFeature -Online -FeatureName Recall -ErrorAction Stop; $r.RecallAktiv = ([string]$f.State -eq 'Enabled') } catch { } }
     return $r
 }
 
@@ -2328,6 +2386,63 @@ $Script:Rules = @(
         Fix = $null
     }
 
+    [pscustomobject]@{ Id = 'SEC-HEALTH'; Kategorie = 'Sicherheit'; Titel = (T 'Security health check'); Risiko = 'Info'; Wirkung = 'Sicherheit'; Admin = $true; Standard = $true
+        Warum = (T 'Shows whether drive encryption, the security chip (TPM), memory integrity and the tamper protection of Microsoft Defender are active. Only reads, changes nothing.')
+        Detect = {
+            $bl = Get-BitLockerState
+            if ($bl -eq 'Geschuetzt') { New-Item2 (T 'The system drive is encrypted – the data stays unreadable if the PC is lost or stolen') 0 @{ Stufe = 'ok' } }
+            elseif ($bl -eq 'Ausgesetzt') { New-Item2 (T 'The drive encryption of the system drive is paused and protects nothing right now. Resume it under Settings > Privacy & security > Device encryption') 0 @{ Stufe = 'warn' } }
+            elseif ($bl -eq 'Aus') {
+                $lap = $false; try { $lap = [bool](Get-ChassisInfo).Laptop } catch { }
+                New-Item2 (T 'The system drive is not encrypted. If the PC is lost or stolen, others can read the data. Device encryption can be turned on under Settings > Privacy & security > Device encryption (depending on the Windows edition as BitLocker)') 0 @{ Stufe = $(if ($lap) { 'warn' } else { '' }) }
+            }
+            $tpm = Get-TpmState
+            if ($tpm) {
+                if ($tpm.Vorhanden -and $tpm.Bereit) { New-Item2 (T 'The security chip (TPM) is present and ready') 0 @{ Stufe = 'ok' } }
+                elseif ($tpm.Vorhanden) { New-Item2 (T 'The security chip (TPM) is present but not ready. Please check it in the BIOS or with tpm.msc') 0 @{ Stufe = 'warn' } }
+                else { New-Item2 (T 'No security chip (TPM) found. Windows 11 needs TPM 2.0; on a virtual machine or an old PC this is normal') 0 @{ Stufe = '' } }
+            }
+            $mi = Get-MemoryIntegrityState
+            if ($mi -eq $true) { New-Item2 (T 'Memory integrity (core isolation) is on and protects the Windows kernel') 0 @{ Stufe = 'ok' } }
+            elseif ($mi -eq $false) { New-Item2 (T 'Memory integrity (core isolation) is off. It protects the Windows kernel against attacks. It can be turned on under Settings > Privacy & security > Windows Security > Device security > Core isolation; old incompatible drivers can prevent it') 0 @{ Stufe = '' } }
+            if (-not @(Get-OtherSecurityProducts 'AntiVirusProduct').Count) {
+                $tp = Get-DefenderTamperState
+                if ($tp -eq $true) { New-Item2 (T 'The tamper protection of Microsoft Defender is on – malware cannot simply turn the antivirus off') 0 @{ Stufe = 'ok' } }
+                elseif ($tp -eq $false) { New-Item2 (T 'The tamper protection of Microsoft Defender is off. Malware could turn the antivirus off. Turn it on under Windows Security > Virus & threat protection > Settings') 0 @{ Stufe = 'warn' } }
+            }
+        }
+        Fix = $null
+    }
+
+    [pscustomobject]@{ Id = 'SYS-STORAGESENSE'; Kategorie = 'System'; Titel = (T 'Windows Storage Sense'); Risiko = 'Info'; Wirkung = 'Speicher'; Admin = $false; Standard = $true
+        Warum = (T 'Storage Sense is the cleanup function built into Windows. WinTidy shows whether it is on and what it deletes automatically. Only reads, changes nothing.')
+        Detect = {
+            $ss = Get-StorageSenseState
+            if (-not $ss) { return }
+            if ($ss.Richtlinie -eq 0) { New-Item2 (T 'Storage Sense is turned off by a policy of the organization') 0 @{ Stufe = '' } }
+            elseif (-not $ss.Aktiv) { New-Item2 (T 'Storage Sense (automatic cleanup by Windows) is off. That is fine, WinTidy cleans up on request. It can be turned on under Settings > System > Storage') 0 @{ Stufe = '' } }
+            else {
+                New-Item2 (T 'Storage Sense (automatic cleanup by Windows) is on') 0 @{ Stufe = 'ok' }
+                if ($ss.DownloadsTage -gt 0) { New-Item2 ((T 'Storage Sense deletes files from your Downloads folder that are older than {0} days. Please check under Settings > System > Storage that this is what you want') -f $ss.DownloadsTage) 0 @{ Stufe = 'warn' } }
+            }
+        }
+        Fix = $null
+    }
+
+    [pscustomobject]@{ Id = 'SYS-AI'; Kategorie = 'System'; Titel = (T 'AI features (Copilot, Recall)'); Risiko = 'Info'; Wirkung = 'Sicherheit'; Admin = $false; Standard = $true
+        Warum = (T 'Shows which AI features of Windows are present or active. WinTidy only informs, you decide in the Windows settings.')
+        Detect = {
+            $ai = Get-AiFeatureState
+            if (-not $ai) { return }
+            if ($ai.RecallAktiv -eq $true) { New-Item2 (T 'Recall is on: Windows regularly saves pictures of your screen on this PC so that your activity becomes searchable. If you do not want that, turn it off under Settings > Privacy & security > Recall & snapshots') 0 @{ Stufe = '' } }
+            elseif ($ai.RecallAktiv -eq $false -or $ai.RecallRichtlinie -eq 0) { New-Item2 (T 'Recall (screen history with AI search) is not active on this PC') 0 @{ Stufe = 'ok' } }
+            if ($ai.CopilotRichtlinieAus) { New-Item2 (T 'Copilot is turned off by a policy') 0 @{ Stufe = 'ok' } }
+            elseif ($ai.CopilotApp) { New-Item2 (T 'The Copilot app is installed. If you do not use it, you can uninstall it like any other app under Settings > Apps > Installed apps') 0 @{ Stufe = '' } }
+            if ($ai.DatenanalyseAus) { New-Item2 (T 'Windows may not analyze your activity with AI (policy)') 0 @{ Stufe = 'ok' } }
+        }
+        Fix = $null
+    }
+
     [pscustomobject]@{ Id = 'SYS-TWEAKS'; Kategorie = 'System'; Titel = (T 'Unfavorable tuning settings'); Risiko = 'Info'; Wirkung = 'Leistung/Sicherheit'; Admin = $true; Standard = $true
         Warum = (T 'Some tuning programs and guides turn off Windows features that actually make the PC faster or safer: page file, Prefetch, SysMain, Defender via policy.')
         Detect = {
@@ -3381,6 +3496,9 @@ $Script:Friendly = @{
     'SYS-FSCHECK'         = @((T 'Check drives for errors'), (T 'Result of the file system check.'))
     'SYS-GAMEDVR'         = @((T 'Turn off background recording for games'), (T 'The Xbox Game Bar constantly records the last minutes in games and costs performance. You can still record clips yourself.'))
     'SYS-TWEAKS'          = @((T 'Unfavorable tuning settings'), (T 'Some tuning programs turn off Windows features that actually make the PC faster or safer. WinTidy shows them; someone who knows what they are doing should reset them.'))
+    'SEC-HEALTH'          = @((T 'Security health check'), (T 'Shows in plain words whether the drive is encrypted, the security chip works, memory integrity is on and Defender is protected against tampering. WinTidy changes nothing here.'))
+    'SYS-STORAGESENSE'    = @((T 'Windows Storage Sense'), (T 'Windows can clean up temporary files by itself. WinTidy only shows whether this is on and whether it also deletes old downloads. Nothing is changed.'))
+    'SYS-AI'              = @((T 'AI features (Copilot, Recall)'), (T 'Shows whether Copilot is installed and whether Recall (screen history) is active. WinTidy only informs, you decide in the Windows settings.'))
     'SEC-EXECPOLICY'      = @((T 'Reset the protection setting for scripts'), (T 'Sets a Windows security setting to the value recommended by Microsoft. In everyday use you will not notice anything. Can be undone.'))
     'SEC-CHECKS'          = @((T 'Security'), (T 'Updates and basic protection features of Windows and the PC.'))
     'HW-HINTS'            = @((T 'Hardware hints'), (T 'Settings that an expert can check. Please do not change anything in the BIOS if you are unsure.'))
@@ -4016,6 +4134,112 @@ function Invoke-GuiUpdateApply {
 }
 
 # =============================================================================
+#  Profiles: the rule selection as a small JSON file (export / import)
+# =============================================================================
+function Get-BuiltinPresetNames { return @('Safe', 'Standard') }
+# Safe = default selection without anything that needs a confirmation; Standard = the default selection
+function Get-PresetRuleIds([string]$Name) {
+    if ($Name -eq 'Safe') { return @($Script:Rules | Where-Object { $_.Standard -and $_.Risiko -in 'Niedrig', 'Info' } | ForEach-Object { $_.Id }) }
+    if ($Name -eq 'Standard') { return @($Script:Rules | Where-Object { $_.Standard } | ForEach-Object { $_.Id }) }
+    return $null
+}
+# Name of a built-in profile or path of a profile file -> @{ Name; Ids; Unbekannt }. Throws with a readable message.
+function Resolve-WtPreset([string]$NameOrPath) {
+    $ids = $null; $label = $NameOrPath
+    $b = Get-BuiltinPresetNames | Where-Object { $_ -eq $NameOrPath } | Select-Object -First 1
+    if ($b) { $ids = @(Get-PresetRuleIds $b); $label = $b }
+    elseif ($NameOrPath -and (Test-Path -LiteralPath $NameOrPath -PathType Leaf)) {
+        $j = $null
+        try { $j = Get-Content -LiteralPath $NameOrPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { throw ((T 'Profile could not be read: {0}') -f $_.Exception.Message) }
+        if (-not $j -or -not $j.Regeln) { throw (T 'This file is not a WinTidy profile') }
+        $ids = @($j.Regeln | ForEach-Object { [string]$_ } | Where-Object { $_ })
+        if ($j.Name) { $label = [string]$j.Name }
+    }
+    else { throw ((T 'Profile not found: {0} (built-in profiles: {1})') -f $NameOrPath, ((Get-BuiltinPresetNames) -join ', ')) }
+    $known = @($Script:Rules | ForEach-Object { $_.Id })
+    return [pscustomobject]@{ Name = $label; Ids = @($ids | Where-Object { $known -contains $_ } | Select-Object -Unique); Unbekannt = @($ids | Where-Object { $known -notcontains $_ } | Select-Object -Unique) }
+}
+function Save-WtPreset([string]$Path, [string[]]$Ids, [string]$Name) {
+    if (-not $Name) { $Name = [IO.Path]::GetFileNameWithoutExtension($Path) }
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $o = [ordered]@{ Format = 'WinTidy-Profil'; Version = 1; WinTidy = $Script:Version; Name = $Name; Regeln = @($Ids) }
+    [IO.File]::WriteAllText($full, ($o | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+    return $full
+}
+
+# =============================================================================
+#  Shareable report: no PC name, user name, paths; optional PDF
+# =============================================================================
+function Get-ShareReplacements {
+    $l = New-Object System.Collections.Generic.List[object]
+    function AddRep($von, $nach) { if ($von -and ([string]$von).Trim().Length -ge 3) { $l.Add([pscustomobject]@{ Von = [string]$von; Nach = [string]$nach }) } }
+    AddRep $Script:DataDir (T '[data folder]')
+    AddRep $env:USERPROFILE (T '[user profile]')
+    AddRep $env:COMPUTERNAME (T '[PC name]')
+    AddRep $env:USERNAME (T '[user]')
+    if ($env:USERPROFILE) { AddRep ([IO.Path]::GetFileName(([string]$env:USERPROFILE).TrimEnd('\', '/'))) (T '[user]') }
+    if ($env:USERDOMAIN -and $env:USERDOMAIN -ne $env:COMPUTERNAME) { AddRep $env:USERDOMAIN (T '[domain]') }
+    return @($l.ToArray())
+}
+function Invoke-ShareReplace([string]$Text, $Repl) {
+    foreach ($r in $Repl) { $Text = [regex]::Replace($Text, [regex]::Escape((HtmlEnc $r.Von)), ([string](HtmlEnc $r.Nach)).Replace('$', '$$'), 'IgnoreCase') }
+    return $Text
+}
+# Replaces the terms in text and in attribute values (not in the style block). Longest term first.
+function ConvertTo-ShareableHtml([string]$Html, $Repl) {
+    $Repl = @($Repl | Sort-Object { $_.Von.Length } -Descending)
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($p in [regex]::Split($Html, '(?s)(<style.*?</style>|<[^>]*>)')) {
+        if ($p.StartsWith('<style')) { [void]$sb.Append($p) }
+        elseif ($p.StartsWith('<')) { [void]$sb.Append([regex]::Replace($p, '"[^"]*"|''[^'']*''', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) Invoke-ShareReplace $m.Value $Repl })) }
+        else { [void]$sb.Append((Invoke-ShareReplace $p $Repl)) }
+    }
+    $out = $sb.ToString()
+    $note = "<p class='muted'>$(HtmlEnc (T 'Shareable version: PC name, user name and folder paths were replaced. Please still read the report before you pass it on.'))</p>"
+    $i = $out.LastIndexOf('</div></body>')
+    if ($i -ge 0) { $out = $out.Insert($i, $note) }
+    return $out
+}
+function Get-PdfBrowserPath {
+    foreach ($b in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if (-not $b) { continue }
+        foreach ($rel in 'Microsoft\Edge\Application\msedge.exe', 'Google\Chrome\Application\chrome.exe') { $p = Join-Path $b $rel; if (Test-Path -LiteralPath $p) { return $p } }
+    }
+    return $null
+}
+# HTML -> PDF with the headless Edge/Chrome. Returns $null on success, otherwise a message.
+function Convert-HtmlToPdf([string]$HtmlPath, [string]$PdfPath) {
+    $exe = Get-PdfBrowserPath
+    if (-not $exe) { return (T 'No Edge or Chrome found for the PDF export. Open the shareable report in the browser and print it as PDF (Ctrl+P).') }
+    $prof = Join-Path ([IO.Path]::GetTempPath()) ('WinTidy-pdf-' + [guid]::NewGuid().ToString('N'))
+    try {
+        if (Test-Path -LiteralPath $PdfPath) { Remove-Item -LiteralPath $PdfPath -Force -ErrorAction SilentlyContinue }
+        $uri = ([Uri]$HtmlPath).AbsoluteUri
+        $arg = '--headless --disable-gpu --no-first-run --no-pdf-header-footer "--user-data-dir={0}" "--print-to-pdf={1}" "{2}"' -f $prof, $PdfPath, $uri
+        $pr = Start-Process -FilePath $exe -ArgumentList $arg -PassThru -WindowStyle Hidden
+        if (-not $pr.WaitForExit(90000)) { try { $pr.Kill() } catch { }; return (T 'The PDF export took too long and was cancelled.') }
+        if (-not (Test-Path -LiteralPath $PdfPath)) { return (T 'The PDF could not be created. Open the shareable report in the browser and print it as PDF (Ctrl+P).') }
+        return $null
+    } catch { return ((T 'The PDF could not be created: {0}') -f $_.Exception.Message) }
+    finally { if (Test-Path -LiteralPath $prof) { try { Remove-TreeNoFollow $prof } catch { } } }
+}
+# Creates the normal report, then the anonymized copy (and optionally the PDF). Returns @{ Html; Pdf; Hinweis } or $null.
+function New-ShareableReport([bool]$AsPdf = $false) {
+    $made = New-Report
+    if (-not $made) { return $null }
+    $html = [IO.File]::ReadAllText($made, [Text.Encoding]::UTF8)
+    $out = Join-Path $Script:DataDir 'WinTidy-Bericht-teilbar.html'
+    [IO.File]::WriteAllText($out, (ConvertTo-ShareableHtml $html (Get-ShareReplacements)), (New-Object Text.UTF8Encoding($true)))
+    $pdf = $null; $hint = $null
+    if ($AsPdf) {
+        $pdf = [IO.Path]::ChangeExtension($out, '.pdf')
+        $hint = Convert-HtmlToPdf $out $pdf
+        if ($hint) { $pdf = $null }
+    }
+    return [pscustomobject]@{ Html = $out; Pdf = $pdf; Hinweis = $hint }
+}
+
+# =============================================================================
 #  Modes
 # =============================================================================
 function Open-Report([string]$Path) { if (-not $Path) { return }; try { Start-Process -FilePath "$env:windir\explorer.exe" -ArgumentList ('"{0}"' -f $Path) } catch { try { Start-Process $Path } catch { } } }
@@ -4032,6 +4256,14 @@ function Show-Header {
 
 function Invoke-Mode([string]$m) {
     $Script:Cache = @{}
+    if ($Preset -and -not $Rule -and $m -in 'Rules', 'Scan', 'Preview', 'Apply') {
+        $pr = $null
+        try { $pr = Resolve-WtPreset $Preset } catch { W $_.Exception.Message 'Red'; return }
+        if ($pr.Unbekannt.Count) { W ((T '  Profile {0}: unknown rules are ignored: {1}') -f $pr.Name, ($pr.Unbekannt -join ', ')) 'DarkYellow' }
+        if (-not $pr.Ids.Count) { W ((T '  Profile {0} contains no known rules.') -f $pr.Name) 'Red'; return }
+        $Script:Rule = $pr.Ids
+        W ((T '  Profile: {0} ({1} rules)') -f $pr.Name, $pr.Ids.Count) 'DarkGray'
+    }
     if ($m -in 'Scan', 'Preview', 'Apply') {
         $Script:CliContext = $null; try { $Script:CliContext = Get-WtContext } catch { }
         $Script:LastContext = $Script:CliContext
@@ -4042,6 +4274,10 @@ function Invoke-Mode([string]$m) {
         'Rules' {
             Section (T 'Rules')
             foreach ($r in $Script:Rules) { W ("{0,-20} {1,-8} {2,-12} {3}{4}" -f $r.Id, (Get-RiskText $r.Risiko), (Get-CategoryText $r.Kategorie), $r.Titel, $(if (-not $r.Standard) { (T '  (only with -Rule)') } elseif (-not $r.Fix) { (T '  (report only)') } else { '' })) $(switch ($r.Risiko) { 'Niedrig' { 'Green' } 'Mittel' { 'Yellow' } 'Hoch' { 'Red' } default { 'Cyan' } }) }
+            if ($SavePreset) {
+                try { $sel = @(Get-SelectedRules | ForEach-Object { $_.Id }); $pf = Save-WtPreset $SavePreset $sel; W ((T '  Profile saved: {0} ({1} rules)') -f $pf, $sel.Count) 'Green' }
+                catch { W ((T '  Profile could not be saved: {0}') -f $_.Exception.Message) 'Red' }
+            }
         }
         'Scan' {
             Start-RunLog 'scan'
@@ -4096,7 +4332,17 @@ function Invoke-Mode([string]$m) {
             Show-Compare (Read-Snapshot $a) (Read-Snapshot $b)
             $hist = Read-SnapshotHistory; if ($hist.Effekt) { Show-PerfEffect $hist.Effekt }
         }
-        'Report' { $rep = New-Report; if ($rep) { Open-Report $rep } }
+        'Report' {
+            if ($Share -or $Pdf) {
+                $sh = New-ShareableReport ([bool]$Pdf)
+                if ($sh) {
+                    W ((T '  Shareable report: {0}') -f $sh.Html) 'Green'
+                    if ($sh.Pdf) { W ((T '  PDF: {0}') -f $sh.Pdf) 'Green' } elseif ($sh.Hinweis) { W ('  ' + $sh.Hinweis) 'DarkYellow' }
+                    Open-Report $(if ($sh.Pdf) { $sh.Pdf } else { $sh.Html })
+                }
+            }
+            else { $rep = New-Report; if ($rep) { Open-Report $rep } }
+        }
         'Restore' { Start-RunLog 'restore'; $null = Invoke-Restore; Stop-RunLog }
         'Update' {
             Section (T 'Update')

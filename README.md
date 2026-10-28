@@ -67,6 +67,9 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 .\WinTidy.ps1 -Mode Rules                     # list all rules with risk level
 .\WinTidy.ps1 -Mode Update                    # check for a new version and install it
 .\WinTidy.ps1 -Mode Scan -Language de         # German output and report
+.\WinTidy.ps1 -Mode Rules -SavePreset mine.json   # save the rule selection as a profile
+.\WinTidy.ps1 -Mode Apply -Preset mine.json       # use a profile (or the built-in Safe / Standard)
+.\WinTidy.ps1 -Mode Report -Share -Pdf         # report without PC name, user name and paths (+ PDF)
 ```
 
 `WinTidy.cmd` asks for admin rights and passes any parameters through.
@@ -94,6 +97,7 @@ pwsh ./tests/Test-Update.ps1
 pwsh ./tests/Test-Debloat.ps1
 pwsh ./tests/Test-Storage.ps1
 pwsh ./tests/Test-Perf.ps1
+pwsh ./tests/Test-Features.ps1
 ```
 
 GitHub Actions runs them on Windows PowerShell 5.1 and PowerShell 7 for every push and pull request. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the rule contract in [DEVELOPMENT.md](DEVELOPMENT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).

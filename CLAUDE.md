@@ -15,7 +15,7 @@ Short version of the hard rules:
 - User-facing texts in English with `T 'Text'` (literal first argument, placeholders `{0}`), German translation in `lang/de.psd1`. Keys must be unique ignoring case.
 - Save `.ps1` files as UTF-8 with BOM and CRLF. No typographic quotes (“ ” „ ‘ ’) in PowerShell strings – they end the string.
 - New rule → also add a plain-language text to `$Script:Friendly` (and its German translation).
-- After changes run: `pwsh ./tests/Test-Parse.ps1`, `pwsh ./tests/Test-Report.ps1`, `pwsh ./tests/Test-Hardware.ps1`, `pwsh ./tests/Test-GuiApi.ps1`, `pwsh ./tests/Test-Update.ps1`, `pwsh ./tests/Test-Debloat.ps1`, `pwsh ./tests/Test-Storage.ps1` and `pwsh ./tests/Test-Perf.ps1`.
+- After changes run: `pwsh ./tests/Test-Parse.ps1`, `pwsh ./tests/Test-Report.ps1`, `pwsh ./tests/Test-Hardware.ps1`, `pwsh ./tests/Test-GuiApi.ps1`, `pwsh ./tests/Test-Update.ps1`, `pwsh ./tests/Test-Debloat.ps1`, `pwsh ./tests/Test-Storage.ps1` and `pwsh ./tests/Test-Perf.ps1` and `pwsh ./tests/Test-Features.ps1`.
 - Hardware: fan curves are not readable for Windows – only measure the effect, change nothing in the BIOS/on fans. New data sources as their own `Get-*` function so that `Test-Hardware.ps1` can replace them.
 - Keep `$Script:Version` and `CHANGELOG.md` in sync.
 - Updater (section 3b in `DEVELOPMENT.md`): HTTPS + GitHub hosts only, checksum required, nothing is installed without the package checks, always with backup and rollback. Never weaken these checks; network access stays in replaceable `Get-*`/`Save-*` functions.

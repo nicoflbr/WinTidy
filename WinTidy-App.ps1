@@ -656,6 +656,16 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           </Border>
           <Border Style="{StaticResource Card}">
             <StackPanel>
+              <TextBlock Text="Share report" Style="{StaticResource H2}" Margin="0,0,0,10"/>
+              <TextBlock Style="{StaticResource Sub}" FontSize="12" TextWrapping="Wrap" Text="Creates a copy of the report without PC name, user name and folder paths, for example for a forum or for support."/>
+              <CheckBox x:Name="OptSharePdf" Margin="0,8,0,0" Content="Also create a PDF"/>
+              <WrapPanel Margin="0,10,0,0">
+                <Button x:Name="BtnShareReport" Style="{StaticResource Secondary}" Content="Create shareable report" Margin="0,0,12,6"/>
+              </WrapPanel>
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
               <TextBlock Text="Program" Style="{StaticResource H2}" Margin="0,0,0,10"/>
               <WrapPanel>
                 <Button x:Name="BtnShortcut" Style="{StaticResource Secondary}" Content="Create _desktop shortcut" Margin="0,0,12,10"/>
@@ -1929,6 +1939,21 @@ $UI.BtnHistFolder.Add_Click({ $d = $State.DataDir; if ($State.History -and $Stat
 # =============================================================================
 #  Settings
 # =============================================================================
+$UI.BtnShareReport.Add_Click({
+    if (Test-Busy) { return }
+    $Sync.SharePdf = [bool]$UI.OptSharePdf.IsChecked
+    [void](Start-Op 'report' @'
+New-ShareableReport ([bool]$Sync.SharePdf)
+'@ {
+        param($r, $err, $c)
+        if ($err) { Write-ErrLog "Share: $err" }
+        if (-not $r -or -not $r.Html) { Show-Msg (T 'No report yet – please run a check first.') 'OK' 'Warning' | Out-Null; Go 'NavSettings'; return }
+        $txt = (T 'The shareable report is ready. It contains no PC name, user name or folder paths. Please still read it before you pass it on.')
+        if ($r.Pdf) { Open-AsUser $r.Pdf } else { Open-AsUser $r.Html; if ($r.Hinweis) { $txt += "`n`n" + $r.Hinweis } }
+        Go 'NavSettings'
+        Show-Msg $txt 'OK' 'Information' | Out-Null
+    } (T 'Creating the shareable report …') (T 'This usually only takes a few seconds.'))
+})
 $UI.BtnDataFolder.Add_Click({ $d = $State.DataDir; if (-not $d) { $d = Join-Path $AppRoot "WinTidy-Daten\$env:COMPUTERNAME" }; Open-Folder $d })
 $UI.BtnConfig.Add_Click({ $p = Join-Path $AppRoot 'WinTidy.config.json'; Start-Process -FilePath (Join-Path $env:windir 'System32\notepad.exe') -ArgumentList ('"{0}"' -f $p) })
 $UI.OptExpert.Add_Click({ $UI.BtnConfig.Visibility = $(if ($UI.OptExpert.IsChecked) { 'Visible' } else { 'Collapsed' }); if ($State.Findings.Count) { Build-Recs } })

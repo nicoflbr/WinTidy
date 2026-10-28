@@ -35,7 +35,7 @@ function Get-TpmState { $Script:Tpm }
 function Get-MemoryIntegrityState { $Script:MI }
 function Get-DefenderTamperState { $Script:Tamper }
 $Script:BL = 'Geschuetzt'; $Script:Tpm = [pscustomobject]@{ Vorhanden = $true; Bereit = $true }; $Script:MI = $true; $Script:Tamper = $true
-$i = Run 'SEC-HEALTH'
+$i = @(Run 'SEC-HEALTH')
 Check 'Everything fine: four green points' ($i.Count -eq 4 -and (Stufen $i | Where-Object { $_ -ne 'ok' }).Count -eq 0)
 $Script:BL = 'Aus'; $Script:Laptop = $false
 Check 'No encryption on a desktop PC: neutral note' (@(Stufen (Run 'SEC-HEALTH'))[0] -eq '')
@@ -44,7 +44,7 @@ Check 'No encryption on a laptop: warning' (@(Stufen (Run 'SEC-HEALTH'))[0] -eq 
 $Script:BL = 'Ausgesetzt'
 Check 'Paused encryption: warning' (@(Stufen (Run 'SEC-HEALTH'))[0] -eq 'warn')
 $Script:BL = $null; $Script:Tpm = $null; $Script:MI = $null; $Script:Tamper = $null
-Check 'Nothing readable: no findings, no error' ((Run 'SEC-HEALTH').Count -eq 0)
+Check 'Nothing readable: no findings, no error' (@(Run 'SEC-HEALTH').Count -eq 0)
 $Script:BL = 'Geschuetzt'; $Script:Tpm = [pscustomobject]@{ Vorhanden = $true; Bereit = $false }
 Check 'TPM present but not ready: warning' (@(Stufen (Run 'SEC-HEALTH')) -contains 'warn')
 $Script:Tpm = [pscustomobject]@{ Vorhanden = $false; Bereit = $false }
@@ -60,15 +60,15 @@ function Get-OtherSecurityProducts([string]$Class) { @() }
 # --- SYS-STORAGESENSE ---
 function Get-StorageSenseState { $Script:SS }
 $Script:SS = $null
-Check 'Storage Sense unknown: nothing shown' ((Run 'SYS-STORAGESENSE').Count -eq 0)
+Check 'Storage Sense unknown: nothing shown' (@(Run 'SYS-STORAGESENSE').Count -eq 0)
 $Script:SS = [pscustomobject]@{ Aktiv = $false; DownloadsTage = 0; PapierkorbTage = 0; Richtlinie = $null }
-$i = Run 'SYS-STORAGESENSE'
+$i = @(Run 'SYS-STORAGESENSE')
 Check 'Storage Sense off: one neutral note' ($i.Count -eq 1 -and @(Stufen $i)[0] -eq '')
 $Script:SS = [pscustomobject]@{ Aktiv = $true; DownloadsTage = 0; PapierkorbTage = 30; Richtlinie = $null }
-$i = Run 'SYS-STORAGESENSE'
+$i = @(Run 'SYS-STORAGESENSE')
 Check 'Storage Sense on without Downloads cleanup: green' ($i.Count -eq 1 -and @(Stufen $i)[0] -eq 'ok')
 $Script:SS = [pscustomobject]@{ Aktiv = $true; DownloadsTage = 14; PapierkorbTage = 30; Richtlinie = $null }
-$i = Run 'SYS-STORAGESENSE'
+$i = @(Run 'SYS-STORAGESENSE')
 Check 'Downloads cleanup is shown with a warning and the number of days' ($i.Count -eq 2 -and @(Stufen $i)[1] -eq 'warn' -and $i[1].Label -match '14')
 $Script:SS = [pscustomobject]@{ Aktiv = $true; DownloadsTage = 0; PapierkorbTage = 0; Richtlinie = 0 }
 Check 'Policy turns it off: neutral note' (@(Stufen (Run 'SYS-STORAGESENSE'))[0] -eq '')
@@ -77,12 +77,12 @@ Check 'Policy turns it off: neutral note' (@(Stufen (Run 'SYS-STORAGESENSE'))[0]
 function Get-AiFeatureState { $Script:AI }
 function New-Ai { [pscustomobject]@{ CopilotApp = $false; CopilotRichtlinieAus = $false; RecallAktiv = $null; RecallRichtlinie = $null; DatenanalyseAus = $false } }
 $Script:AI = New-Ai
-Check 'Nothing known: no findings' ((Run 'SYS-AI').Count -eq 0)
+Check 'Nothing known: no findings' (@(Run 'SYS-AI').Count -eq 0)
 $Script:AI = New-Ai; $Script:AI.RecallAktiv = $true; $Script:AI.CopilotApp = $true
-$i = Run 'SYS-AI'
+$i = @(Run 'SYS-AI')
 Check 'Recall on and Copilot installed: two neutral notes' ($i.Count -eq 2 -and (Stufen $i | Where-Object { $_ -ne '' }).Count -eq 0)
 $Script:AI = New-Ai; $Script:AI.RecallAktiv = $false; $Script:AI.CopilotRichtlinieAus = $true; $Script:AI.DatenanalyseAus = $true
-Check 'Recall off, Copilot and AI analysis blocked: three green points' ((Run 'SYS-AI').Count -eq 3 -and (Stufen (Run 'SYS-AI') | Where-Object { $_ -ne 'ok' }).Count -eq 0)
+Check 'Recall off, Copilot and AI analysis blocked: three green points' (@(Run 'SYS-AI').Count -eq 3 -and (Stufen (Run 'SYS-AI') | Where-Object { $_ -ne 'ok' }).Count -eq 0)
 $Script:AI = New-Ai; $Script:AI.RecallRichtlinie = 0
 Check 'Recall blocked by policy counts as not active' (@(Stufen (Run 'SYS-AI'))[0] -eq 'ok')
 

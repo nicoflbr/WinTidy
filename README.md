@@ -61,7 +61,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 .\WinTidy.ps1 -Mode Preview                   # show what Apply would do
 .\WinTidy.ps1 -Mode Apply                     # interactive, asks per rule/item
 .\WinTidy.ps1 -Mode Apply -Yes                # unattended: low-risk rules only
-.\WinTidy.ps1 -Mode Apply -Rule STA-HEAVY,APP-BLOAT
+.\WinTidy.ps1 -Mode Apply -Rule STA-HEAVY,DBL-APPS-MS
 .\WinTidy.ps1 -Mode Restore -RunId 20261021-183100
 .\WinTidy.ps1 -Mode Hardware -CoolingTest     # cooling test under load
 .\WinTidy.ps1 -Mode Rules                     # list all rules with risk level
@@ -98,6 +98,7 @@ pwsh ./tests/Test-Debloat.ps1
 pwsh ./tests/Test-Storage.ps1
 pwsh ./tests/Test-Perf.ps1
 pwsh ./tests/Test-Features.ps1
+pwsh ./tests/Test-Rules.ps1
 ```
 
 GitHub Actions runs them on Windows PowerShell 5.1 and PowerShell 7 for every push and pull request. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the rule contract in [DEVELOPMENT.md](DEVELOPMENT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).

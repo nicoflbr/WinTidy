@@ -32,7 +32,7 @@
     .\WinTidy.ps1 -Mode Scan -OpenReport
     .\WinTidy.ps1 -Mode Apply              # interactive
     .\WinTidy.ps1 -Mode Apply -Yes         # unattended, only rules with risk "Low"
-    .\WinTidy.ps1 -Mode Apply -Rule STA-HEAVY,APP-BLOAT
+    .\WinTidy.ps1 -Mode Apply -Rule STA-HEAVY,DBL-APPS-MS
     .\WinTidy.ps1 -Mode Compare
     .\WinTidy.ps1 -Mode Hardware                  # cooling, fans, temperatures, drives (changes nothing)
     .\WinTidy.ps1 -Mode Hardware -CoolingTest -Seconds 90   # additionally a cooling test under load
@@ -74,7 +74,7 @@ if ($Rule) { $Rule = @($Rule | ForEach-Object { $_ -split ',' } | ForEach-Object
 if ($ExcludeRule) { $ExcludeRule = @($ExcludeRule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.9.0'
+$Script:Version = '1.10.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)
@@ -211,18 +211,24 @@ $Script:DefaultConfig = [ordered]@{
     TempAgeDays             = 2
     RecycleBinAgeDays       = 30
     CrashDumpAgeDays        = 7
+    SystemDumpKeepDays      = 30       # CLN-WINCLEAN: memory dumps of blue screens younger than this are kept
     ShadowStorageMinPercent = 3
     ShadowStorageTarget     = '5%'
     BootDegradationHintMs   = 2000
-    HeavyStartup            = @('Spotify', 'Steam', 'Discord', 'EADesktop', 'EALauncher', 'Battle.net', 'EpicGamesLauncher', 'Teams', 'Skype', 'Zoom', 'AdobeCollabSync', 'Creative Cloud', 'CCleaner', 'Luminar', 'Mobalytics', 'Overwolf', 'MicrosoftStartFeedProvider', 'LogiLDA', 'iTunesHelper', 'Opera', 'msedge')
+    HeavyStartup            = @('Spotify', 'Steam', 'Discord', 'EADesktop', 'EALauncher', 'Battle.net', 'EpicGamesLauncher', 'Teams', 'Skype', 'Zoom', 'AdobeCollabSync', 'Creative Cloud', 'CCleaner', 'Overwolf', 'MicrosoftStartFeedProvider', 'LogiLDA', 'iTunesHelper', 'Opera', 'msedge')
     ProtectedStartup        = @('SecurityHealth', 'OneDrive', 'Windows Defender', 'RtkAudUService', 'KeePass', 'Bitwarden', '1Password', 'Malwarebytes', 'Bitdefender', 'Kaspersky', 'ESET', 'Avast', 'AVG', 'Norton', 'McAfee', 'Sophos', 'Trend Micro', 'G DATA', 'Avira', 'F-Secure', 'WireGuard', 'OpenVPN', 'NordVPN', 'FortiClient', 'GlobalProtect', 'Cisco', 'Synaptics', 'ELAN', 'Backblaze', 'Veeam', 'Acronis', 'Duet', 'Logitech Options', 'Dropbox', 'Nextcloud', 'Google Drive')
-    BloatApps               = @('Microsoft.BingNews', 'Microsoft.BingWeather', 'Microsoft.ZuneVideo', 'Microsoft.Getstarted', 'Microsoft.MicrosoftSolitaireCollection', 'Microsoft.MixedReality.Portal', 'Microsoft.WindowsFeedbackHub', 'Microsoft.M365Companions', 'Clipchamp.Clipchamp', 'Microsoft.549981C3F5F10', 'Microsoft.Windows.DevHome', 'Microsoft.BingSearch', 'Microsoft.PowerAutomateDesktop', 'Microsoft.People', 'Microsoft.SkypeApp', 'Microsoft.Wallet', 'Microsoft.3DBuilder', 'Microsoft.Print3D', 'Microsoft.Microsoft3DViewer')
+    BloatApps               = @()      # additional Store apps (package names) offered on the Debloat page under "Microsoft apps"; the built-in list is in the code
     GhostDeviceExclude      = @('WAN Miniport', 'Microsoft Kernel Debug', 'Hyper-V', 'Remote NDIS', 'Bluetooth', 'Microsoft Wi-Fi Direct', 'Teredo', '6to4', 'IP-HTTPS', 'ISATAP', 'VHD Loopback', 'Microsoft Virtual')
     GhostDeviceClasses      = @('System', 'HDC', 'SCSIAdapter', 'Display', 'Monitor', 'MEDIA', 'Net', 'DiskDrive', 'Volume', 'USB', 'USBDevice', 'HIDClass', 'Keyboard', 'Mouse', 'WPD', 'Image', 'Camera', 'Ports', 'Processor', 'SmartCardReader', 'Sensor', 'Biometric')
     SideBySideExclude       = @('Visual C\+\+', '\.NET', 'Windows SDK', 'Windows Software Development', 'Python', 'Java', 'WebView', 'Update for', 'Security Update', 'Hotfix', 'Runtime', 'Redistributable', 'Driver', 'Language', 'Sprachpaket', 'Microsoft 365', 'Office', 'Steam', 'SDK')
-    WingetExclude           = @('rekordbox', 'DaVinci', 'Blackmagic', 'AlphaTheta')
+    WingetExclude           = @()      # programs (name or winget id, part of it is enough) that WinTidy never updates; personal entries belong in WinTidy.config.local.json
     OrphanDirIgnore         = @('Microsoft', 'Windows', 'Packages', 'Temp', 'Package Cache', 'Common Files', 'NVIDIA', 'NVIDIA Corporation', 'Intel', 'AMD', 'Realtek', 'WindowsApps', 'ModifiableWindowsApps', 'Reference Assemblies', 'MSBuild', 'Internet Explorer', 'Windows Defender', 'Windows Mail', 'Windows Media Player', 'Windows NT', 'Windows Photo Viewer', 'Windows Sidebar', 'Uninstall Information', 'WindowsPowerShell', 'PackageManagement', 'dotnet', 'USOShared', 'USOPrivate', 'regid.1991-06.com.microsoft', 'SoftwareDistribution', 'ssh', 'Comms', 'ConnectedDevicesPlatform', 'D3DSCache', 'CrashDumps', 'Programs', 'PlaceholderTileLogoFolder', 'VirtualStore', 'Publishers', 'IsolatedStorage', 'speech', 'ElevatedDiagnostics', 'Adobe', 'Google', 'Mozilla', 'Apple', 'Apple Computer', 'Apple Inc', 'Claude', 'Code', 'Electron', 'NuGet', 'npm', 'npm-cache', 'pip')
     OrphanDirMinMB          = 50
+    QuarantineDays          = 30       # CLN-QUARANTINE: folders set aside by CLN-ORPHANDIR are deleted after this many days
+    GhostDeviceMinDays      = 90       # SYS-GHOST: only devices not connected for at least this many days
+    DriverInstallerDirs     = @('%SystemDrive%\AMD', '%SystemDrive%\NVIDIA', '%ProgramData%\NVIDIA Corporation\Downloader')   # CLN-DRIVERINSTALL: folders where driver installers unpack themselves
+    DriverInstallerMinMB    = 200      # CLN-DRIVERINSTALL: only offered from this size
+    GpuDriverMaxAgeDays     = 365      # HW-HINTS: hint if the graphics driver is older than this
     ExtraTempPaths          = @()      # additional temp folders (e.g. 'C:\Temp'), only if they really contain nothing but disposable files
     BrowserCacheMinMB       = 500      # CLN-BROWSER: browser caches are only offered from this size per browser
     BigFileMinMB            = 1024     # CLN-BIGFILES (only shown, never deleted): minimum size of a file in the personal folders
@@ -272,9 +278,11 @@ function Merge-Config {
 }
 # Check the configuration for dangerous values (e.g. age limit 0 = delete everything)
 function Test-Config($cfg) {
-    $min = @{ TempAgeDays = 1; RecycleBinAgeDays = 7; CrashDumpAgeDays = 1; WinOldMinAgeDays = 10; OrphanDirMinMB = 10; CoolingTestSeconds = 20; UpdateIntervalHours = 1; BrowserCacheMinMB = 50; BigFileMinMB = 100; DownloadsOldDays = 14; CheckReminderDays = 0 }
+    $min = @{ TempAgeDays = 1; RecycleBinAgeDays = 7; CrashDumpAgeDays = 1; SystemDumpKeepDays = 7; WinOldMinAgeDays = 10; OrphanDirMinMB = 10; QuarantineDays = 7; GhostDeviceMinDays = 30; DriverInstallerMinMB = 50; GpuDriverMaxAgeDays = 90; CoolingTestSeconds = 20; UpdateIntervalHours = 1; BrowserCacheMinMB = 50; BigFileMinMB = 100; DownloadsOldDays = 14; CheckReminderDays = 0 }
     foreach ($k in @($min.Keys)) { $v = 0; if (-not [int]::TryParse([string]$cfg[$k], [ref]$v) -or $v -lt $min[$k]) { Write-Warning (T 'Configuration: {0} invalid ({1}) - default value is used' $k ($cfg[$k])); $cfg[$k] = $Script:DefaultConfig[$k] } }
     $never = 'Microsoft.WindowsStore', 'Microsoft.SecHealthUI', 'Microsoft.DesktopAppInstaller', 'Microsoft.Windows.ShellExperienceHost', 'Microsoft.Windows.StartMenuExperienceHost', 'Microsoft.AAD.BrokerPlugin', 'Microsoft.WindowsAppRuntime', 'Microsoft.VCLibs', 'Microsoft.UI.Xaml', 'Microsoft.NET'
+    # Driver installer folders: only absolute folders below a drive that are not system or profile folders
+    $cfg.DriverInstallerDirs = @($cfg.DriverInstallerDirs | Where-Object { $p = ([Environment]::ExpandEnvironmentVariables([string]$_)).TrimEnd('\'); $p -match '^[A-Za-z]:\\[^\\]' -and (Test-SafeDeleteRoot $p) })
     $cfg.BloatApps = @($cfg.BloatApps | Where-Object { $n = [string]$_; $n -match '^[\w\.\-]+$' -and -not ($never | Where-Object { $n -like "$_*" }) })
     if ([string]$cfg.ShadowStorageTarget -notmatch '^(\d{1,2})%$' -or [int]$Matches[1] -lt 3) { $cfg.ShadowStorageTarget = $Script:DefaultConfig.ShadowStorageTarget }
     if ([string]$cfg.UpdateRepo -notmatch '^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$') { Write-Warning (T 'Configuration: {0} invalid ({1}) - default value is used' 'UpdateRepo' ([string]$cfg.UpdateRepo)); $cfg.UpdateRepo = $Script:DefaultConfig.UpdateRepo }
@@ -340,6 +348,42 @@ function Test-SafeDeleteRoot([string]$Path) {
     $bad = @($env:SystemDrive, $env:windir, "$env:windir\System32", $env:USERPROFILE, $(if ($env:USERPROFILE) { Split-Path $env:USERPROFILE }), $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:APPDATA, $env:LOCALAPPDATA, [Environment]::GetFolderPath('MyDocuments'), [Environment]::GetFolderPath('Desktop')) | Where-Object { $_ } | ForEach-Object { ([string]$_).TrimEnd('\') }
     return -not ($bad -contains $full)
 }
+# Quarantine (since 1.9): CLN-ORPHANDIR does not delete a folder right away but renames it in place to
+# "<name>.WinTidy-removed-<yyyyMMdd>". The program no longer finds it, "Restore" renames it back, and CLN-QUARANTINE
+# deletes it permanently after QuarantineDays days. Renaming stays on the same drive, follows no links and leaves
+# the permissions as they are.
+$Script:QuarantineSuffix = '.WinTidy-removed-'
+function Get-QuarantineRoots { @(@($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:LOCALAPPDATA, $env:APPDATA) | Where-Object { $_ } | ForEach-Object { ([string]$_).TrimEnd('\') } | Select-Object -Unique) }
+function Test-QuarantinePath([string]$Path) {
+    if (-not $Path) { return $false }
+    try { $full = [IO.Path]::GetFullPath($Path).TrimEnd('\') } catch { return $false }
+    $parent = [IO.Path]::GetDirectoryName($full)
+    if (-not (Get-QuarantineRoots | Where-Object { $_ -ieq $parent })) { return $false }
+    return ([IO.Path]::GetFileName($full) -match ('^.+' + [regex]::Escape($Script:QuarantineSuffix) + '\d{8}(-\d+)?$'))
+}
+function Get-QuarantineDirs {
+    foreach ($r in (Get-QuarantineRoots)) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $r -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('*' + $Script:QuarantineSuffix + '*') -and -not (Test-Reparse $_) })) {
+            $m = [regex]::Match($d.Name, '^(.+)' + [regex]::Escape($Script:QuarantineSuffix) + '(\d{8})(-\d+)?$')
+            if (-not $m.Success) { continue }
+            $datum = $null; try { $datum = [datetime]::ParseExact($m.Groups[2].Value, 'yyyyMMdd', [Globalization.CultureInfo]::InvariantCulture) } catch { continue }
+            [pscustomobject]@{ Pfad = $d.FullName; Name = $m.Groups[1].Value; Datum = $datum }
+        }
+    }
+}
+function Move-ToQuarantine([string]$Rule, [string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $parent = [IO.Path]::GetDirectoryName($full)
+    if (-not (Get-QuarantineRoots | Where-Object { $_ -ieq $parent })) { throw (T 'Unsafe path') }
+    $d = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+    if (Test-Reparse $d) { throw (T 'Unsafe path') }
+    $basis = $full + $Script:QuarantineSuffix + (Get-Date -Format 'yyyyMMdd')
+    $ziel = $basis; $k = 1
+    while (Test-Path -LiteralPath $ziel) { $k++; $ziel = "$basis-$k" }
+    try { [IO.Directory]::Move($full, $ziel) } catch { throw ('SKIP:' + (T 'The folder could not be moved (in use or no permission): {0}' ($_.Exception.Message))) }
+    Add-ActionRecord $Rule (Split-Path $full -Leaf) 'Undo-Info' 0 '' @{ Typ = 'Ordner'; Quelle = $ziel; Ziel = $full } | Out-Null
+    return $ziel
+}
 function Get-OldFiles([string]$Path, [int]$Days) {
     if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Container)) { return @() }
     if (-not (Test-SafeDeleteRoot $Path)) { W (T '    Folder {0} is not cleaned for safety reasons' $Path) 'DarkYellow'; return @() }
@@ -356,6 +400,21 @@ function Get-OldFiles([string]$Path, [int]$Days) {
         }
     }
     return $res.ToArray()
+}
+# Newest change (written or created) of a file below $Path, without following links; $null if there are no files
+function Get-NewestFileTime([string]$Path) {
+    $root = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $root -or (Test-Reparse $root)) { return $null }
+    $max = $null
+    $stack = New-Object System.Collections.Generic.Stack[string]; $stack.Push($root.FullName)
+    while ($stack.Count) {
+        foreach ($e in @(Get-ChildItem -LiteralPath $stack.Pop() -Force -ErrorAction SilentlyContinue)) {
+            if (Test-Reparse $e) { continue }
+            if ($e.PSIsContainer) { $stack.Push($e.FullName); continue }
+            foreach ($t in $e.LastWriteTime, $e.CreationTime) { if ($null -eq $max -or $t -gt $max) { $max = $t } }
+        }
+    }
+    return $max
 }
 function Remove-EmptyDirs([string]$Path, [int]$Days = 0) {
     if (-not (Test-SafeDeleteRoot $Path)) { return }
@@ -429,6 +488,21 @@ function Get-TargetState([string]$Target) {
     if (-not (Test-DriveExists $Target)) { return 'LaufwerkFehlt' }
     if (Test-Path -LiteralPath $Target) { return 'ok' }
     return 'fehlt'
+}
+
+# Does $Text contain $Word as a whole word (no letter directly before or after)? Case-insensitive.
+function Test-WordMatch([string]$Text, [string]$Word) {
+    if (-not $Text -or -not $Word) { return $false }
+    return ($Text -match ('(?i)(?<![a-z])' + [regex]::Escape($Word) + '(?![a-z])'))
+}
+
+# Unattended (-Yes): risk Low unless the item forbids it (AutoOk = $false); risk Medium only if the item explicitly
+# allows it (AutoOk = $true, fail closed); risk High never.
+function Test-UnattendedItem($Rule, $Item) {
+    $p = $Item.PSObject.Properties['AutoOk']
+    if ($Rule.Risiko -eq 'Niedrig') { return (-not $p -or [bool]$Item.AutoOk) }
+    if ($Rule.Risiko -eq 'Mittel') { return ($null -ne $p -and [bool]$Item.AutoOk) }
+    return $false
 }
 
 function Confirm-Item([string]$Question, [string]$Risk) {
@@ -584,6 +658,24 @@ PROMO|SpotifyAB.SpotifyMusic|Spotify
 PROMO|BytedancePte.Ltd.TikTok|TikTok
 PROMO|TuneInRadio|TuneIn Radio
 PROMO|WinZipUniversal|WinZip
+MS|Microsoft.BingNews|Microsoft News
+MS|Microsoft.BingWeather|Weather
+MS|Microsoft.BingSearch|Bing Search
+MS|Microsoft.ZuneVideo|Movies & TV
+MS|Microsoft.Getstarted|Tips
+MS|Microsoft.MicrosoftSolitaireCollection|Solitaire Collection
+MS|Microsoft.MixedReality.Portal|Mixed Reality Portal
+MS|Microsoft.WindowsFeedbackHub|Feedback Hub
+MS|Microsoft.M365Companions|Microsoft 365 Companions
+MS|Microsoft.549981C3F5F10|Cortana
+MS|Microsoft.Windows.DevHome|Dev Home
+MS|Microsoft.PowerAutomateDesktop|Power Automate
+MS|Microsoft.People|People
+MS|Microsoft.SkypeApp|Skype
+MS|Microsoft.Wallet|Wallet
+MS|Microsoft.3DBuilder|3D Builder
+MS|Microsoft.Print3D|Print 3D
+MS|Microsoft.Microsoft3DViewer|3D Viewer
 MS|Microsoft.BingFinance|Bing Finance
 MS|Microsoft.BingFoodAndDrink|Bing Food And Drink
 MS|Microsoft.BingHealthAndFitness|Bing Health And Fitness
@@ -697,15 +789,21 @@ function Set-DebloatTweak([string]$Rule, $Item) {
     foreach ($v in @($t.Werte)) { Set-RegValueWithUndo $Rule $t.Titel $v.Key $v.Name $v.Wert $v.Typ }
     (T 'changed')
 }
-# Installed apps of the catalog group (apps from the BloatApps list are handled by the rule APP-BLOAT, not offered twice)
+# Installed apps of the catalog group. Since 1.9 the former rule APP-BLOAT is part of the catalog (group MS); the
+# configuration key BloatApps only adds further package names to the group MS (nothing preselected, as everywhere here).
 function Get-DebloatAppItems([string]$Group) {
     if (-not (Test-DebloatUserHive)) { return }
     if (-not $Script:Cache.ContainsKey('Appx')) { $Script:Cache['Appx'] = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { -not $_.NonRemovable -and -not $_.IsFramework }) }
-    $skip = @($Script:Cfg.BloatApps)
-    foreach ($a in $Script:DebloatApps) {
-        if ($a.Gruppe -ne $Group -or $skip -contains $a.Id) { continue }
+    $liste = @($Script:DebloatApps)
+    if ($Group -eq 'MS') {
+        $bekannt = @($liste | ForEach-Object { [string]$_.Id })
+        $liste += @($Script:Cfg.BloatApps | Where-Object { $_ -and $bekannt -notcontains [string]$_ } | Select-Object -Unique | ForEach-Object { [pscustomobject]@{ Gruppe = 'MS'; Id = [string]$_; Name = (Get-AppDisplayName ([string]$_)) } })
+    }
+    foreach ($a in $liste) {
+        if ($a.Gruppe -ne $Group) { continue }
         $p = @($Script:Cache['Appx'] | Where-Object { $_.Name -like ($a.Id + '*') })
-        if ($p.Count) { New-Item2 $a.Name 0 $a.Id ("{0} {1}" -f $p[0].Name, $p[0].Version) }
+        $nm = if ($Script:AppNames -and $Script:AppNames.ContainsKey([string]$a.Id)) { $Script:AppNames[[string]$a.Id] } else { $a.Name }
+        if ($p.Count) { New-Item2 $nm 0 $a.Id ("{0} {1}" -f $p[0].Name, $p[0].Version) }
     }
 }
 function Remove-DebloatApp([string]$Id) {
@@ -892,6 +990,20 @@ function Get-GhostDevices {
         $d = $_
         -not $d.Present -and $cls -contains $d.Class -and $d.InstanceId -notmatch '^(SWD|ROOT)\\' -and -not ($ex | Where-Object { $d.FriendlyName -like "*$_*" })
     })
+}
+# When was each device last seen (newest of last removal and last arrival)? Devices without a date are missing from
+# the result - callers treat them as "unknown" and do not offer them (fail closed).
+function Get-DeviceLastSeen([string[]]$InstanceIds) {
+    $res = @{}
+    if (-not $InstanceIds.Count) { return $res }
+    $props = @(); try { $props = @(Get-PnpDeviceProperty -InstanceId $InstanceIds -KeyName 'DEVPKEY_Device_LastRemovalDate', 'DEVPKEY_Device_LastArrivalDate' -ErrorAction SilentlyContinue) } catch { }
+    foreach ($p in $props) {
+        if (-not $p.Data) { continue }
+        $d = $null; try { $d = [datetime]$p.Data } catch { continue }
+        $id = [string]$p.InstanceId
+        if (-not $res.ContainsKey($id) -or $d -gt $res[$id]) { $res[$id] = $d }
+    }
+    return $res
 }
 function Get-RecycleBinOld([int]$Days) {
     $res = @()
@@ -1170,6 +1282,68 @@ function Get-AiFeatureState {
     return $r
 }
 
+# --- Data sources of the checks added in 1.9 (each one replaceable in the tests) ---
+# Defender exclusions (paths, file extensions, processes). Needs admin rights; $null if they cannot be read.
+function Get-DefenderExclusions {
+    try {
+        $p = Get-MpPreference -ErrorAction Stop
+        $f = { param($v) @(@($v) | Where-Object { $_ -and [string]$_ -notmatch '(?i)^N/A' } | ForEach-Object { [string]$_ }) }
+        return [pscustomobject]@{ Pfade = (& $f $p.ExclusionPath); Endungen = (& $f $p.ExclusionExtension); Prozesse = (& $f $p.ExclusionProcess) }
+    } catch { return $null }
+}
+# Exclusions that switch off the virus scan for large parts of the PC (a single program folder is normal)
+function Get-BroadDefenderExclusions($Ex) {
+    if (-not $Ex) { return @() }
+    $breit = @($env:SystemDrive, $env:windir, "$env:windir\System32", $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:USERPROFILE, $(if ($env:USERPROFILE) { $env:USERPROFILE.TrimEnd('\') -replace '\\[^\\]+$', '' }), $env:APPDATA, $env:LOCALAPPDATA, $env:TEMP, $(if ($env:USERPROFILE) { $env:USERPROFILE.TrimEnd('\') + '\Downloads' }), $(if ($env:USERPROFILE) { $env:USERPROFILE.TrimEnd('\') + '\Desktop' })) | Where-Object { $_ } | ForEach-Object { ([string]$_).TrimEnd('\').ToLower() }
+    $res = @()
+    foreach ($p in @($Ex.Pfade)) {
+        $n = ([Environment]::ExpandEnvironmentVariables([string]$p)).Trim().TrimEnd('\').TrimEnd('*').TrimEnd('\').ToLower()
+        if ($n -eq '' -or $n -match '^[a-z]:$' -or $breit -contains $n) { $res += [pscustomobject]@{ Art = 'Pfad'; Wert = [string]$p } }
+    }
+    $endungen = 'exe', 'dll', 'ps1', 'bat', 'cmd', 'vbs', 'js', 'jse', 'wsf', 'hta', 'scr', 'msi', 'com', 'lnk', 'jar', 'zip', 'iso'
+    foreach ($e in @($Ex.Endungen)) { if ($endungen -contains ([string]$e).Trim().TrimStart('*').TrimStart('.').ToLower()) { $res += [pscustomobject]@{ Art = 'Endung'; Wert = [string]$e } } }
+    $prozesse = 'powershell.exe', 'pwsh.exe', 'cmd.exe', 'wscript.exe', 'cscript.exe', 'mshta.exe', 'rundll32.exe', 'regsvr32.exe', 'explorer.exe', 'svchost.exe', 'msiexec.exe'
+    foreach ($q in @($Ex.Prozesse)) { if ($prozesse -contains ([IO.Path]::GetFileName([string]$q)).ToLower()) { $res += [pscustomobject]@{ Art = 'Prozess'; Wert = [string]$q } } }
+    return $res
+}
+# BitLocker of the system drive paused: for how many more restarts? 0 = until someone resumes it, >0 = resumes by
+# itself (Windows pauses it for one restart e.g. for BIOS updates), $null = unknown
+function Get-BitLockerSuspendCount {
+    try {
+        $v = Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -Filter ("DriveLetter='{0}'" -f $env:SystemDrive) -ErrorAction Stop | Select-Object -First 1
+        if (-not $v) { return $null }
+        $n = (Invoke-CimMethod -InputObject $v -MethodName GetSuspendCount -ErrorAction Stop).SuspendCount
+        if ($null -eq $n) { return $null }
+        return [int]$n
+    } catch { return $null }
+}
+# Lines of the hosts file that block Windows Update or Defender (typical for "anti-telemetry" tools)
+function Get-HostsUpdateBlocks {
+    $f = Join-Path $env:windir 'System32\drivers\etc\hosts'
+    $z = @(); try { $z = @(Get-Content -LiteralPath $f -ErrorAction Stop) } catch { return @() }
+    return @(Select-HostsUpdateBlocks $z)
+}
+function Select-HostsUpdateBlocks([string[]]$Lines) {
+    $z = @($Lines)
+    $muster = '(?i)(^|[\s\.])(windowsupdate\.com|windowsupdate\.microsoft\.com|update\.microsoft\.com|delivery\.mp\.microsoft\.com|definitionupdates\.microsoft\.com|wdcp\.microsoft\.com|wdcpalt\.microsoft\.com)(\s|$)'
+    return @($z | ForEach-Object { ($_ -replace '#.*$', '').Trim() } | Where-Object { $_ -match '^(0\.0\.0\.0|127\.0\.0\.1|::1?|0)\s+' -and $_ -match $muster })
+}
+# Feature updates held at a version by policy (TargetReleaseVersion); $null if not set
+function Get-UpdatePolicyPin {
+    $p = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -ErrorAction SilentlyContinue
+    if ($p -and $p.TargetReleaseVersion -eq 1 -and $p.TargetReleaseVersionInfo) { return [pscustomobject]@{ Version = [string]$p.TargetReleaseVersionInfo; Produkt = [string]$p.ProductVersion } }
+    return $null
+}
+# Folders under C:\Users that belong to no profile of the profile list (leftovers of deleted accounts). $null if the
+# profile list cannot be read (fail closed).
+function Get-OrphanProfileDirs {
+    if (-not $env:USERPROFILE) { return $null }
+    $root = Split-Path $env:USERPROFILE
+    $bekannt = @(); try { $bekannt = @(Get-CimInstance Win32_UserProfile -ErrorAction Stop | ForEach-Object { ([string]$_.LocalPath).TrimEnd('\').ToLower() }) } catch { return $null }
+    if (-not $bekannt.Count) { return $null }
+    $fest = 'public', 'default', 'default user', 'all users', 'defaultapppool'
+    @(Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue | Where-Object { -not (Test-Reparse $_) -and $fest -notcontains $_.Name.ToLower() -and $bekannt -notcontains $_.FullName.TrimEnd('\').ToLower() })
+}
 function ConvertTo-WtNumber($v) {
     if ($null -eq $v) { return $null }
     $s = ([string]$v).Trim()
@@ -1204,7 +1378,7 @@ $Script:AppNames = @{
     'Microsoft.BingSearch' = (T 'Bing Search'); 'Microsoft.PowerAutomateDesktop' = 'Power Automate'; 'Microsoft.People' = (T 'People (legacy)'); 'Microsoft.SkypeApp' = 'Skype'
     'Microsoft.Wallet' = 'Wallet'; 'Microsoft.3DBuilder' = '3D Builder'; 'Microsoft.Print3D' = 'Print 3D'; 'Microsoft.Microsoft3DViewer' = (T '3D Viewer')
 }
-function Get-AppDisplayName([string]$Id) { if ($Script:AppNames.ContainsKey($Id)) { return $Script:AppNames[$Id] }; return ($Id -replace '^[^\.]+\.', '') }
+function Get-AppDisplayName([string]$Id) { if ($Script:AppNames -and $Script:AppNames.ContainsKey($Id)) { return $Script:AppNames[$Id] }; return ($Id -replace '^[^\.]+\.', '') }
 $Script:DeviceClassNames = @{
     'System' = (T 'System devices'); 'HDC' = (T 'Drive controllers'); 'SCSIAdapter' = (T 'Storage controllers'); 'Display' = (T 'Graphics cards'); 'Monitor' = (T 'Monitors'); 'MEDIA' = (T 'Audio devices')
     'Net' = (T 'Network adapters'); 'DiskDrive' = (T 'Drives'); 'Volume' = (T 'Volumes'); 'USB' = (T 'USB controllers'); 'USBDevice' = (T 'USB devices'); 'HIDClass' = (T 'Input devices')
@@ -1786,6 +1960,15 @@ function Get-LastCoolingTest {
 }
 
 # Shared helper for Disk Cleanup (cleanmgr /sagerun) with selected categories
+# Are there memory dumps of blue screens (MEMORY.DMP, Minidump) younger than $Days days? Then they are kept,
+# because EVT-HEALTH reports the blue screens and the dumps are needed to find the cause.
+function Test-RecentSystemDumps([int]$Days) {
+    $limit = (Get-Date).AddDays(-$Days)
+    $f = @()
+    $mem = Get-Item -LiteralPath "$env:windir\MEMORY.DMP" -Force -ErrorAction SilentlyContinue; if ($mem) { $f += $mem }
+    $f += @(Get-ChildItem -LiteralPath "$env:windir\Minidump" -Filter '*.dmp' -File -Force -ErrorAction SilentlyContinue)
+    return [bool]($f | Where-Object { $_.LastWriteTime -gt $limit })
+}
 function Invoke-CleanMgr([string[]]$Categories) {
     $root = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
     # Remove leftovers of a cancelled run, otherwise cleanmgr unintentionally cleans further categories (e.g. Windows.old)
@@ -1825,16 +2008,26 @@ $Script:Rules = @(
     }
 
     [pscustomobject]@{ Id = 'CLN-WINCLEAN'; Kategorie = 'Speicher'; Titel = (T 'Windows Disk Cleanup (update leftovers, error reports, update cache)'); Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Dauer = (T '5–15 minutes'); Endgueltig = $true
-        Warum = (T 'Uses Windows'' own cleanup (cleanmgr /sagerun) for update leftovers, error reports, memory dumps and the Delivery Optimization cache. The previous Windows version (Windows.old) is handled by its own rule CLN-WINOLD.')
+        Warum = (T 'Uses Windows'' own cleanup (cleanmgr /sagerun) for update leftovers, error reports, memory dumps and the Delivery Optimization cache. Memory dumps of blue screens from the last SystemDumpKeepDays days are kept - they are needed to find the cause. The previous Windows version (Windows.old) is handled by its own rule CLN-WINOLD.')
         Detect = {
             if (-not (Test-Path "$env:windir\System32\cleanmgr.exe")) { return }
-            $t = @("$env:windir\SoftwareDistribution\Download", "$env:windir\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache", "$env:ProgramData\Microsoft\Windows\WER", "$env:windir\MEMORY.DMP", "$env:windir\Minidump", "$env:windir\LiveKernelReports")
+            # Recent blue screens: keep all system dumps (cleanmgr can only delete all or none of them)
+            $behalten = [bool](Test-RecentSystemDumps ([int]$Script:Cfg.SystemDumpKeepDays))
+            $t = @("$env:windir\SoftwareDistribution\Download", "$env:windir\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache", "$env:ProgramData\Microsoft\Windows\WER", "$env:windir\LiveKernelReports")
+            if (-not $behalten) { $t += "$env:windir\MEMORY.DMP", "$env:windir\Minidump" }
             $sum = 0; $found = @()
             foreach ($p in $t) { $s = Get-DirSize $p; if ($s -gt 10MB) { $sum += $s; $found += ('{0} ({1})' -f (Split-Path $p -Leaf), (Fmt-Bytes $s)) } }
-            if ($sum -gt 50MB) { New-Item2 ((T 'Leftovers of Windows updates and error reports (') + ($found -join ', ') + ')') $sum $null }
+            if ($sum -gt 50MB) {
+                $lbl = (T 'Leftovers of Windows updates and error reports (') + ($found -join ', ') + ')'
+                if ($behalten) { $lbl += (T ' - memory dumps of recent blue screens are kept') }
+                New-Item2 $lbl $sum @{ DumpsBehalten = $behalten }
+            }
         }
         Fix = { param($it)
-            $n = Invoke-CleanMgr @('Update Cleanup', 'Windows Error Reporting Files', 'Delivery Optimization Files', 'System error memory dump files', 'System error minidump files', 'Windows Upgrade Log Files', 'Setup Log Files', 'Downloaded Program Files')
+            $kat = @('Update Cleanup', 'Windows Error Reporting Files', 'Delivery Optimization Files', 'Windows Upgrade Log Files', 'Setup Log Files', 'Downloaded Program Files')
+            # Decide again at the time of the fix: a blue screen may have happened since the scan
+            if (-not ($it.Data -and $it.Data.DumpsBehalten) -and -not (Test-RecentSystemDumps ([int]$Script:Cfg.SystemDumpKeepDays))) { $kat += 'System error memory dump files', 'System error minidump files' }
+            $n = Invoke-CleanMgr $kat
             # cleanmgr sometimes leaves the Delivery Optimization cache and driver watchdog dumps behind
             if (Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue) { try { Delete-DeliveryOptimizationCache -Force -ErrorAction Stop } catch { } }
             $lkr = "$env:windir\LiveKernelReports"
@@ -2025,8 +2218,8 @@ $Script:Rules = @(
         Fix = { param($it) $o = & pnputil.exe /delete-driver $it.Data 2>&1; if ($LASTEXITCODE -ne 0) { throw (T 'SKIP:Still in use – Windows keeps this driver') }; (T 'removed') }
     }
 
-    [pscustomobject]@{ Id = 'CLN-ORPHANDIR'; Kategorie = 'Speicher'; Titel = (T 'Folders without a matching installed program'); Risiko = 'Hoch'; Wirkung = 'Speicher/Hygiene'; Admin = $false; Standard = $false
-        Warum = (T 'Heuristic: folders in Program Files/ProgramData/AppData whose name matches no installed program. May contain false positives - therefore only on explicit request (-Rule CLN-ORPHANDIR) and with confirmation for each item.')
+    [pscustomobject]@{ Id = 'CLN-ORPHANDIR'; Kategorie = 'Speicher'; Titel = (T 'Folders without a matching installed program'); Risiko = 'Hoch'; Wirkung = 'Speicher/Hygiene'; Admin = $false; Standard = $false; Umkehrbar = $true
+        Warum = (T 'Heuristic: folders in Program Files/ProgramData/AppData whose name matches no installed program. May contain false positives - therefore only on explicit request (-Rule CLN-ORPHANDIR) and with confirmation for each item. The folder is not deleted right away but set aside (renamed); "Restore" brings it back, CLN-QUARANTINE deletes it after QuarantineDays days.')
         Detect = {
             $apps = Get-InstalledApps
             $norm = { param($s) (([string]$s).ToLower() -replace '[^a-z0-9]', '') }
@@ -2036,7 +2229,7 @@ $Script:Rules = @(
             $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:LOCALAPPDATA, $env:APPDATA) | Where-Object { $_ }
             foreach ($r in $roots) {
                 foreach ($d in (Get-ChildItem -LiteralPath $r -Directory -Force -ErrorAction SilentlyContinue)) {
-                    if ($Script:Cfg.OrphanDirIgnore -contains $d.Name -or (Test-Reparse $d)) { continue }
+                    if ($Script:Cfg.OrphanDirIgnore -contains $d.Name -or (Test-Reparse $d) -or $d.Name -like ('*' + $Script:QuarantineSuffix + '*')) { continue }
                     $n = & $norm $d.Name; if ($n.Length -lt 3) { continue }
                     $hit = $false; foreach ($x in $names) { if ($x.Contains($n) -or ($x.Length -ge 4 -and $n.Contains($x))) { $hit = $true; break } }
                     if ($hit) { continue }
@@ -2045,7 +2238,54 @@ $Script:Rules = @(
                 }
             }
         }
-        Fix = { param($it) if (-not (Test-SafeDeleteRoot $it.Data)) { throw (T 'Unsafe path') }; Remove-TreeNoFollow $it.Data; (T 'removed') }
+        Fix = { param($it) if (-not (Test-SafeDeleteRoot $it.Data)) { throw (T 'Unsafe path') }; $null = Move-ToQuarantine 'CLN-ORPHANDIR' $it.Data; (T 'set aside (can be restored, deleted after {0} days)' ([int]$Script:Cfg.QuarantineDays)) }
+    }
+
+    [pscustomobject]@{ Id = 'CLN-QUARANTINE'; Kategorie = 'Speicher'; Titel = (T 'Folders set aside by WinTidy'); Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $false; Standard = $true; Endgueltig = $true
+        Warum = (T 'Folders removed with CLN-ORPHANDIR are first only renamed (name ends with .WinTidy-removed-<date>), so that "Restore" can bring them back. After QuarantineDays days without anyone missing them, they are deleted permanently.')
+        Detect = {
+            $limit = (Get-Date).AddDays(-[int]$Script:Cfg.QuarantineDays)
+            foreach ($q in @(Get-QuarantineDirs | Where-Object { $_.Datum -lt $limit })) {
+                New-Item2 ((T '{0} (set aside on {1:yyyy-MM-dd})') -f $q.Name, $q.Datum) (Get-DirSize $q.Pfad) $q.Pfad
+            }
+        }
+        Fix = { param($it) if (-not (Test-QuarantinePath $it.Data) -or -not (Test-SafeDeleteRoot $it.Data)) { throw (T 'Unexpected path') }; Remove-TreeNoFollow $it.Data; (T 'deleted') }
+    }
+
+    [pscustomobject]@{ Id = 'CLN-DRIVERINSTALL'; Kategorie = 'Speicher'; Titel = (T 'Unpacked driver installers'); Risiko = 'Mittel'; Wirkung = 'Speicher'; Admin = $true; Standard = $true; Endgueltig = $true
+        Warum = (T 'Graphics driver installers unpack themselves into folders such as C:\AMD or C:\NVIDIA and leave them there - often several GB. The installed driver does not need them (Windows keeps its own copy in the driver store). Only folders from DriverInstallerDirs, from DriverInstallerMinMB and only if nothing in them has changed for 14 days (no installation running).')
+        Detect = {
+            foreach ($raw in @($Script:Cfg.DriverInstallerDirs)) {
+                $p = ([Environment]::ExpandEnvironmentVariables([string]$raw)).TrimEnd('\')
+                if ($p -notmatch '^[A-Za-z]:\\.+' -or -not (Test-SafeDeleteRoot $p)) { continue }
+                $d = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+                if (-not $d -or -not $d.PSIsContainer -or (Test-Reparse $d)) { continue }
+                $s = Get-DirSize $p
+                if ($s -lt ([int64]$Script:Cfg.DriverInstallerMinMB * 1MB)) { continue }
+                $neu = Get-NewestFileTime $p
+                if ($neu -and $neu -gt (Get-Date).AddDays(-14)) { continue }
+                New-Item2 ((T 'Unpacked driver installer {0} ({1})') -f $p, (Fmt-Bytes $s)) $s $p
+            }
+        }
+        Fix = { param($it)
+            $ok = @($Script:Cfg.DriverInstallerDirs | Where-Object { ([Environment]::ExpandEnvironmentVariables([string]$_)).TrimEnd('\') -ieq [string]$it.Data })
+            if (-not $ok.Count -or -not (Test-SafeDeleteRoot $it.Data)) { throw (T 'Unexpected path') }
+            Remove-TreeNoFollow $it.Data; (T 'deleted')
+        }
+    }
+
+    [pscustomobject]@{ Id = 'CLN-PROFILE-ORPHAN'; Kategorie = 'Speicher'; Titel = (T 'Profile folders of deleted user accounts (only shown)'); Risiko = 'Info'; Wirkung = 'Speicher'; Admin = $true; Standard = $true
+        Warum = (T 'If a user account is deleted or the PC was moved from an old installation, its folder under C:\Users often stays behind - with documents, pictures and program data nobody can see in the account list anymore. It may contain the only copy of personal files, so WinTidy only shows it. If the profile list cannot be read, nothing is shown.')
+        Detect = {
+            $dirs = Get-OrphanProfileDirs
+            if ($null -eq $dirs) { return }
+            foreach ($d in @($dirs)) {
+                $s = Get-DirSize $d.FullName
+                if ($s -lt 100MB) { continue }
+                New-Item2 ((T 'The folder {0} ({1}) belongs to no user account on this PC. Check whether it still contains files you need, back them up and then delete the folder yourself') -f $d.FullName, (Fmt-Bytes $s)) 0 @{ Stufe = ''; Bytes = [int64]$s }
+            }
+        }
+        Fix = $null
     }
 
     # ---------------------------------------------------------------- Startup
@@ -2103,8 +2343,10 @@ $Script:Rules = @(
                 $s = $_; $vi = $null
                 if ($s.Ziel -and ([string]$s.Ziel) -match '^[A-Za-z]:\\') { try { $vi = (Get-Item -LiteralPath $s.Ziel -ErrorAction Stop).VersionInfo } catch { } }
                 $id = "$($s.Name) $($s.Ziel) $(if ($vi) { "$($vi.CompanyName) $($vi.FileDescription) $($vi.ProductName)" })"
+                # Protected: plain substring (rather protect too much); heavy: only as a whole word, so that
+                # 'Teams' does not hit TeamSpeak and 'Zoom' does not hit ZoomIt
                 if ($prot | Where-Object { $id -like "*$_*" }) { return }
-                $isHeavy = [bool]($heavy | Where-Object { $id -like "*$_*" })
+                $isHeavy = [bool]($heavy | Where-Object { Test-WordMatch $id $_ })
                 $nm = if ($vi -and $vi.FileDescription -and $s.Art -ne 'StoreApp') { "{0} ({1})" -f $s.Name, ([string]$vi.FileDescription).Trim() } else { $s.Name }
                 $tag = @(); if ($s.DegradationMs -ge $Script:Cfg.BootDegradationHintMs) { $tag += ((T 'delays startup by about {0:N0} seconds') -f ($s.DegradationMs / 1000)) }; if ($isHeavy) { $tag += (T 'starts unnecessarily') }
                 $it = New-Item2 ("{0}{1}" -f $nm, $(if ($tag) { ' – ' + ($tag -join ', ') } else { '' })) 0 $s ("[{0}] {1} -> {2}" -f $s.Ort, $s.Name, $s.Ziel)
@@ -2174,7 +2416,12 @@ $Script:Rules = @(
             foreach ($s in (Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.PathName -and $_.StartMode -ne 'Disabled' })) {
                 $tg = Resolve-CommandTarget $s.PathName
                 if ($tg -match '\\(svchost|lsass|services)\.exe$') { continue }
-                if ((Get-TargetState $tg) -eq 'fehlt') { New-Item2 ((T 'Background service {0} – the program for it is gone') -f $s.DisplayName) 0 @{ Name = $s.Name; StartMode = $s.StartMode; Verzoegert = [bool]$s.DelayedAutoStart } ("{0} -> {1}" -f $s.Name, $tg) }
+                if ((Get-TargetState $tg) -eq 'fehlt') {
+                    $it = New-Item2 ((T 'Background service {0} – the program for it is gone') -f $s.DisplayName) 0 @{ Name = $s.Name; StartMode = $s.StartMode; Verzoegert = [bool]$s.DelayedAutoStart } ("{0} -> {1}" -f $s.Name, $tg)
+                    # Only switched to "Disabled" and can be undone: preselected and allowed unattended
+                    $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue $true
+                    $it
+                }
             }
         }
         Fix = { param($it) Set-Service -Name $it.Data.Name -StartupType Disabled -ErrorAction Stop; Add-ActionRecord 'SVC-ORPHAN' $it.Data.Name 'Undo-Info' 0 '' @{ Typ = 'Dienst'; Name = $it.Data.Name; StartMode = $it.Data.StartMode; Verzoegert = [bool]$it.Data.Verzoegert } | Out-Null; (T 'disabled') }
@@ -2182,7 +2429,7 @@ $Script:Rules = @(
 
     # ---------------------------------------------------------------- Programs
     [pscustomobject]@{ Id = 'APP-SIDEBYSIDE'; Kategorie = 'Programme'; Titel = (T 'Several installed versions of the same program'); Risiko = 'Mittel'; Wirkung = 'Speicher/Hygiene'; Admin = $true; Standard = $true
-        Warum = (T 'Some installers put updates next to the old version as an additional version. Uninstalling all versions except the newest is offered (runtimes, SDKs etc. are excluded).')
+        Warum = (T 'Some installers put updates next to the old version as an additional version. Uninstalling all versions except the newest is offered (runtimes, SDKs etc. are excluded). Older main versions (e.g. version 18 next to 19) are marked, because they are often kept on purpose. Nothing is preselected.')
         Detect = {
             $ex = ($Script:Cfg.SideBySideExclude -join '|')
             # With admin rights only entries from HKLM: HKCU entries can come from programs without admin rights,
@@ -2193,7 +2440,15 @@ $Script:Rules = @(
                 $withV = @($g.Group | ForEach-Object { $v = [version]'0.0'; $m = [regex]::Match(("$($_.DisplayVersion) $($_.DisplayName)"), '\d+(\.\d+)+'); if ($m.Success) { try { $v = [version]($m.Value -replace '^(\d+(\.\d+){0,3}).*$', '$1') } catch { } }; $_ | Add-Member -NotePropertyName V -NotePropertyValue $v -PassThru -Force })
                 if (@($withV.V | Select-Object -Unique).Count -lt 2) { continue }
                 $newest = ($withV | Sort-Object V -Descending)[0]
-                foreach ($a in ($withV | Where-Object { $_ -ne $newest } | Sort-Object V)) { New-Item2 ((T '{0} {1} (newest {2} stays)') -f $a.DisplayName, $a.DisplayVersion, $newest.DisplayVersion) ([int64]$a.EstimatedSize * 1KB) $a }
+                foreach ($a in ($withV | Where-Object { $_ -ne $newest } | Sort-Object V)) {
+                    $lbl = (T '{0} {1} (newest {2} stays)') -f $a.DisplayName, $a.DisplayVersion, $newest.DisplayVersion
+                    # Another main version (e.g. 18 next to 19) is often kept on purpose for old projects - say so
+                    if ($a.V.Major -ne $newest.V.Major -and $a.V -ne [version]'0.0') { $lbl += (T ' - different main version, may be installed on purpose') }
+                    $it = New-Item2 $lbl ([int64]$a.EstimatedSize * 1KB) $a
+                    # Uninstallers are interactive and cannot be undone: never unattended, never preselected
+                    $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue $false
+                    $it
+                }
             }
         }
         Fix = { param($it)
@@ -2206,21 +2461,6 @@ $Script:Rules = @(
             if ($p.ExitCode -in 1602, 1223) { throw (T 'SKIP:Uninstall cancelled') }
             if ($p.ExitCode -notin 0, 3010, 1641) { throw (T 'Uninstaller reports code {0}' ($p.ExitCode)) }
             (T 'uninstalled')
-        }
-    }
-
-    [pscustomobject]@{ Id = 'APP-BLOAT'; Kategorie = 'Programme'; Titel = (T 'Preinstalled Store apps (BloatApps list)'); Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true
-        Warum = (T 'Ad and demo apps without use. Removed for the user and as a template for new accounts. Can be reinstalled from the Store at any time.')
-        Detect = {
-            foreach ($n in $Script:Cfg.BloatApps) {
-                $p = @(Get-AppxPackage -Name $n -ErrorAction SilentlyContinue)
-                if ($p.Count) { New-Item2 (Get-AppDisplayName $n) 0 $n ("{0} {1}" -f $n, $p[0].Version) }
-            }
-        }
-        Fix = { param($it)
-            Get-AppxPackage -Name $it.Data -ErrorAction SilentlyContinue | ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -ErrorAction Stop }
-            if ($Script:IsAdmin) { try { Get-AppxProvisionedPackage -Online -ErrorAction Stop | Where-Object DisplayName -eq $it.Data | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null } } catch { } }
-            (T 'removed')
         }
     }
 
@@ -2253,10 +2493,15 @@ $Script:Rules = @(
 
     # ---------------------------------------------------------------- System
     [pscustomobject]@{ Id = 'SYS-GHOST'; Kategorie = 'System'; Titel = (T 'Ghost devices (hardware that is no longer connected)'); Risiko = 'Mittel'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Endgueltig = $true
-        Warum = (T 'Old devices stay registered in Device Manager (e.g. from a previous PC). If a device is connected again, Windows detects it anew. Bluetooth, audio endpoints and printers are excluded.')
+        Warum = (T 'Old devices stay registered in Device Manager (e.g. from a previous PC). Only devices that have not been connected for at least GhostDeviceMinDays days are offered - a dock or audio interface that is only unplugged for a while keeps its settings. If a device is connected again, Windows detects it anew. Bluetooth, audio endpoints and printers are excluded.')
         Detect = {
             $cls = $Script:Cfg.GhostDeviceClasses
-            $g = Get-GhostDevices
+            $alle = @(Get-GhostDevices)
+            if (-not $alle.Count) { return }
+            # Only devices whose last appearance is known and old enough (unknown = not offered)
+            $seen = Get-DeviceLastSeen @($alle | ForEach-Object { [string]$_.InstanceId })
+            $limit = (Get-Date).AddDays(-[int]$Script:Cfg.GhostDeviceMinDays)
+            $g = @($alle | Where-Object { $seen.ContainsKey([string]$_.InstanceId) -and $seen[[string]$_.InstanceId] -lt $limit })
             foreach ($grp in ($g | Group-Object Class | Sort-Object Count -Descending)) {
                 $bsp = ($grp.Group | Select-Object -ExpandProperty FriendlyName -Unique | Where-Object { $_ } | Select-Object -First 3) -join '; '
                 New-Item2 ((T '{0} old entries: {1} (e.g. {2})') -f $grp.Count, (Get-DeviceClassName $grp.Name), $bsp) 0 @($grp.Group | Select-Object -ExpandProperty InstanceId)
@@ -2278,19 +2523,14 @@ $Script:Rules = @(
         Fix = { param($it) $o = & vssadmin.exe resize shadowstorage /for=$($it.Data) /on=$($it.Data) /maxsize=$($Script:Cfg.ShadowStorageTarget) 2>&1; if ($LASTEXITCODE -ne 0) { throw ($o | Out-String) }; (T 'set to {0}' ($Script:Cfg.ShadowStorageTarget)) }
     }
 
-    [pscustomobject]@{ Id = 'SYS-TRIM'; Kategorie = 'System'; Titel = (T 'SSD TRIM turned off or not run for a long time'); Risiko = 'Niedrig'; Wirkung = 'Leistung'; Admin = $true; Standard = $true; Umkehrbar = $true
-        Warum = (T 'TRIM tells the SSD about free blocks and keeps write performance high. Windows does this weekly via drive optimization. Only reported if TRIM is turned off (often by "tuning" tools) or the optimization has not run for more than 14 days.')
+    [pscustomobject]@{ Id = 'SYS-TRIM'; Kategorie = 'System'; Titel = (T 'SSD TRIM turned off'); Risiko = 'Niedrig'; Wirkung = 'Leistung'; Admin = $true; Standard = $true; Umkehrbar = $true
+        Warum = (T 'TRIM tells the SSD about free blocks and keeps write performance high. Only reported if TRIM is turned off in Windows (often by "tuning" tools). If the weekly drive optimization does not run, SYS-MAINT reports it - one cause, one finding.')
         Detect = {
             $fs = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
             $dd = (Get-ItemProperty $fs -ErrorAction SilentlyContinue).DisableDeleteNotification
             $ssd = @(Get-VolumeInfo | Where-Object { $_.Medium -eq 'SSD' -and $_.FS -eq 'NTFS' })
             if (-not $ssd.Count) { return }
-            if ($dd -eq 1) { New-Item2 (T 'TRIM is turned off in Windows – the SSD gets slower over time') 0 'an'; return }
-            $t = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction SilentlyContinue
-            $i = if ($t) { $t | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue } else { $null }
-            $alt = (-not $t) -or $t.State -eq 'Disabled' -or -not $i -or -not $i.LastRunTime -or $i.LastRunTime.Year -lt 2000 -or $i.LastRunTime -lt (Get-Date).AddDays(-14)
-            if (-not $alt) { return }
-            Get-VolumeInfo | Where-Object { $_.Medium -eq 'SSD' -and $_.FS -eq 'NTFS' } | ForEach-Object { New-Item2 ((T 'SSD {0}: {1} – TRIM has not run for more than 14 days') -f $_.LW, $_.Disk) 0 $_.LW }
+            if ($dd -eq 1) { New-Item2 (T 'TRIM is turned off in Windows – the SSD gets slower over time') 0 'an' }
         }
         Fix = { param($it)
             if ($it.Data -eq 'an') { Set-RegValueWithUndo 'SYS-TRIM' 'TRIM' 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'DisableDeleteNotification' 0 'DWord'; foreach ($v in @(Get-VolumeInfo | Where-Object { $_.Medium -eq 'SSD' -and $_.FS -eq 'NTFS' })) { try { Optimize-Volume -DriveLetter $v.LW -ReTrim -ErrorAction Stop } catch { } }; return (T 'TRIM turned on') }
@@ -2298,8 +2538,8 @@ $Script:Rules = @(
         }
     }
 
-    [pscustomobject]@{ Id = 'SYS-MAINT'; Kategorie = 'System'; Titel = (T 'Automatic maintenance does not complete'); Risiko = 'Niedrig'; Wirkung = 'Leistung/Hygiene'; Admin = $true; Standard = $true
-        Warum = (T 'Drive optimization, System Restore and more depend on automatic maintenance. If it keeps aborting, the system slowly falls behind.')
+    [pscustomobject]@{ Id = 'SYS-MAINT'; Kategorie = 'System'; Titel = (T 'Drive optimization does not run'); Risiko = 'Niedrig'; Wirkung = 'Leistung/Hygiene'; Admin = $true; Standard = $true
+        Warum = (T 'Windows optimizes the drives weekly during automatic maintenance (TRIM for SSDs, defragmenting hard disks). Reported if this task is turned off or has not run for more than 14 days. The fix runs TRIM on the SSDs right away and starts the maintenance.')
         Detect = {
             $t = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction SilentlyContinue
             if (-not $t) { return }
@@ -2310,8 +2550,23 @@ $Script:Rules = @(
         }
         Fix = { param($it)
             if ($it.Data -eq 'aus') { Backup-Task (Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag'); Enable-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction Stop | Out-Null; return (T 'Drive maintenance turned on') }
+            # SSDs right away (takes seconds), the rest via the normal maintenance
+            foreach ($v in @(Get-VolumeInfo | Where-Object { $_.Medium -eq 'SSD' -and $_.FS -eq 'NTFS' })) { try { Optimize-Volume -DriveLetter $v.LW -ReTrim -ErrorAction Stop } catch { } }
             Start-Process "$env:windir\System32\MSchedExe.exe" -ArgumentList 'Start'; (T 'Maintenance started (leave the PC on for about 1 hour)')
         }
+    }
+
+    [pscustomobject]@{ Id = 'SYS-REBOOT'; Kategorie = 'System'; Titel = (T 'Windows has not been restarted for a long time'); Risiko = 'Info'; Wirkung = 'Sicherheit/Stabilitaet'; Admin = $false; Standard = $true
+        Warum = (T 'Updates and drivers often only take effect after a restart. With fast startup, "Shut down" is no real restart. Reported after 7 days without a restart - as a warning if Windows is waiting for a restart to finish updates.')
+        Detect = {
+            $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+            if (-not $os -or -not $os.LastBootUpTime -or $os.LastBootUpTime -ge (Get-Date).AddDays(-7)) { return }
+            $tage = ((Get-Date) - $os.LastBootUpTime).TotalDays
+            if (Test-RebootPending) { New-Item2 ((T 'Windows is waiting for a restart to finish installing updates, but has not been restarted for {0:N0} days - until then the updates do not protect the PC. Choose Start > Power > Restart') -f $tage) 0 @{ Stufe = 'warn' }; return }
+            $hb = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -ErrorAction SilentlyContinue).HiberbootEnabled
+            if ($hb -eq 1) { New-Item2 ((T 'Windows has not been restarted for {0:N0} days (fast startup turns ''Shut down'' into no real restart). So choose ''Restart'' after updates and drivers') -f $tage) 0 @{ Stufe = '' } }
+        }
+        Fix = $null
     }
 
     [pscustomobject]@{ Id = 'SYS-INTEGRITY'; Kategorie = 'System'; Titel = (T 'Check/repair system files and the component store'); Risiko = 'Niedrig'; Wirkung = 'Stabilitaet'; Admin = $true; Standard = $true; Dauer = (T '10–30 minutes')
@@ -2336,23 +2591,37 @@ $Script:Rules = @(
     }
 
     [pscustomobject]@{ Id = 'SYS-GAMEDVR'; Kategorie = 'System'; Titel = (T 'Background recording (Xbox Game Bar) active'); Risiko = 'Mittel'; Wirkung = 'Leistung'; Admin = $false; Standard = $true; Umkehrbar = $true
-        Warum = (T 'Background recording ("Record what happened") constantly records the last minutes in games and costs GPU performance. Only this is turned off; recording clips manually and Game Mode stay.')
+        Warum = (T 'Background recording ("Record what happened") constantly records the last minutes in games; Windows itself warns in its settings that this may affect game performance. It is off by default - if it is on, someone switched it on. If you use it on purpose, leave it. Only this is turned off; recording clips manually and Game Mode stay. Nothing is preselected.')
         Detect = {
             $k = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' -ErrorAction SilentlyContinue
-            if ($k -and $k.HistoricalCaptureEnabled -eq 1 -and $k.AppCaptureEnabled -ne 0) { New-Item2 (T 'Background recording of the Xbox Game Bar is turned on') 0 $null }
+            if ($k -and $k.HistoricalCaptureEnabled -eq 1 -and $k.AppCaptureEnabled -ne 0) {
+                $it = New-Item2 (T 'Background recording of the Xbox Game Bar is turned on') 0 $null
+                # Switched on by someone on purpose: never preselected, never unattended
+                $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue $false
+                $it
+            }
         }
         Fix = { param($it) Set-RegValueWithUndo 'SYS-GAMEDVR' (T 'Background recording') 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'HistoricalCaptureEnabled' 0 'DWord'; (T 'disabled') }
     }
 
     # ---------------------------------------------------------------- Security (mostly info)
     [pscustomobject]@{ Id = 'SEC-EXECPOLICY'; Kategorie = 'Sicherheit'; Titel = (T 'PowerShell execution policy too permissive'); Risiko = 'Mittel'; Wirkung = 'Sicherheit'; Admin = $false; Standard = $true; Umkehrbar = $true
-        Warum = (T '"Unrestricted"/"Bypass" permanently allows every downloaded script. RemoteSigned keeps local scripts running but blocks unsigned downloads.')
-        Detect = { foreach ($s in 'CurrentUser', 'LocalMachine') { $p = Get-ExecutionPolicy -Scope $s; if ("$p" -in 'Unrestricted', 'Bypass') { New-Item2 $(if ($s -eq 'CurrentUser') { (T 'This protection setting is turned off for your user account') } else { (T 'This protection setting is turned off for all users') }) 0 $s } } }
+        Warum = (T '"Unrestricted"/"Bypass" permanently allows every downloaded script. RemoteSigned keeps local scripts running but blocks unsigned downloads. The execution policy is not a security boundary (Microsoft), only a protection against running a downloaded script by accident - developers often set it on purpose. Therefore nothing is preselected.')
+        Detect = {
+            foreach ($s in 'CurrentUser', 'LocalMachine') {
+                $p = Get-ExecutionPolicy -Scope $s
+                if ("$p" -in 'Unrestricted', 'Bypass') {
+                    $it = New-Item2 $(if ($s -eq 'CurrentUser') { (T 'This protection setting is turned off for your user account') } else { (T 'This protection setting is turned off for all users') }) 0 $s
+                    $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue $false
+                    $it
+                }
+            }
+        }
         Fix = { param($it) $alt = "$(Get-ExecutionPolicy -Scope $it.Data)"; try { Set-ExecutionPolicy RemoteSigned -Scope $it.Data -Force -ErrorAction Stop } catch { if ($_.Exception.Message -notmatch 'overridden|ueberschrieben|überschrieben') { throw } }; if ("$(Get-ExecutionPolicy -Scope $it.Data)" -ne $alt) { Add-ActionRecord 'SEC-EXECPOLICY' (T 'Protection setting for scripts') 'Undo-Info' 0 '' @{ Typ = 'ExecPolicy'; Scope = $it.Data; Vorher = $alt } | Out-Null }; 'RemoteSigned' }
     }
 
     [pscustomobject]@{ Id = 'SEC-CHECKS'; Kategorie = 'Sicherheit'; Titel = (T 'Security basics'); Risiko = 'Info'; Wirkung = 'Sicherheit'; Admin = $true; Standard = $true
-        Warum = (T 'Windows support and updates, Secure Boot, antivirus, firewall, UAC, BIOS age. Another active antivirus or firewall is taken into account.')
+        Warum = (T 'Windows support and updates, Secure Boot, antivirus, firewall, UAC, BIOS age and too broad antivirus exclusions. Another active antivirus or firewall is taken into account.')
         Detect = {
             $wi = Get-WindowsSupportInfo
             if ($wi.Ende -and $wi.Ende -lt (Get-Date)) { New-Item2 ((T 'This Windows version ({0}) has not received security updates since {1:yyyy-MM-dd} – please update to the current version via Settings > Windows Update') -f $wi.Version, $wi.Ende) 0 @{ Stufe = 'krit' } }
@@ -2382,6 +2651,13 @@ $Script:Rules = @(
             if ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue).EnableLUA -eq 0) { New-Item2 (T 'User Account Control (confirmation for changes to the system) is turned off') 0 @{ Stufe = 'warn' } }
             $b = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
             if ($b.ReleaseDate -and $b.ReleaseDate -lt (Get-Date).AddYears(-2)) { New-Item2 ((T 'The basic software of the motherboard (BIOS) dates from {0:yyyy-MM-dd}. An update can fix bugs and security holes – please only have it done by someone who knows what they are doing') -f $b.ReleaseDate) 0 @{ Stufe = '' } }
+            # Defender exclusions that switch off the scan for large parts of the PC (tuning tools, game cheats, old guides)
+            if (-not $avFremd.Count) {
+                foreach ($x in @(Get-BroadDefenderExclusions (Get-DefenderExclusions))) {
+                    $txt = switch ($x.Art) { 'Pfad' { (T 'The antivirus skips the whole folder {0} - malware there is not found. Check the exclusion under Windows Security > Virus & threat protection > Exclusions') } 'Endung' { (T 'The antivirus skips all files of the type {0} - a typical trick of malware and tuning tools. Check the exclusion under Windows Security > Virus & threat protection > Exclusions') } default { (T 'The antivirus ignores everything the program {0} does - check the exclusion under Windows Security > Virus & threat protection > Exclusions') } }
+                    New-Item2 ($txt -f $x.Wert) 0 @{ Stufe = 'warn' }
+                }
+            }
         }
         Fix = $null
     }
@@ -2391,7 +2667,12 @@ $Script:Rules = @(
         Detect = {
             $bl = Get-BitLockerState
             if ($bl -eq 'Geschuetzt') { New-Item2 (T 'The system drive is encrypted – the data stays unreadable if the PC is lost or stolen') 0 @{ Stufe = 'ok' } }
-            elseif ($bl -eq 'Ausgesetzt') { New-Item2 (T 'The drive encryption of the system drive is paused and protects nothing right now. Resume it under Settings > Privacy & security > Device encryption') 0 @{ Stufe = 'warn' } }
+            elseif ($bl -eq 'Ausgesetzt') {
+                # Paused only until the next restart (e.g. for a BIOS update): resumes by itself, no warning
+                $n = Get-BitLockerSuspendCount
+                if ($null -ne $n -and $n -gt 0) { New-Item2 (T 'The drive encryption of the system drive is paused until the next restart (Windows does this e.g. for BIOS updates) and then resumes by itself') 0 @{ Stufe = '' } }
+                else { New-Item2 (T 'The drive encryption of the system drive is paused and protects nothing right now. Resume it under Settings > Privacy & security > Device encryption') 0 @{ Stufe = 'warn' } }
+            }
             elseif ($bl -eq 'Aus') {
                 $lap = $false; try { $lap = [bool](Get-ChassisInfo).Laptop } catch { }
                 New-Item2 (T 'The system drive is not encrypted. If the PC is lost or stolen, others can read the data. Device encryption can be turned on under Settings > Privacy & security > Device encryption (depending on the Windows edition as BitLocker)') 0 @{ Stufe = $(if ($lap) { 'warn' } else { '' }) }
@@ -2444,7 +2725,7 @@ $Script:Rules = @(
     }
 
     [pscustomobject]@{ Id = 'SYS-TWEAKS'; Kategorie = 'System'; Titel = (T 'Unfavorable tuning settings'); Risiko = 'Info'; Wirkung = 'Leistung/Sicherheit'; Admin = $true; Standard = $true
-        Warum = (T 'Some tuning programs and guides turn off Windows features that actually make the PC faster or safer: page file, Prefetch, SysMain, Defender via policy.')
+        Warum = (T 'Some tuning programs and guides turn off Windows features that actually make the PC faster or safer: page file, Prefetch, SysMain, Windows Search, Defender via policy, update servers blocked in the hosts file, Windows held at an old version by policy.')
         Detect = {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
             if ($cs -and -not $cs.AutomaticManagedPagefile -and -not @(Get-CimInstance Win32_PageFileSetting -ErrorAction SilentlyContinue).Count) { New-Item2 (T 'The page file is turned off – this leads to crashes when the RAM is full. Recommended: "Automatically manage paging file size" (System Properties > Advanced > Performance)') 0 @{ Stufe = 'warn' } }
@@ -2455,6 +2736,16 @@ $Script:Rules = @(
             $dp = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -ErrorAction SilentlyContinue
             $rp = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' -ErrorAction SilentlyContinue
             if (($dp.DisableAntiSpyware -eq 1 -or $rp.DisableRealtimeMonitoring -eq 1) -and -not @(Get-OtherSecurityProducts 'AntiVirusProduct').Count) { New-Item2 (T 'The antivirus was turned off via policy (often by tuning programs) and no other antivirus is active') 0 @{ Stufe = 'krit' } }
+            $ws = Get-CimInstance Win32_Service -Filter "Name='WSearch'" -ErrorAction SilentlyContinue
+            if ($ws -and $ws.StartMode -eq 'Disabled') { New-Item2 (T 'The Windows Search service is turned off - searching in Start, File Explorer and Outlook becomes slow or finds nothing. It does not make the PC faster') 0 @{ Stufe = 'warn' } }
+            $hb = @(Get-HostsUpdateBlocks)
+            if ($hb.Count) { New-Item2 ((T 'The hosts file blocks {0} address(es) of Windows Update or the antivirus (e.g. {1}) - the PC then receives no or incomplete security updates. Often set by "anti-telemetry" tools') -f $hb.Count, ($hb[0] -split '\s+')[-1]) 0 @{ Stufe = 'krit' } }
+            $pin = Get-UpdatePolicyPin
+            if ($pin) {
+                $wi = Get-WindowsSupportInfo
+                $abgel = [bool]($wi.Ende -and $wi.Ende -lt (Get-Date))
+                New-Item2 ((T 'A policy holds Windows at version {0} - newer Windows versions are not installed. On a company PC this is usually intended; otherwise a tuning program probably set it') -f (($pin.Produkt + ' ' + $pin.Version).Trim())) 0 @{ Stufe = $(if ($abgel) { 'krit' } else { '' }) }
+            }
         }
         Fix = $null
     }
@@ -2512,10 +2803,13 @@ $Script:Rules = @(
             } catch { }
             $raidSvc = Get-CimInstance Win32_SystemDriver -Filter "Name='rcraid' OR Name='iaStorAVC' OR Name='iaStorAC'" -ErrorAction SilentlyContinue | Where-Object State -eq 'Running'
             if ($raidSvc -and -not (Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match 'RAID|Array' })) { New-Item2 ((T 'RAID driver active ({0}), but no RAID array detected – RAID instead of AHCI/NVMe may be set in the BIOS. Only switch with preparation, otherwise Windows no longer starts') -f ($raidSvc.Name -join ', ')) 0 @{ Stufe = '' } }
-            # Fast startup: "Shut down" does not really restart Windows
-            $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-            $hb = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -ErrorAction SilentlyContinue).HiberbootEnabled
-            if ($os -and $hb -eq 1 -and $os.LastBootUpTime -lt (Get-Date).AddDays(-7)) { New-Item2 ((T 'Windows has not been restarted for {0:N0} days (fast startup turns ''Shut down'' into no real restart). So choose ''Restart'' after updates and drivers') -f ((Get-Date) - $os.LastBootUpTime).TotalDays) 0 @{ Stufe = '' } }
+            # Graphics driver age (only real drivers; the standard driver is reported above)
+            if (-not $ch.VM) {
+                foreach ($g in @($vc | Where-Object { $_.DriverDate -and $_.Name -notmatch 'Basic Display|Standard-VGA|Microsoft Basic|Remote|Virtual|Parsec|Citrix' -and $_.InfFilename -ne 'display.inf' })) {
+                    $dd = $null; try { $dd = [datetime]$g.DriverDate } catch { }
+                    if ($dd -and $dd.Year -ge 2000 -and $dd -lt (Get-Date).AddDays(-[int]$Script:Cfg.GpuDriverMaxAgeDays)) { New-Item2 ((T 'The driver of {0} is from {1:yyyy-MM-dd}. Newer drivers from the graphics card maker (for laptops: the laptop maker) often fix bugs and bring more performance in games') -f $g.Name, $dd) 0 @{ Stufe = '' } }
+                }
+            }
         }
         Fix = $null
     }
@@ -2546,7 +2840,10 @@ $Script:Rules = @(
             if (-not $aktiv.Count) { return }
             $ps = Get-PowerSettingIndex $Script:GuidSubProcessor $Script:GuidSysCoolPol
             if (-not $ps -or $ps.AC -ne 0) { return }
-            New-Item2 (T 'Power plan: on mains power Windows throttles the processor before the fans speed up (cooling policy "Passive")') 0 @{ Schema = $ps.Schema; AC = $ps.AC }
+            $it = New-Item2 (T 'Power plan: on mains power Windows throttles the processor before the fans speed up (cooling policy "Passive")') 0 @{ Schema = $ps.Schema; AC = $ps.AC }
+            # Windows default on mains power and can be undone: preselected and allowed unattended
+            $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue $true
+            $it
         }
         Fix = { param($it)
             $null = & powercfg.exe /setacvalueindex $it.Data.Schema $Script:GuidSubProcessor $Script:GuidSysCoolPol 1 2>&1
@@ -2712,6 +3009,10 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
     $def = $null; try { $def = (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled } catch { }
     # Another active antivirus (Security Center, client Windows only): then a disabled Defender is normal
     $av = [bool](@(Get-OtherSecurityProducts 'AntiVirusProduct').Count)
+    # UAC and firewall (since 1.9 in the score): a firewall of another product counts as on
+    $uacAus = ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue).EnableLUA -eq 0)
+    $fwAus = $null
+    if (@(Get-OtherSecurityProducts 'FirewallProduct').Count) { $fwAus = 0 } else { try { $fwAus = @(Get-NetFirewallProfile -ErrorAction Stop | Where-Object { -not $_.Enabled }).Count } catch { } }
     $wsi = $null; try { $wsi = Get-WindowsSupportInfo } catch { }
     $hw = $null; try { $hw = Get-HardwareSnapshot } catch { W (T '  Hardware measurement failed: {0}' ($_.Exception.Message)) 'DarkYellow' }
     $brw = $null; try { $brw = [int64]((@(Get-BrowserCacheDirs) | Measure-Object Bytes -Sum).Sum) } catch { }
@@ -2731,7 +3032,7 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
         Ereignisse = [ordered]@{ FehlerSystem7T = $errSys; FehlerAnwendung7T = $errApp; Top = $topErr }
         Leerlauf = $idle
         Speicher = [ordered]@{ PapierkorbBytes = [int64]$rbSize; TempBytes = (Get-DirSize $env:TEMP); CrashDumpsBytes = (Get-DirSize (Join-Path $env:LOCALAPPDATA 'CrashDumps')); BrowserCacheBytes = $brw }
-        Sicherheit = [ordered]@{ SecureBoot = $secBoot; DefenderEchtzeit = $def; AndererVirenschutz = $av; AusfuehrungsrichtlinieCU = "$(Get-ExecutionPolicy -Scope CurrentUser)"; WindowsSupportEnde = $(if ($wsi -and $wsi.Ende) { $wsi.Ende.ToString('yyyy-MM-dd') } else { $null }); TageSeitUpdate = $(if ($wsi) { $wsi.TageSeitUpdate } else { $null }); WindowsUpdateAus = $(if ($wsi) { $wsi.WuDeaktiviert } else { $null }) }
+        Sicherheit = [ordered]@{ UacAus = [bool]$uacAus; FirewallProfileAus = $fwAus; SecureBoot = $secBoot; DefenderEchtzeit = $def; AndererVirenschutz = $av; AusfuehrungsrichtlinieCU = "$(Get-ExecutionPolicy -Scope CurrentUser)"; WindowsSupportEnde = $(if ($wsi -and $wsi.Ende) { $wsi.Ende.ToString('yyyy-MM-dd') } else { $null }); TageSeitUpdate = $(if ($wsi) { $wsi.TageSeitUpdate } else { $null }); WindowsUpdateAus = $(if ($wsi) { $wsi.WuDeaktiviert } else { $null }) }
         Hardware = $hw
         Stabilitaet = [ordered]@{ Warnsignale = $warn }
         Befunde = @()
@@ -2760,7 +3061,10 @@ function Get-HealthScore($s) {
     $e = $s.Ereignisse.FehlerSystem7T + $s.Ereignisse.FehlerAnwendung7T; if ($e -gt 200) { Abzug 5 (T 'Many error messages from Windows in the last 7 days ({0})' $e) } elseif ($e -gt 50) { Abzug 3 (T 'Many error messages from Windows in the last 7 days ({0})' $e) }
     if ($s.Treiber.Duplikate -gt 10) { Abzug 3 (T '{0} old driver versions' ($s.Treiber.Duplikate)) }
     if ($s.Treiber.Geistergeraete -gt 50) { Abzug 2 (T '{0} old device entries' ($s.Treiber.Geistergeraete)) }
-    if ($s.Sicherheit.SecureBoot -eq $false) { Abzug 8 (T 'Secure Boot (boot protection) is off') }
+    # Secure Boot: only a small deduction - WinTidy itself advises non-experts not to switch it on themselves
+    if ($s.Sicherheit.SecureBoot -eq $false) { Abzug 4 (T 'Secure Boot (boot protection) is off') }
+    if ($s.Sicherheit.UacAus -eq $true) { Abzug 8 (T 'User Account Control is turned off') }
+    if ($s.Sicherheit.FirewallProfileAus -gt 0) { Abzug 10 (T 'The firewall is turned off') }
     if ($s.Sicherheit.DefenderEchtzeit -eq $false -and -not $s.Sicherheit.AndererVirenschutz) { Abzug 15 (T 'No active antivirus') }
     if ($s.Sicherheit.AusfuehrungsrichtlinieCU -in 'Unrestricted', 'Bypass') { Abzug 3 (T 'Protection setting for scripts is turned off') }
     if ($s.Sicherheit.WindowsSupportEnde) { try { if ([datetime]::ParseExact([string]$s.Sicherheit.WindowsSupportEnde, 'yyyy-MM-dd', $null) -lt [datetime]$s.Zeit) { Abzug 20 (T 'This Windows version no longer receives security updates') } } catch { } }
@@ -2807,8 +3111,9 @@ function Invoke-Rules([bool]$Apply) {
         W (T '    Why: {0}' ($r.Warum)) 'DarkGray'
         foreach ($it in $items) { W ("      - {0}{1}" -f $it.Label, $(if ($it.Bytes) { "  [$(Fmt-Bytes $it.Bytes)]" } else { '' })) 'Gray' }
         if (-not $Apply -or -not $r.Fix) { continue }
-        # Unattended only what the rule itself allows (AutoOk), e.g. Windows.old only after the waiting period
-        if ($Yes) { $items = @($items | Where-Object { -not $_.PSObject.Properties['AutoOk'] -or $_.AutoOk }) }
+        # Unattended only what the rule itself allows (AutoOk), e.g. Windows.old only after the waiting period.
+        # Medium needs an explicit AutoOk = $true (fail closed), otherwise -IncludeMedium would apply everything.
+        if ($Yes) { $r0 = $r; $items = @($items | Where-Object { Test-UnattendedItem $r0 $_ }) }
         $Script:AllYes = $false
         try {
             if ($r.Risiko -eq 'Niedrig' -and -not $Yes) { if (-not (Confirm-Item ((T 'Run rule {0} for all {1} items?') -f $r.Id, $items.Count) 'Niedrig')) { $skipped += $items.Count; foreach ($it in $items) { Add-ActionRecord $r.Id $it.Label 'Uebersprungen' | Out-Null }; continue }; $Script:AllYes = $true }
@@ -3347,6 +3652,7 @@ function Get-UndoLabel($a) {
         'ExecPolicy' { return @((T 'Setting'), (T 'Protection setting for scripts')) }
         'Hiber' { return @((T 'Setting'), (T 'Hibernation file (full size)')) }
         'Datei' { return @((T 'Startup'), ((T 'Shortcut "{0}"') -f [IO.Path]::GetFileNameWithoutExtension([string]$u.Ziel))) }
+        'Ordner' { return @((T 'Folder'), ('"{0}"' -f [IO.Path]::GetFileName(([string]$u.Ziel).TrimEnd('')))) }
     }
     return @((T 'Setting'), [string]$a.Objekt)
 }
@@ -3428,7 +3734,7 @@ function Invoke-Restore {
     # Undo single changes in reverse order
     $liste = @($undos); [array]::Reverse($liste)
     foreach ($a in $liste) {
-        if ([string]$a.Undo.Typ -notin 'RegValue', 'Dienst', 'PowerSetting', 'ExecPolicy', 'Hiber', 'Datei') { continue }
+        if ([string]$a.Undo.Typ -notin 'RegValue', 'Dienst', 'PowerSetting', 'ExecPolicy', 'Hiber', 'Datei', 'Ordner') { continue }
         $lb = Get-UndoLabel $a
         try {
             switch ([string]$a.Undo.Typ) {
@@ -3451,6 +3757,16 @@ function Invoke-Restore {
                     if (-not $erlaubt) { throw (T 'Unexpected target folder - not copied back') }
                     if (-not $quelle.StartsWith($sel.FullName.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw (T 'Backup is not inside the run folder') }
                     if (-not (Test-Path -LiteralPath $ziel)) { Copy-Item -LiteralPath $quelle -Destination $ziel -ErrorAction Stop }
+                }
+                'Ordner' {
+                    # Only rename back what WinTidy set aside: same parent folder, expected name, nothing in the way
+                    $ziel = [IO.Path]::GetFullPath([string]$a.Undo.Ziel).TrimEnd(''); $quelle = [IO.Path]::GetFullPath([string]$a.Undo.Quelle).TrimEnd('')
+                    if (-not (Test-QuarantinePath $quelle) -or [IO.Path]::GetDirectoryName($quelle) -ine [IO.Path]::GetDirectoryName($ziel) -or -not $quelle.StartsWith($ziel + $Script:QuarantineSuffix, [StringComparison]::OrdinalIgnoreCase)) { throw (T 'Unexpected path - not restored') }
+                    if (-not (Test-Path -LiteralPath $quelle)) { throw (T 'Already deleted permanently') }
+                    if (Test-Path -LiteralPath $ziel) { throw (T 'A folder with this name exists again - nothing overwritten') }
+                    $q = Get-Item -LiteralPath $quelle -Force -ErrorAction Stop
+                    if (Test-Reparse $q) { throw (T 'Unexpected path - not restored') }
+                    [IO.Directory]::Move($quelle, $ziel)
                 }
             }
             R $lb[0] $lb[1] $true
@@ -3478,7 +3794,10 @@ $Script:Friendly = @{
     'CLN-RECYCLE'         = @((T 'Permanently delete old files in the recycle bin'), (T 'Only files that have been in the recycle bin for a while. Recently deleted items stay recoverable.'))
     'CLN-RECYCLE-ORPHAN'  = @((T 'Empty recycle bins of old user accounts'), (T 'After a reinstall, invisible recycle bins of earlier accounts remain on the drives.'))
     'CLN-DRIVERSTORE'     = @((T 'Remove old driver versions'), (T 'With every driver update the old version stays behind. The current one is always kept, Windows protects drivers in use.'))
-    'CLN-ORPHANDIR'       = @((T 'Folders without a matching program (expert)'), (T 'Folders that do not seem to belong to any installed program. May contain false positives – select carefully.'))
+    'CLN-ORPHANDIR'       = @((T 'Folders without a matching program (expert)'), (T 'Folders that do not seem to belong to any installed program. May contain false positives – select carefully. They are only set aside first and can be brought back with "Restore" for some weeks.'))
+    'CLN-QUARANTINE'      = @((T 'Delete folders set aside earlier'), (T 'Folders that WinTidy set aside a while ago and nobody has missed since. Now they are deleted for good.'))
+    'CLN-DRIVERINSTALL'   = @((T 'Delete unpacked driver installers'), (T 'Graphics driver installers leave a copy of themselves on the drive, often several gigabytes. The installed driver keeps working without it.'))
+    'CLN-PROFILE-ORPHAN'  = @((T 'Folders of old user accounts'), (T 'Folders of user accounts that no longer exist on this PC. They may still contain personal files - WinTidy does not delete them. Look inside and decide yourself.'))
     'STA-ORPHAN'          = @((T 'Remove broken startup entries'), (T 'These entries point to programs that no longer exist.'))
     'STA-APPROVED-ORPHAN' = @((T 'Clean up leftovers in startup'), (T 'Windows remembers settings for programs that were removed long ago.'))
     'STA-HEAVY'           = @((T 'Stop opening programs automatically at startup'), (T 'Every program that starts with Windows makes startup longer. The programs stay installed and can be opened normally. Antivirus, VPN, backup and cloud storage always stay on.'))
@@ -3486,20 +3805,20 @@ $Script:Friendly = @{
     'TSK-ANTIPATTERN'     = @((T 'Scheduled tasks with unwanted side effects'), (T 'Tasks were set up on this PC that run regularly and slow the PC down or delete too much. WinTidy does not change them – please have the person who set them up adjust them.'))
     'SVC-ORPHAN'          = @((T 'Turn off broken background services'), (T 'Leftovers of uninstalled programs that try to run in vain at every startup.'))
     'APP-SIDEBYSIDE'      = @((T 'Clean up programs installed twice'), (T 'Several versions of these programs are installed. The newest stays. The uninstaller opens for each one.'))
-    'APP-BLOAT'           = @((T 'Remove preinstalled apps'), (T 'Apps that Windows brings along without asking (e.g. game demos, news). If you use one of them – such as Weather – leave it unchecked. Everything can be reinstalled from the Store.'))
     'APP-UPDATES'         = @((T 'Update programs'), (T 'Outdated programs are the most common entry point for malware. Please close all programs first – an update can close open programs.'))
-    'SYS-GHOST'           = @((T 'Remove old device entries'), (T 'Devices that are no longer connected (e.g. old USB sticks, mice, monitors). If you plug them in again they are detected again – but their own settings (e.g. a fixed IP address) are lost.'))
+    'SYS-GHOST'           = @((T 'Remove old device entries'), (T 'Devices that have not been connected for at least three months (e.g. old USB sticks, mice, monitors). If you plug them in again they are detected again – but their own settings (e.g. a fixed IP address) are lost.'))
     'SYS-SHADOW'          = @((T 'Increase the space for restore points'), (T 'Too little space means Windows silently deletes restore points.'))
-    'SYS-TRIM'            = @((T 'Refresh the SSD (TRIM)'), (T 'Tells the SSD which storage is free and keeps it fast. Windows normally does this itself – here it is turned off or has not run for a long time.'))
-    'SYS-MAINT'           = @((T 'Catch up on Windows maintenance'), (T 'Automatic maintenance did not complete recently. Afterwards leave the PC on for about an hour.'))
+    'SYS-TRIM'            = @((T 'Turn TRIM for the SSD back on'), (T 'Tells the SSD which storage is free and keeps it fast. Windows normally does this itself – here it was turned off, often by a tuning program.'))
+    'SYS-MAINT'           = @((T 'Catch up on drive maintenance'), (T 'Windows normally keeps the drives fast once a week - here this has not happened for a while. Afterwards leave the PC on for about an hour.'))
+    'SYS-REBOOT'          = @((T 'Restart Windows'), (T 'Updates and drivers often only take effect after a restart. "Shut down" is not enough because of fast startup - please choose "Restart".'))
     'SYS-INTEGRITY'       = @((T 'Check and repair Windows system files'), (T 'Checks whether Windows files are damaged and repairs them. Takes 10–30 minutes.'))
     'SYS-FSCHECK'         = @((T 'Check drives for errors'), (T 'Result of the file system check.'))
-    'SYS-GAMEDVR'         = @((T 'Turn off background recording for games'), (T 'The Xbox Game Bar constantly records the last minutes in games and costs performance. You can still record clips yourself.'))
+    'SYS-GAMEDVR'         = @((T 'Turn off background recording for games'), (T 'The Xbox Game Bar constantly records the last minutes in games, which can cost performance. It is off by default - if you switched it on to save game moments, leave it. You can still record clips yourself.'))
     'SYS-TWEAKS'          = @((T 'Unfavorable tuning settings'), (T 'Some tuning programs turn off Windows features that actually make the PC faster or safer. WinTidy shows them; someone who knows what they are doing should reset them.'))
     'SEC-HEALTH'          = @((T 'Security health check'), (T 'Shows in plain words whether the drive is encrypted, the security chip works, memory integrity is on and Defender is protected against tampering. WinTidy changes nothing here.'))
     'SYS-STORAGESENSE'    = @((T 'Windows Storage Sense'), (T 'Windows can clean up temporary files by itself. WinTidy only shows whether this is on and whether it also deletes old downloads. Nothing is changed.'))
     'SYS-AI'              = @((T 'AI features (Copilot, Recall)'), (T 'Shows whether Copilot is installed and whether Recall (screen history) is active. WinTidy only informs, you decide in the Windows settings.'))
-    'SEC-EXECPOLICY'      = @((T 'Reset the protection setting for scripts'), (T 'Sets a Windows security setting to the value recommended by Microsoft. In everyday use you will not notice anything. Can be undone.'))
+    'SEC-EXECPOLICY'      = @((T 'Reset the protection setting for scripts'), (T 'Scripts downloaded from the internet then need a signature before they run; your own scripts keep working. If you write or run scripts yourself and set this on purpose, leave it. Can be undone.'))
     'SEC-CHECKS'          = @((T 'Security'), (T 'Updates and basic protection features of Windows and the PC.'))
     'HW-HINTS'            = @((T 'Hardware hints'), (T 'Settings that an expert can check. Please do not change anything in the BIOS if you are unsure.'))
     'HW-COOLING'          = @((T 'Cooling and temperatures'), (T 'Whether the processor, graphics card and drives get too warm, are throttled or whether a fan has stopped. Fan curves themselves live in the BIOS – WinTidy measures their effect.'))
@@ -3514,8 +3833,9 @@ $Script:Friendly = @{
     'DBL-APPS-OEM'        = @((T 'Remove apps from the PC maker (expert)'), (T 'Support and welcome apps of PC makers. Some of them also deliver drivers, BIOS updates or warranty functions – remove only what you are sure you do not need.'))
     'EVT-HEALTH'          = @((T 'Warning messages from Windows'), (T 'Windows noted problems in the last 30 days, e.g. crashes or sudden power-offs. Single entries are no reason to worry. If they occur often, have the PC checked.'))
 }
-# Medium rules that the app preselects. Final actions (deleting, uninstalling, removing devices, updates) deliberately not.
-$Script:GuiPreselectMedium = @('SVC-ORPHAN', 'SEC-EXECPOLICY')
+# Medium rules that the app preselects as a whole. Since 1.9 the items say it themselves (AutoOk = $true), which also
+# releases them for -Yes -IncludeMedium. Final actions (deleting, uninstalling, removing devices, updates) deliberately not.
+$Script:GuiPreselectMedium = @()
 # Readable area names for the progress of the check (no action verbs like "delete")
 $Script:AreaNames = @{ 'Speicher' = (T 'storage space'); 'Autostart' = (T 'programs at startup'); 'Aufgaben' = (T 'scheduled tasks'); 'Dienste' = (T 'background services'); 'Programme' = (T 'installed software'); 'System' = (T 'Windows system'); 'Sicherheit' = (T 'security settings'); 'Hardware' = (T 'hardware and cooling'); 'Stabilitaet' = (T 'Windows warning messages') }
 $Script:LastFindings = @()

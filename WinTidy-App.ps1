@@ -1257,7 +1257,7 @@ $RiskUi = @{
     'Mittel'  = @((T 'Check briefly'), 'MidBg', 'MidFg')
     'Hoch'    = @((T 'Experts only'), 'HighBg', 'HighFg')
 }
-$EndgueltigIds = 'CLN-TEMP', 'CLN-WINCLEAN', 'CLN-WINOLD', 'CLN-WINSXS', 'CLN-DUMPS', 'CLN-RECYCLE', 'CLN-RECYCLE-ORPHAN', 'CLN-DRIVERSTORE', 'CLN-ORPHANDIR', 'APP-SIDEBYSIDE', 'APP-BLOAT', 'APP-UPDATES', 'SYS-GHOST'
+$EndgueltigIds = 'CLN-TEMP', 'CLN-WINCLEAN', 'CLN-WINOLD', 'CLN-WINSXS', 'CLN-DUMPS', 'CLN-RECYCLE', 'CLN-RECYCLE-ORPHAN', 'CLN-DRIVERSTORE', 'APP-SIDEBYSIDE', 'APP-UPDATES', 'SYS-GHOST'
 function Test-Endgueltig($f) { if ($null -ne $f.Endgueltig) { return [bool]$f.Endgueltig }; return ($EndgueltigIds -contains $f.Id) }
 function Test-Umkehrbar($f) { if ($null -ne $f.Umkehrbar) { return [bool]$f.Umkehrbar }; return ("$($f.Id)" -match '^(STA|TSK|SVC)-|^SYS-GAMEDVR$') }
 function Test-Einzeln($f) { return ([bool]$f.Einzeln -or $f.Risiko -eq 'Hoch') }

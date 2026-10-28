@@ -2,7 +2,7 @@
 
 This document is the basis for further development. It describes the goal and principles, the architecture, the rule contract, the data formats, the tests, the lessons learned from the first deployment and open ideas.
 
-As of version 1.9.0, 2026-10-28.
+As of version 1.10.0, 2026-10-28.
 
 ---
 
@@ -11,10 +11,10 @@ As of version 1.9.0, 2026-10-28.
 WinTidy should bring a **visible, measurable** improvement to **any** Windows 10/11 PC without causing harm. This results in the rules that apply to every change:
 
 1. **Measure before changing.** Every change needs a finding with a reason (`Warum`) and becomes visible in the before/after comparison.
-2. **Generic.** No fixed paths, user names or program names in the logic. Device-specific settings belong in `WinTidy.config.json` / `WinTidy.config.local.json`.
+2. **Generic.** No device-specific or personal paths, user names or program names in the logic or in the shipped defaults (`$Script:DefaultConfig`). What only one PC needs belongs in `WinTidy.config.local.json`; shipped deviations in `WinTidy.config.json`. Vendor catalogs that apply to every PC (browser cache folders, OEM apps, driver installer folders as configuration keys) are fine.
 3. **No snake oil.** No registry cleaners and no "tweaks" without proof of effect (e.g. deleting Prefetch, disabling SysMain, removing the pagefile, network "boosters").
 4. **Never weaken security.** Defender, updates, UAC, firewall, Secure Boot and VBS/HVCI are never switched off.
-5. **Reversible where possible.** Back up first (`Backup-RegKey`, `Backup-Task`, undo info in the action log), then change. Anything irreversible (deleting, uninstalling) gets at least risk "Medium" (`Mittel`), unless it is pure cache or temp.
+5. **Reversible where possible.** Back up first (`Backup-RegKey`, `Backup-Task`, undo info in the action log), then change. Anything irreversible (deleting, uninstalling) gets at least risk "Medium" (`Mittel`), unless it is pure cache or temp, or something Windows itself deletes after a waiting time (recycle bin items older than 30 days, like Storage Sense). Diagnostic data that may still be needed (memory dumps of recent blue screens) is kept. Folders found by a heuristic are set aside first (`Move-ToQuarantine`), not deleted.
 6. **Caution when in doubt.** Targets on a drive that is currently missing are never "orphaned" (`Get-TargetState` → `LaufwerkFehlt`). Never remove drivers with `/force`. Heuristics get risk "High" (`Hoch`) and `Standard = $false`.
 7. **PowerShell 5.1, no dependencies.** Nothing to install. No `?:`, no `??`, no classes, no `ForEach-Object -Parallel`.
 8. **Robust against localization.** Don't parse localized text when there is an alternative: CIM classes instead of performance counters, `dism /English`, `Repair-WindowsImage` instead of `sfc` text. If parsing is unavoidable (pnputil, winget), cover at least German and English.
@@ -50,6 +50,7 @@ WinTidy\
     Test-Storage.ps1     # browser caches, large-file overview, storage figures in before/after, check reminder (real temp folders)
     Test-Perf.ps1        # performance key figures: idle median, verdict with tolerance, start times after the optimization, history, report
     Test-Features.ps1    # SEC-HEALTH, SYS-STORAGESENSE, SYS-AI, profiles (export/import), shareable report
+    Test-Rules.ps1       # rule review 1.10: unattended mode, quarantine, blue screen dumps, ghost devices, new checks, score
     Probe-Hardware.ps1   # diagnosis on real PCs: which sensor sources deliver what (writes probe-hardware.json)
     Probe-Display.ps1    # diagnosis: refresh rates according to driver and EDID
   WinTidy-Daten\         # runtime data up to 1.2 (in .gitignore); since 1.3 see below
@@ -188,6 +189,18 @@ Own page in the app (nav item **Debloat**) with its own check and its own "Apply
 - Profiles: JSON `{ Format = 'WinTidy-Profil', Version = 1, WinTidy, Name, Regeln = [rule IDs] }` (field names stay German like the other stored data). `Resolve-WtPreset` (built-in `Safe`/`Standard` or a file; unknown IDs are dropped and reported, errors throw readable texts), `Save-WtPreset`. `Invoke-Mode` sets `$Script:Rule` from `-Preset` unless `-Rule` is given; an empty result aborts instead of falling back to the default selection.
 - Report for sharing: `New-ShareableReport` builds the normal report first and derives `WinTidy-Bericht-teilbar.html` from it (`Get-ShareReplacements` + `ConvertTo-ShareableHtml`: text and attribute values, never the `<style>` block, terms shorter than 3 characters are skipped, longest term first). PDF via `Convert-HtmlToPdf` (headless Edge/Chrome with its own temporary profile folder, 90 s limit, readable message instead of an exception). Anything new that could identify the person or PC in the report needs an entry in `Get-ShareReplacements`.
 
+### 3g. Rule review (since 1.10)
+Every rule was challenged against the principles in section 1 (details: section 13).
+- **Unattended mode fails closed:** `-Yes -IncludeMedium` only applies Medium items whose rule sets `AutoOk = $true` (`Test-UnattendedItem`). Before, every Medium item without `AutoOk` ran - including all uninstallers (`APP-SIDEBYSIDE`), all updates (`APP-UPDATES`, effectively `winget upgrade --all`) and all ghost devices. `$Script:GuiPreselectMedium` is empty; the items say it themselves.
+- **Quarantine:** `CLN-ORPHANDIR` sets folders aside instead of deleting them (`Move-ToQuarantine`, `Get-QuarantineDirs`, `Test-QuarantinePath`, undo type `Ordner`); `CLN-QUARANTINE` deletes them after `QuarantineDays`.
+- **Diagnostics are kept:** `CLN-WINCLEAN` keeps MEMORY.DMP/Minidump while there are dumps younger than `SystemDumpKeepDays` (`Test-RecentSystemDumps`), decided again at the time of the fix.
+- **Waiting times instead of "everything at once":** `SYS-GHOST` only offers devices unseen for `GhostDeviceMinDays` (`Get-DeviceLastSeen`, unknown = not offered).
+- **One cause, one finding:** `SYS-TRIM` only reports TRIM switched off; a drive optimization that does not run is `SYS-MAINT`, whose fix runs TRIM on SSDs right away. The fast-startup restart hint moved from `HW-HINTS` to `SYS-REBOOT`.
+- **One philosophy for apps:** the former `APP-BLOAT` list is part of the Debloat catalog (group MS, nothing preselected); `BloatApps` only adds package names to that group.
+- **Honest texts and preselection:** `SYS-GAMEDVR` and `SEC-EXECPOLICY` are never preselected (`AutoOk = $false`) - both are off/restrictive by default, so "on" means someone chose it. `APP-SIDEBYSIDE` marks older main versions ("may be installed on purpose"). `STA-HEAVY` matches `HeavyStartup` as whole words (`Test-WordMatch`: "Teams" no longer hits TeamSpeak).
+- **New checks:** `CLN-DRIVERINSTALL` (unpacked driver installers from `DriverInstallerDirs`), `CLN-PROFILE-ORPHAN` (info), `SYS-REBOOT` (info), too broad Defender exclusions in `SEC-CHECKS` (`Get-DefenderExclusions`, `Get-BroadDefenderExclusions`), Windows Search off / hosts file blocking updates / Windows held by policy in `SYS-TWEAKS` (`Select-HostsUpdateBlocks`, `Get-UpdatePolicyPin`), graphics driver age in `HW-HINTS` (`GpuDriverMaxAgeDays`). `SEC-HEALTH` no longer warns if BitLocker is only paused until the next restart (`Get-BitLockerSuspendCount`).
+- **No personal defaults:** `WingetExclude` and `BloatApps` are empty by default; entries that only one PC needs belong in its `WinTidy.config.local.json`.
+
 ## 4. Rule contract
 
 Every rule is a `[pscustomobject]` in `$Script:Rules`:
@@ -209,6 +222,7 @@ Every rule is a `[pscustomobject]` in `$Script:Rules`:
 **Item:** `[pscustomobject]@{ Label; Bytes; Data }`. `Label` is for humans, `Data` carries everything `Fix` needs. `Bytes` is an estimate that is summed up in the report as "freed (estimated)". The real effect is shown by the snapshot comparison.
 
 **Rules for `Detect`:**
+- changes nothing on the PC - the only exception are WinTidy's own cache files in the data folder (e.g. the WinSxS analysis)
 - no output except items (swallow return values of other commands with `| Out-Null` or `$null =`)
 - store expensive results in `$Script:Cache`
 - respect `-Deep` for slow checks
@@ -218,7 +232,8 @@ Every rule is a `[pscustomobject]` in `$Script:Rules`:
 - `Get-OldFiles`, `Remove-EmptyDirs`, `Remove-TreeNoFollow`, `Test-SafeDeleteRoot` – never delete through junctions/symlinks and never drive roots, Windows, profile or program folders.
 - `Get-TargetState` – `fehlt` (missing) only for a local drive letter; network paths and `\??\` forms are `unbekannt` (unknown) or normalized.
 - `throw 'SKIP:<text>'` – an expected failure (driver in use, uninstall cancelled) appears as "Skipped", not as an error.
-- `AutoOk` on the item – preselection in the app and release for `-Yes` (applies to all rules, not just STA-HEAVY).
+- `AutoOk` on the item – preselection in the app and release for `-Yes` (applies to all rules). Since 1.10 it fails closed (`Test-UnattendedItem`): risk Low runs unattended unless `AutoOk = $false`; risk Medium only with `AutoOk = $true`; High never. Set `$true` only for reversible changes (SVC-ORPHAN, HW-COOLPOLICY, STA-HEAVY for `HeavyStartup`, CLN-WINOLD after the waiting time, CLN-HIBERFIL), set `$false` for anything a person switched on on purpose or that is a matter of taste.
+- `Move-ToQuarantine Rule Path` – renames a folder directly below Program Files/ProgramData/AppData in place to `<name>.WinTidy-removed-<yyyyMMdd>` and writes undo type `Ordner`; Restore renames it back, `CLN-QUARANTINE` deletes it after `QuarantineDays`.
 - Info items: `New-Item2 (T 'Text') 0 @{ Stufe = 'ok'|'warn'|'krit'|'' }` – texts for non-technical users.
 
 **Rules for `Fix`:**
@@ -298,7 +313,9 @@ Start at 100, deductions (see `Get-HealthScore`):
 | errors in system and application log (7 days) > 200 / > 50 | 5 / 3 |
 | old driver packages > 10 | 3 |
 | ghost devices > 50 | 2 |
-| Secure Boot off | 8 |
+| Secure Boot off | 4 (until 1.9: 8 – WinTidy itself advises non-experts not to switch it on) |
+| User Account Control off (`Sicherheit.UacAus`, since 1.10) | 8 |
+| firewall off for at least one network profile and no other firewall active (`Sicherheit.FirewallProfileAus`, since 1.10) | 10 |
 | Defender real-time protection off **and** no other antivirus active | 15 |
 | PowerShell policy Unrestricted/Bypass | 3 |
 | recycle bin > 5 GB | 2 |
@@ -326,6 +343,7 @@ pwsh ./tests/Test-Debloat.ps1   # Debloat page: catalog, detection per Windows b
 pwsh ./tests/Test-Storage.ps1   # browser caches (only cache folders, browser open, links, unknown paths), large files, comparison, reminder
 pwsh ./tests/Test-Perf.ps1      # performance key figures: idle median/calm, verdict + tolerance, starts after the optimization, history, report (EN/DE)
 pwsh ./tests/Test-Features.ps1  # security health check, Storage Sense, AI inventory, profiles round trip and errors, anonymized report, PDF fallback
+pwsh ./tests/Test-Rules.ps1     # rule review 1.10: -Yes fails closed, quarantine, dumps kept, ghost devices by age, new checks, score
 ```
 
 All of them also run on Linux/macOS with PowerShell 7. Functions are loaded via the AST so that Windows-specific startup code is not executed. `Test-Hardware.ps1` replaces the data sources (`Get-HwMonitorSensors`, `Get-NvidiaGpus`, `Get-ThermalZones`, `Get-DiskHealth`, `Get-CpuPerfSample` …) with functions returning synthetic values – so always build new hardware data sources as their own `Get-*` function.
@@ -414,7 +432,9 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 - Boot slowdowns are matched to autostarts via the file name (heuristic).
 - `APP-SIDEBYSIDE` groups by the name without version numbers and by the publisher. Exceptions are in `SideBySideExclude`.
 - `CLN-ORPHANDIR` is a name heuristic → only on explicit request.
-- Restore cannot bring back deletions and uninstalls (that's what the restore point is for).
+- Restore cannot bring back deletions and uninstalls (that's what the restore point is for). Exception since 1.10: folders set aside by `CLN-ORPHANDIR`, until `CLN-QUARANTINE` deletes them.
+- `SYS-GHOST` needs the last arrival/removal date of a device (`DEVPKEY_Device_LastRemovalDate`/`LastArrivalDate`); devices without a date are not offered.
+- `CLN-PROFILE-ORPHAN` only shows folders, it never deletes them (they may hold the only copy of personal files).
 - Fan curves and BIOS settings are not readable. Desktop motherboards only report CPU temperature and fans via additional programs (LibreHardwareMonitor, HWiNFO). AMD/Intel graphics cards: only via these programs (no counterpart to `nvidia-smi` without additional software).
 - `HW-DISPLAY` only rates with exactly one monitor; monitors that report high rates only in EDID extension blocks are not detected (no false alarm, just no hint).
 - Languages: only English and German. Snapshots and run logs keep the language of the run that wrote them.
@@ -427,7 +447,8 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 **Still open from the review of 2026-10-23** (details: section 12)
 - [ ] GPU temperature and real fan speed vendor-neutral via `D3DKMTQueryAdapterInfo(KMTQAITYPE_ADAPTERPERFDATA)` (AMD/Intel Arc without additional software) – verify the P/Invoke structure on real hardware
 - [ ] Ryzen X3D with two CCDs: core parking prerequisites (chipset driver, Game Bar, power plan)
-- [ ] `SYS-GHOST` only devices not seen for ≥ 90 days (`DEVPKEY_Device_LastRemovalDate`), NVMe PCIe link, GPU stays in P0 at idle
+- [x] `SYS-GHOST` only devices not seen for ≥ 90 days (`DEVPKEY_Device_LastRemovalDate`) (1.10)
+- [ ] NVMe PCIe link, GPU stays in P0 at idle
 - [ ] `SYS-TWEAKS` with a fix (pagefile automatic, Prefetch/SysMain on) incl. undo
 - [ ] Autostart via scheduled tasks with a logon trigger and services of vendor tools; score only without protected entries
 - [ ] Error counting with an exclusion list (DCOM 10016 etc.) and per day of uptime; score cap per category; mark "coverage" (admin/sensors) and comparability before/after
@@ -461,7 +482,7 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 - [ ] Combined report across several PCs
 - [ ] Benchmark mode (disk sequential/4K with `winsat` or DiskSpd, app start time measurement) as additional key figures. The passive key figures (start time, idle load, memory, drive activity ...) are done since 1.8 (section 3e)
 
-**Deliberately not planned:** registry cleaners, telemetry/privacy "hardening" packs, switching off security features, driver updaters from third-party sources.
+**Deliberately not planned:** registry cleaners, telemetry/privacy "hardening" packs, switching off security features, driver updaters from third-party sources, cleaning `C:\Windows\Installer` (orphaned patch files - breaks repairs and uninstalls), emptying the thumbnail cache or Prefetch (rebuilt right away, no lasting effect).
 
 ---
 
@@ -489,3 +510,17 @@ Checked were code/PS 5.1 compatibility, security/risk of damage, usability for n
 - **Snapshots in time don't go into the score:** they make before/after incomparable.
 - **Non-technical users see every text:** progress without action verbs, no registry paths or package names, no dangerous BIOS advice without a warning, don't preselect anything permanent.
 - **Tests replace data sources:** every new source as its own `Get-*` function, so that `Test-Hardware.ps1`/`Test-GuiApi.ps1` can mock them.
+
+## 13. Review of the rules (2026-10-28)
+
+All rules were challenged one by one against the principles. Lessons for future rules:
+
+- **Fail closed also applies to "unattended":** a missing flag must never mean "allowed". Unattended release is opt-in per item.
+- **Don't delete the evidence you report:** if one rule reports a problem (blue screens), another must not delete what is needed to find its cause.
+- **"Off by default" means "on" is a choice:** a setting that Windows ships switched off and that is now on was switched on by someone. Offer to change it, never preselect it.
+- **One cause, one finding:** two rules that measure the same thing double the noise and the score effect.
+- **Waiting times beat "all at once":** devices, folders and files that are only temporarily unused (dock, audio interface) must not be treated like leftovers.
+- **Heuristics set aside, they don't delete:** what a name heuristic finds can be wrong; renaming in place is instant, keeps permissions and can be undone.
+- **Substring matching is fail-safe only for protection lists:** for lists that trigger an action, match whole words.
+- **The score should weigh real risks:** UAC and firewall off weigh more than a PowerShell execution policy; something WinTidy itself tells non-experts not to touch (Secure Boot) should not cost much.
+- **Shipped defaults are for every PC:** entries that only one PC needs (programs excluded from updates, its own heavy startup apps) belong in `WinTidy.config.local.json`.

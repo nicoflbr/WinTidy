@@ -32,7 +32,7 @@ jobs:
         shell: pwsh
         run: |
           $failed = 0
-          foreach ($t in 'Test-Parse', 'Test-Report', 'Test-Hardware', 'Test-GuiApi', 'Test-Update', 'Test-Debloat', 'Test-Storage', 'Test-Perf', 'Test-Features') {
+          foreach ($t in 'Test-Parse', 'Test-Report', 'Test-Hardware', 'Test-GuiApi', 'Test-Update', 'Test-Debloat', 'Test-Storage', 'Test-Perf', 'Test-Features', 'Test-Rules') {
             Write-Host "::group::$t"
             $out = @(& ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File "tests/$t.ps1" 2>&1 | ForEach-Object { Write-Host $_; "$_" })
             $code = $LASTEXITCODE

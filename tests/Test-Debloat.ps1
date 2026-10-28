@@ -100,8 +100,14 @@ Check 'PROMO: installed catalog app found' ($promo.Count -eq 1 -and $promo[0].Da
 Check 'MS: finds installed apps, skips NonRemovable and frameworks' (@($ms | ForEach-Object { $_.Data } | Sort-Object) -join ',' -eq 'Microsoft.BingFinance,Microsoft.Todos') (@($ms | ForEach-Object { $_.Data }) -join ',')
 Check 'The Store is never offered' (-not (@($promo + $ms + $oem | ForEach-Object { $_.Data }) -contains 'Microsoft.WindowsStore'))
 Check 'OEM: nothing installed, nothing offered' ($oem.Count -eq 0)
+# Since 1.9 BloatApps only adds package names to the group MS (the former rule APP-BLOAT is part of the catalog)
+Check 'Former APP-BLOAT apps are in the catalog (group MS)' (@($Script:DebloatApps | Where-Object { $_.Gruppe -eq 'MS' -and $_.Id -in 'Microsoft.BingNews', 'Microsoft.Getstarted', 'Microsoft.MicrosoftSolitaireCollection' }).Count -eq 3)
 $Script:Cfg.BloatApps = @('Microsoft.Todos'); $Script:Cache = @{}
-Check 'Apps from the BloatApps list are not offered twice' (@(Get-DebloatAppItems 'MS' | Where-Object { $_.Data -eq 'Microsoft.Todos' }).Count -eq 0)
+Check 'BloatApps entry already in the catalog is offered only once' (@(Get-DebloatAppItems 'MS' | Where-Object { $_.Data -eq 'Microsoft.Todos' }).Count -eq 1)
+$Script:Apps += New-App 'Contoso.ExtraApp'
+$Script:Cfg.BloatApps = @('Contoso.ExtraApp'); $Script:Cache = @{}
+Check 'BloatApps entry outside the catalog is offered under Microsoft apps' (@(Get-DebloatAppItems 'MS' | Where-Object { $_.Data -eq 'Contoso.ExtraApp' }).Count -eq 1 -and @(Get-DebloatAppItems 'PROMO' | Where-Object { $_.Data -eq 'Contoso.ExtraApp' }).Count -eq 0)
+$Script:Apps = @($Script:Apps | Where-Object { $_.Name -ne 'Contoso.ExtraApp' })
 $Script:Cfg.BloatApps = @($Script:DefaultConfig.BloatApps); $Script:Cache = @{}
 
 # 5) Apps: removal and safety

@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.10.0 – 2026-10-28
+**Rule review: every rule challenged against the principles**
+
+**Safer by default**
+- Unattended mode fails closed: `-Yes -IncludeMedium` now only applies "Medium" items that the rule explicitly releases (reversible changes: broken services, `HeavyStartup` entries, cooling policy, Windows.old after the waiting time, hibernation file). Before, every Medium item ran - including all uninstallers, all program updates (effectively `winget upgrade --all`, which `TSK-ANTIPATTERN` itself warns about) and all ghost devices.
+- `CLN-WINCLEAN` keeps the memory dumps of blue screens from the last `SystemDumpKeepDays` (30) days - `EVT-HEALTH` reports the blue screens, and the dumps are needed to find the cause.
+- `SYS-GHOST` only offers devices that have not been connected for `GhostDeviceMinDays` (90) days; devices without a known date are not offered. A dock or audio interface that is only unplugged for a while keeps its settings.
+- `CLN-ORPHANDIR` no longer deletes: folders are set aside (renamed in place to `<name>.WinTidy-removed-<date>`), "Restore" renames them back. New rule `CLN-QUARANTINE` deletes them after `QuarantineDays` (30) days.
+- `APP-SIDEBYSIDE` marks older main versions (e.g. DaVinci Resolve 18 next to 19: "may be installed on purpose"); never preselected or unattended.
+
+**Honest rules**
+- `SYS-GAMEDVR` and `SEC-EXECPOLICY` are no longer preselected: background recording is off by default and the PowerShell policy is not a security boundary - "on" means someone chose it. Texts say so.
+- `SYS-TRIM` only reports TRIM switched off; a weekly drive optimization that does not run is reported once by `SYS-MAINT` (now "Drive optimization does not run"), whose fix runs TRIM on the SSDs right away.
+- `STA-HEAVY` matches `HeavyStartup` entries as whole words ("Teams" no longer hits TeamSpeak, "Zoom" not ZoomIt).
+- The former rule `APP-BLOAT` is part of the Debloat page (Microsoft apps, nothing preselected); `BloatApps` now only adds further package names there.
+- `SEC-HEALTH` no longer warns if BitLocker is only paused until the next restart (e.g. for a BIOS update) and resumes by itself.
+- Health score: UAC off -8 and firewall off -10 (new snapshot fields `Sicherheit.UacAus`, `Sicherheit.FirewallProfileAus`); Secure Boot off -4 instead of -8, since WinTidy itself advises non-experts not to switch it on.
+
+**New checks**
+- `CLN-DRIVERINSTALL` (risk Medium): unpacked graphics driver installers (`DriverInstallerDirs`: `C:\AMD`, `C:\NVIDIA`, NVIDIA downloader) from `DriverInstallerMinMB` (200 MB), only if unchanged for 14 days.
+- `CLN-PROFILE-ORPHAN` (info): folders under `C:\Users` that belong to no user account - only shown, never deleted.
+- `SYS-REBOOT` (info): Windows waits for a restart to finish updates but has not been restarted for 7 days (warning); the fast-startup restart hint moved here from `HW-HINTS`.
+- `SEC-CHECKS`: antivirus exclusions for whole drives, profile/Temp/Downloads folders, executable file types or system processes.
+- `SYS-TWEAKS`: Windows Search service off, hosts file blocking Windows Update/Defender, Windows held at a version by policy (critical if that version is out of support).
+- `HW-HINTS`: graphics driver older than `GpuDriverMaxAgeDays` (365).
+
+**Configuration**
+- No personal entries in the shipped defaults: `WingetExclude` and `BloatApps` are empty, `Luminar` and `Mobalytics` removed from `HeavyStartup`. Put programs you never want updated into `WinTidy.config.local.json`.
+- New keys `SystemDumpKeepDays`, `QuarantineDays`, `GhostDeviceMinDays`, `DriverInstallerDirs`, `DriverInstallerMinMB`, `GpuDriverMaxAgeDays` (with minimum values in `Test-Config`).
+- New `tests/Test-Rules.ps1`, also run by CI and the release workflow. Developer rules updated (`DEVELOPMENT.md` sections 1, 3g, 4, 6 and 13; `CLAUDE.md`).
+
 ## 1.9.0 – 2026-10-28
 **Security check, Storage Sense, AI inventory, profiles, report for sharing**
 - New info rule `SEC-HEALTH` (security health check, read-only): drive encryption of the system drive (BitLocker / device encryption: on, paused, off), security chip (TPM), memory integrity (core isolation) and the tamper protection of Microsoft Defender, each as a traffic light with a plain-language text. No changes to the health score. An encrypted drive that is off is only a warning on laptops; the tamper protection is not judged when another antivirus is active.

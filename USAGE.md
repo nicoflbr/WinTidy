@@ -60,8 +60,8 @@ Examples:
 .\WinTidy.ps1 -Mode Scan -Deep                 # additionally offers SFC and a file system scan
 .\WinTidy.ps1 -Mode Apply                      # interactive
 .\WinTidy.ps1 -Mode Apply -Yes                 # unattended: only risk "Low"
-.\WinTidy.ps1 -Mode Apply -Yes -IncludeMedium  # unattended including "Medium"
-.\WinTidy.ps1 -Mode Apply -Rule STA-HEAVY,APP-BLOAT
+.\WinTidy.ps1 -Mode Apply -Yes -IncludeMedium  # unattended including "Medium" items the rule releases (reversible ones)
+.\WinTidy.ps1 -Mode Apply -Rule STA-HEAVY,DBL-APPS-MS
 .\WinTidy.ps1 -Mode Apply -ExcludeRule APP-UPDATES
 .\WinTidy.ps1 -Mode Compare -From 20261021 -To 20261024
 .\WinTidy.ps1 -Mode Restore -RunId 20261021-183100
@@ -89,8 +89,8 @@ A profile is a small JSON file (`Format`, `Version`, `Name`, `Regeln`) that you 
 
 | Level | Meaning | Prompt | with `-Yes` |
 |---|---|---|---|
-| Low | safe and reversible, or pure cache | once per rule | is applied |
-| Medium | useful, but a matter of taste or not reversible (e.g. uninstalling) | per item | only with `-IncludeMedium` |
+| Low | safe and reversible, or pure cache | once per rule | is applied (except items the rule holds back, e.g. browser caches while the browser is open) |
+| Medium | useful, but a matter of taste or not reversible (e.g. uninstalling) | per item | only with `-IncludeMedium`, and only items the rule releases: reversible changes such as disabling broken services, `HeavyStartup` entries, Windows.old after the waiting time. Never uninstalls, updates, deleting devices or driver packages |
 | High | heuristic with possible false positives | always per item | never |
 | Info | report/hint only | – | – |
 
@@ -100,16 +100,16 @@ At prompts: `y` yes · `n` no · `a` all of this rule · `s` skip rule. (`j`/`ja
 
 `.\WinTidy.ps1 -Mode Rules` shows the complete list.
 
-- **Storage:** temp files (by age), Windows Disk Cleanup (update leftovers, error reports …), previous Windows version (Windows.old, own rule, preselected only after 10 days), WinSxS cleanup, crash dumps, old recycle bin items, recycle bins of deleted accounts, old driver packages, *(optional)* orphaned program folders, smaller hibernation file on desktop PCs (Fast Startup keeps working), large browser caches (`CLN-BROWSER`, see below), large and old files in your personal folders (`CLN-BIGFILES`, only shown)
+- **Storage:** temp files (by age), Windows Disk Cleanup (update leftovers, error reports …; memory dumps of recent blue screens are kept), previous Windows version (Windows.old, own rule, preselected only after 10 days), WinSxS cleanup, crash dumps, old recycle bin items, recycle bins of deleted accounts, old driver packages, *(optional)* orphaned program folders (set aside first, deleted after 30 days by `CLN-QUARANTINE`; "Restore" brings them back until then), unpacked driver installers (`C:\AMD`, `C:\NVIDIA`), profile folders of deleted accounts (only shown), smaller hibernation file on desktop PCs (Fast Startup keeps working), large browser caches (`CLN-BROWSER`, see below), large and old files in your personal folders (`CLN-BIGFILES`, only shown)
 - **Startup:** entries with a missing file, orphaned state values, active autostarts sorted by **measured** boot delay
 - **Tasks/services:** tasks and services with a missing program file, harmful patterns in home-made maintenance scripts (deleting Prefetch, emptying the whole recycle bin, `winget --all` at every sign-in …)
-- **Programs:** versions installed side by side, bloatware Store apps, outdated programs (winget)
-- **Debloat** (own page, `-Rule DBL-ADS,DBL-PRIVACY,DBL-SHELL,DBL-COMFORT,DBL-APPS-PROMO,DBL-APPS-MS,DBL-APPS-OEM`): 24 per-user settings (ads, suggestions, tracking, taskbar, Explorer) and a catalog of 112 removable Store apps (advertising apps, Microsoft apps, PC maker apps). Nothing machine-wide, no services, no policies.
-- **System:** ghost devices, storage for restore points, SSD TRIM, stuck maintenance, system integrity (DISM/SFC), Game Bar background recording
+- **Programs:** versions installed side by side (older main versions are marked), outdated programs (winget). Preinstalled Store apps are on the Debloat page.
+- **Debloat** (own page, `-Rule DBL-ADS,DBL-PRIVACY,DBL-SHELL,DBL-COMFORT,DBL-APPS-PROMO,DBL-APPS-MS,DBL-APPS-OEM`): 24 per-user settings (ads, suggestions, tracking, taskbar, Explorer) and a catalog of 130 removable Store apps (advertising apps, Microsoft apps incl. the former `APP-BLOAT` list, PC maker apps). Nothing machine-wide, no services, no policies.
+- **System:** ghost devices (only after 90 days unseen), storage for restore points, SSD TRIM switched off, drive optimization not running, restart overdue, system integrity (DISM/SFC), Game Bar background recording (never preselected)
 - **Hardware & cooling:** processor and graphics card temperature, fan speeds (stopped CPU fan, full speed on a cool PC, pump), throttling due to heat or firmware, several fan tools at once, drive health/temperature/wear, SMART warnings, memory diagnostic and WHEA errors, battery wear, cooling policy, refresh rate
-- **Hardware configuration:** only one RAM module, RAM speed (XMP/EXPO), monitor on the motherboard instead of the graphics card, graphics card with too narrow a PCIe link, missing graphics driver, devices with an error code, power plan limits the processor/turbo off, Intel 13th/14th gen with old microcode, LAN only 100 Mbit/s, system drive vs. free NVMe
+- **Hardware configuration:** only one RAM module, RAM speed (XMP/EXPO), monitor on the motherboard instead of the graphics card, graphics card with too narrow a PCIe link, missing or year-old graphics driver, devices with an error code, power plan limits the processor/turbo off, Intel 13th/14th gen with old microcode, LAN only 100 Mbit/s, system drive vs. free NVMe
 - **Security health check, Storage Sense, AI features (info only):** drive encryption, security chip (TPM), memory integrity, Defender tamper protection; whether Storage Sense is on and deletes old downloads; Copilot app and Recall. WinTidy only shows the state, it changes nothing.
-- **Security/stability:** Windows without support or without updates, Secure Boot and the new Secure Boot certificates, antivirus (third-party products too), firewall, UAC, BIOS age, PowerShell policy, unfavorable tuning settings (pagefile off, Prefetch/SysMain off, Defender off by policy), warnings in the event log
+- **Security/stability:** Windows without support or without updates, Secure Boot and the new Secure Boot certificates, antivirus (third-party products too), firewall, UAC, BIOS age, too broad antivirus exclusions, PowerShell policy (never preselected), unfavorable tuning settings (pagefile off, Prefetch/SysMain off, Windows Search off, Defender off by policy, update servers blocked in the hosts file, Windows held at an old version by policy), warnings in the event log
 
 ## Browser caches and large files
 
@@ -193,15 +193,15 @@ WinTidy reads its settings in three layers – later ones win:
 
 All keys with their default values are listed in `WinTidy.config.example.json` (not loaded). Keys you don't set come from the script – that way improved defaults take effect automatically after an update.
 
-Example `WinTidy.config.local.json` – never update KeePassXC via winget:
+Example `WinTidy.config.local.json` – never update KeePassXC and DaVinci Resolve via winget on this PC:
 
 ```json
 {
-  "WingetExclude": ["rekordbox", "DaVinci", "Blackmagic", "AlphaTheta", "KeePassXC"]
+  "WingetExclude": ["KeePassXC", "DaVinci"]
 }
 ```
 
-Lists replace the default list completely (that is why the defaults are repeated above); tables such as `DiskTempWarnC` are merged key by key.
+Lists replace the default list completely (copy the default entries from `WinTidy.config.example.json` if you only want to add to them); tables such as `DiskTempWarnC` are merged key by key.
 
 ## Requirements
 

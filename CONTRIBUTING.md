@@ -34,6 +34,10 @@ pwsh ./tests/Test-Hardware.ps1  # hardware rating, score, cooling test with synt
 pwsh ./tests/Test-GuiApi.ps1    # engine <-> app interface with test rules
 pwsh ./tests/Test-Update.ps1    # updater (offline)
 pwsh ./tests/Test-Debloat.ps1   # Debloat page (catalog, detection, app removal)
+pwsh ./tests/Test-Storage.ps1   # browser caches, large files, storage figures, check reminder
+pwsh ./tests/Test-Perf.ps1      # performance key figures
+pwsh ./tests/Test-Features.ps1  # security check, Storage Sense, AI inventory, profiles, report for sharing
+pwsh ./tests/Test-Rules.ps1     # rule review: unattended mode, quarantine, new checks, score
 ```
 
 GitHub Actions also runs them on Windows PowerShell 5.1. `tests/Probe-*.ps1` are read-only diagnostics for real PCs. Their JSON output contains hardware details and is git-ignored, so please don't commit it.

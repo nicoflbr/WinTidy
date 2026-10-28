@@ -3,6 +3,7 @@
   "TempAgeDays": 2,
   "RecycleBinAgeDays": 30,
   "CrashDumpAgeDays": 7,
+  "SystemDumpKeepDays": 30,
   "ShadowStorageMinPercent": 3,
   "ShadowStorageTarget": "5%",
   "BootDegradationHintMs": 2000,
@@ -20,8 +21,6 @@
     "AdobeCollabSync",
     "Creative Cloud",
     "CCleaner",
-    "Luminar",
-    "Mobalytics",
     "Overwolf",
     "MicrosoftStartFeedProvider",
     "LogiLDA",
@@ -67,27 +66,7 @@
     "Nextcloud",
     "Google Drive"
   ],
-  "BloatApps": [
-    "Microsoft.BingNews",
-    "Microsoft.BingWeather",
-    "Microsoft.ZuneVideo",
-    "Microsoft.Getstarted",
-    "Microsoft.MicrosoftSolitaireCollection",
-    "Microsoft.MixedReality.Portal",
-    "Microsoft.WindowsFeedbackHub",
-    "Microsoft.M365Companions",
-    "Clipchamp.Clipchamp",
-    "Microsoft.549981C3F5F10",
-    "Microsoft.Windows.DevHome",
-    "Microsoft.BingSearch",
-    "Microsoft.PowerAutomateDesktop",
-    "Microsoft.People",
-    "Microsoft.SkypeApp",
-    "Microsoft.Wallet",
-    "Microsoft.3DBuilder",
-    "Microsoft.Print3D",
-    "Microsoft.Microsoft3DViewer"
-  ],
+  "BloatApps": [],
   "GhostDeviceExclude": [
     "WAN Miniport",
     "Microsoft Kernel Debug",
@@ -147,12 +126,7 @@
     "Steam",
     "SDK"
   ],
-  "WingetExclude": [
-    "rekordbox",
-    "DaVinci",
-    "Blackmagic",
-    "AlphaTheta"
-  ],
+  "WingetExclude": [],
   "OrphanDirIgnore": [
     "Microsoft",
     "Windows",
@@ -211,6 +185,15 @@
     "pip"
   ],
   "OrphanDirMinMB": 50,
+  "QuarantineDays": 30,
+  "GhostDeviceMinDays": 90,
+  "DriverInstallerDirs": [
+    "%SystemDrive%\\AMD",
+    "%SystemDrive%\\NVIDIA",
+    "%ProgramData%\\NVIDIA Corporation\\Downloader"
+  ],
+  "DriverInstallerMinMB": 200,
+  "GpuDriverMaxAgeDays": 365,
   "ExtraTempPaths": [],
   "BrowserCacheMinMB": 500,
   "BigFileMinMB": 1024,
@@ -228,14 +211,14 @@
   "GpuTempWarnC": 83,
   "GpuTempCritC": 90,
   "DiskTempWarnC": {
-    "SSD": 60,
+    "NVMe": 70,
     "HDD": 50,
-    "NVMe": 70
+    "SSD": 60
   },
   "DiskTempCritC": {
-    "SSD": 70,
+    "NVMe": 80,
     "HDD": 60,
-    "NVMe": 80
+    "SSD": 70
   },
   "CoolingTestSeconds": 60,
   "WinOldMinAgeDays": 10,

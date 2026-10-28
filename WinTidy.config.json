@@ -3,8 +3,8 @@
   "_example": {
     "TempAgeDays": 2,
     "WingetExclude": [
-      "DaVinci",
-      "Blackmagic"
+      "Example Program",
+      "Vendor.ExampleId"
     ]
   }
 }

@@ -1801,8 +1801,8 @@ function Draw-PerfCanvas($c) {
     }
     foreach ($rt in @($tag.Runs)) {
         $t = [double]$rt; if ($t -lt $t0 -or $t -gt $t1) { continue }
-        $x = & $X $t
-        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $x; $ln.X2 = $x; $ln.Y1 = $pt; $ln.Y2 = $H - $pb; Set-Brush $ln 'Stroke' 'Good'; $ln.StrokeThickness = 1.5; $ln.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('4 3'); [void]$c.Children.Add($ln)
+        $rx = & $X $t
+        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $rx; $ln.X2 = $rx; $ln.Y1 = $pt; $ln.Y2 = $H - $pb; Set-Brush $ln 'Stroke' 'Good'; $ln.StrokeThickness = 1.5; $ln.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('4 3'); [void]$c.Children.Add($ln)
     }
     $poly = New-Object System.Windows.Shapes.Polyline; Set-Brush $poly 'Stroke' 'Accent'; $poly.StrokeThickness = 2; $poly.StrokeLineJoin = 'Round'
     foreach ($p in $pts) { [void]$poly.Points.Add((New-Object System.Windows.Point (& $X ([double]$p.T)), (& $Y ([double]$p.V)))) }
@@ -1919,10 +1919,10 @@ function Draw-Score($h) {
     $pts = @(Get-ScoreSeries $h)
     if ($pts.Count -lt 2) { $UI.ScoreNote.Text = (T 'Not enough checks yet - the trend appears from the second check on.'); return }
     $W = $c.ActualWidth; if ($W -lt 200) { return }   # Layout not finished yet -> SizeChanged redraws
-    $H = $c.Height; $pl = 34; $pr = 10; $pt = 8; $pb = 10
+    $CanvH = $c.Height; $pl = 34; $pr = 10; $pt = 8; $pb = 10
     $t0 = [double]$pts[0].T; $t1 = [double]$pts[-1].T; if ($t1 -eq $t0) { $t1 = $t0 + 1 }
     $X = { param($t) $pl + ($W - $pl - $pr) * (($t - $t0) / ($t1 - $t0)) }
-    $Y = { param($v) $pt + ($H - $pt - $pb) * (1 - $v / 100) }
+    $Y = { param($v) $pt + ($CanvH - $pt - $pb) * (1 - $v / 100) }
     foreach ($v in 0, 25, 50, 75, 100) {
         $yy = & $Y $v
         $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $pl; $ln.X2 = $W - $pr; $ln.Y1 = $yy; $ln.Y2 = $yy; Set-Brush $ln 'Stroke' 'Line'; [void]$c.Children.Add($ln)
@@ -1934,8 +1934,8 @@ function Draw-Score($h) {
     }
     foreach ($l in @($h.Laeufe | Where-Object { $_ })) {
         $t = [double]([datetime]$l.Zeit).Ticks; if ($t -lt $t0 -or $t -gt $t1) { continue }
-        $x = & $X $t
-        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $x; $ln.X2 = $x; $ln.Y1 = $pt; $ln.Y2 = $H - $pb; Set-Brush $ln 'Stroke' 'Good'; $ln.StrokeThickness = 1.5; $ln.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('4 3'); [void]$c.Children.Add($ln)
+        $rx = & $X $t
+        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $rx; $ln.X2 = $rx; $ln.Y1 = $pt; $ln.Y2 = $CanvH - $pb; Set-Brush $ln 'Stroke' 'Good'; $ln.StrokeThickness = 1.5; $ln.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('4 3'); [void]$c.Children.Add($ln)
     }
     $poly = New-Object System.Windows.Shapes.Polyline; Set-Brush $poly 'Stroke' 'Accent'; $poly.StrokeThickness = 2.5; $poly.StrokeLineJoin = 'Round'
     foreach ($p in $pts) { [void]$poly.Points.Add((New-Object System.Windows.Point (& $X ([double]$p.T)), (& $Y $p.V))) }
@@ -1957,11 +1957,11 @@ function Draw-Boot($h) {
     $pts = @(); if ($h) { $pts = @($h.Boots | Where-Object { $_ -and $_.GesamtMs -gt 0 } | Sort-Object { [datetime]$_.Zeit }) }
     if ($pts.Count -lt 2) { $UI.BootNote.Text = (T 'Not enough boot times measured yet. Windows records them at every startup (visible with administrator rights).'); return }
     $W = $c.ActualWidth; if ($W -lt 200) { return }   # Layout not finished yet -> SizeChanged redraws
-    $H = 240; $pl = 44; $pb = 24; $pt = 10
+    $CanvH = 240; $pl = 44; $pb = 24; $pt = 10
     $t0 = ([datetime]$pts[0].Zeit).Ticks; $t1 = ([datetime]$pts[-1].Zeit).Ticks; if ($t1 -eq $t0) { $t1 = $t0 + 1 }
     $max = [math]::Max(10, [math]::Ceiling((($pts | Measure-Object GesamtMs -Maximum).Maximum) / 10000) * 10)
     $X = { param($t) $pl + ($W - $pl - 10) * (($t - $t0) / ($t1 - $t0)) }
-    $Y = { param($ms) $pt + ($H - $pt - $pb) * (1 - ($ms / 1000) / $max) }
+    $Y = { param($ms) $pt + ($CanvH - $pt - $pb) * (1 - ($ms / 1000) / $max) }
     $step = [math]::Max(10, [math]::Ceiling($max / 40) * 10)
     for ($v = 0; $v -le $max; $v += $step) {
         $yy = & $Y ($v * 1000)
@@ -1970,8 +1970,8 @@ function Draw-Boot($h) {
     }
     foreach ($l in @($h.Laeufe | Where-Object { $_ })) {
         $t = ([datetime]$l.Zeit).Ticks; if ($t -lt $t0 -or $t -gt $t1) { continue }
-        $x = & $X $t
-        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $x; $ln.X2 = $x; $ln.Y1 = $pt; $ln.Y2 = $H - $pb; Set-Brush $ln 'Stroke' 'Good'; $ln.StrokeThickness = 1.5; $ln.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('4 3'); [void]$c.Children.Add($ln)
+        $rx = & $X $t
+        $ln = New-Object System.Windows.Shapes.Line; $ln.X1 = $rx; $ln.X2 = $rx; $ln.Y1 = $pt; $ln.Y2 = $CanvH - $pb; Set-Brush $ln 'Stroke' 'Good'; $ln.StrokeThickness = 1.5; $ln.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('4 3'); [void]$c.Children.Add($ln)
     }
     $poly = New-Object System.Windows.Shapes.Polyline; Set-Brush $poly 'Stroke' 'Accent'; $poly.StrokeThickness = 2.5; $poly.StrokeLineJoin = 'Round'
     foreach ($p in $pts) { [void]$poly.Points.Add((New-Object System.Windows.Point (& $X ([datetime]$p.Zeit).Ticks), (& $Y $p.GesamtMs))) }

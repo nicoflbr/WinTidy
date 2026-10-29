@@ -41,13 +41,18 @@
     .\WinTidy.ps1 -Mode Rules -Preset Safe -SavePreset mine.json   # save a rule selection as a profile
     .\WinTidy.ps1 -Mode Preview -Preset mine.json                  # use a saved profile (or Safe / Standard)
     .\WinTidy.ps1 -Mode Report -Share -Pdf       # report without PC name, user name and paths (optional PDF)
+    .\WinTidy.ps1 -Mode Exclusions               # list the points you excluded (not shown, not changed, not in the score)
+    .\WinTidy.ps1 -Mode Exclusions -AddExclusion SEC-EXECPOLICY      # exclude a whole check (SCORE:SCORE-UAC = one score deduction)
+    .\WinTidy.ps1 -Mode Exclusions -RemoveExclusion 2               # include point number 2 of the list again (or: all)
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu', 'Scan', 'Preview', 'Apply', 'Compare', 'Report', 'Restore', 'Rules', 'Hardware', 'Update')]
+    [ValidateSet('Menu', 'Scan', 'Preview', 'Apply', 'Compare', 'Report', 'Restore', 'Rules', 'Hardware', 'Update', 'Exclusions')]
     [string]$Mode = 'Menu',
     [string[]]$Rule,
     [string[]]$ExcludeRule,
+    [string[]]$AddExclusion,
+    [string[]]$RemoveExclusion,
     [switch]$Yes,
     [switch]$IncludeMedium,
     [switch]$Deep,
@@ -72,9 +77,11 @@ Set-StrictMode -Off
 # Via WinTidy.cmd (-File), "-Rule A,B" arrives as a single string
 if ($Rule) { $Rule = @($Rule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 if ($ExcludeRule) { $ExcludeRule = @($ExcludeRule | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+if ($AddExclusion) { $AddExclusion = @($AddExclusion | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+if ($RemoveExclusion) { $RemoveExclusion = @($RemoveExclusion | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.11.1'
+$Script:Version = '1.12.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)
@@ -803,7 +810,7 @@ function Get-DebloatAppItems([string]$Group) {
         if ($a.Gruppe -ne $Group) { continue }
         $p = @($Script:Cache['Appx'] | Where-Object { $_.Name -like ($a.Id + '*') })
         $nm = if ($Script:AppNames -and $Script:AppNames.ContainsKey([string]$a.Id)) { $Script:AppNames[[string]$a.Id] } else { $a.Name }
-        if ($p.Count) { New-Item2 $nm 0 $a.Id ("{0} {1}" -f $p[0].Name, $p[0].Version) }
+        if ($p.Count) { New-Item2 $nm 0 $a.Id ("{0} {1}" -f $p[0].Name, $p[0].Version) ([string]$a.Id) }
     }
 }
 function Remove-DebloatApp([string]$Id) {
@@ -900,6 +907,8 @@ function Get-ApprovedEnabled([string]$Key, [string]$Name) {
     if ($v -is [byte[]] -and $v.Length -gt 0) { return (($v[0] % 2) -eq 0) }
     return $true
 }
+# Language-independent key of a startup entry (also used by the score to match snapshot entries to excluded items)
+function Get-StartupKey($s) { return ("[{0}] {1} -> {2}" -f $s.Ort, $s.Name, $s.Ziel) }
 function Get-StartupItems {
     if ($Script:Cache.Startup) { return $Script:Cache.Startup }
     $list = New-Object System.Collections.Generic.List[object]
@@ -1990,7 +1999,8 @@ function Invoke-CleanMgr([string[]]$Categories) {
 #  Item.Data.Stufe (ok|warn|krit) controls the icon of info rules in the app
 #  Item: [pscustomobject]@{ Label; Bytes; Data }
 # =============================================================================
-function New-Item2([string]$Label, [double]$Bytes = 0, $Data = $null, [string]$Technik = $null) { [pscustomobject]@{ Label = $Label; Bytes = [int64]$Bytes; Data = $Data; Technik = $Technik } }
+# Schluessel = optional language-independent key of the item for exclusions (see Get-WtItemKey)
+function New-Item2([string]$Label, [double]$Bytes = 0, $Data = $null, [string]$Technik = $null, [string]$Schluessel = $null) { [pscustomobject]@{ Label = $Label; Bytes = [int64]$Bytes; Data = $Data; Technik = $Technik; Schluessel = $Schluessel } }
 
 $Script:Rules = @(
 
@@ -2020,7 +2030,7 @@ $Script:Rules = @(
             if ($sum -gt 50MB) {
                 $lbl = (T 'Leftovers of Windows updates and error reports (') + ($found -join ', ') + ')'
                 if ($behalten) { $lbl += (T ' - memory dumps of recent blue screens are kept') }
-                New-Item2 $lbl $sum @{ DumpsBehalten = $behalten }
+                New-Item2 $lbl $sum @{ DumpsBehalten = $behalten } $null 'windows-leftovers'
             }
         }
         Fix = { param($it)
@@ -2053,7 +2063,7 @@ $Script:Rules = @(
             }
             $lbl = (T 'Previous Windows version and upgrade leftovers') + $(if ($null -ne $alter) { (T ' (for {0} days)' $alter) } else { '' })
             if ($userBytes -gt 10MB) { $lbl += ((T ' – CAUTION: still contains {0} of personal files (Windows.old\Users). Back them up first!') -f (Fmt-Bytes $userBytes)) }
-            $it = New-Item2 $lbl $sum @{ AlterTage = $alter; PersoenlicheBytes = $userBytes; Stufe = $(if ($userBytes -gt 10MB) { 'warn' } else { '' }) }
+            $it = New-Item2 $lbl $sum @{ AlterTage = $alter; PersoenlicheBytes = $userBytes; Stufe = $(if ($userBytes -gt 10MB) { 'warn' } else { '' }) } $null 'windows-old'
             $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue ($null -ne $alter -and $alter -ge $Script:Cfg.WinOldMinAgeDays -and $userBytes -le 10MB)
             $it
         }
@@ -2083,7 +2093,7 @@ $Script:Rules = @(
             foreach ($f in (Get-ChildItem $Script:RunsDir -Recurse -Filter 'actions.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-14) })) {
                 if (Select-String -LiteralPath $f.FullName -Pattern '"Regel":"CLN-WINSXS".*"Status":"OK"' -Quiet) { $kuerzlich = $true; break }
             }
-            if ($w.Empfohlen -and -not $kuerzlich) { New-Item2 ((T 'Component cleanup recommended (backups/disabled features: {0}; Windows decides how much of it is freed)') -f (Fmt-Bytes $w.BackupsBytes)) 0 $null }
+            if ($w.Empfohlen -and -not $kuerzlich) { New-Item2 ((T 'Component cleanup recommended (backups/disabled features: {0}; Windows decides how much of it is freed)') -f (Fmt-Bytes $w.BackupsBytes)) 0 $null $null 'component-cleanup' }
         }
         Fix = { param($it) $o = & dism.exe /Online /Cleanup-Image /StartComponentCleanup /English 2>&1; if ($LASTEXITCODE -ne 0) { throw ((T 'Windows could not run the cleanup right now – try again later (DISM code {0})') -f $LASTEXITCODE) }; Remove-Item -LiteralPath (Join-Path $Script:DataDir 'winsxs-analyse.json') -ErrorAction SilentlyContinue; (T 'DISM successful') }
     }
@@ -2148,7 +2158,7 @@ $Script:Rules = @(
             $braucht = ($hybrid -and $hybrid.AC -eq 1) -or ($pb -and $pb.AC -eq 2) -or ($sb -and $sb.AC -eq 2)
             $txt = (T 'Hibernation file ({0}) – about {1} freed after shrinking') -f (Fmt-Bytes $f.Length), (Fmt-Bytes $spar)
             if ($hybrid -and $hybrid.AC -eq 1) { $txt += (T '. Caution: hybrid sleep (protects against power failure in sleep mode) is on and would be turned off as well') }
-            $it = New-Item2 $txt $spar $null
+            $it = New-Item2 $txt $spar $null $null 'hibernation-file'
             $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue ($zeigt -ne 1 -and -not $braucht)
             $it
         }
@@ -2162,7 +2172,7 @@ $Script:Rules = @(
 
     [pscustomobject]@{ Id = 'CLN-RECYCLE'; Kategorie = 'Speicher'; Titel = (T 'Old recycle bin items'); Risiko = 'Niedrig'; Wirkung = 'Speicher'; Admin = $false; Standard = $true
         Warum = (T 'Only items deleted longer ago than the age limit. Recently deleted items stay recoverable.')
-        Detect = { $o = @(Get-RecycleBinOld $Script:Cfg.RecycleBinAgeDays); if ($o.Count) { New-Item2 ((T '{0} files that were deleted more than {1} days ago') -f $o.Count, $Script:Cfg.RecycleBinAgeDays) (($o | Measure-Object Size -Sum).Sum) $null } }
+        Detect = { $o = @(Get-RecycleBinOld $Script:Cfg.RecycleBinAgeDays); if ($o.Count) { New-Item2 ((T '{0} files that were deleted more than {1} days ago') -f $o.Count, $Script:Cfg.RecycleBinAgeDays) (($o | Measure-Object Size -Sum).Sum) $null $null 'recycle-bin-old' } }
         Fix = { param($it)
             $n = 0
             foreach ($e in (Get-RecycleBinOld $Script:Cfg.RecycleBinAgeDays)) {
@@ -2291,7 +2301,7 @@ $Script:Rules = @(
     # ---------------------------------------------------------------- Startup
     [pscustomobject]@{ Id = 'STA-ORPHAN'; Kategorie = 'Autostart'; Titel = (T 'Startup entries with a missing program file'); Risiko = 'Niedrig'; Wirkung = 'Hygiene'; Admin = $true; Standard = $true; Umkehrbar = $true
         Warum = (T 'If a startup entry points to a file that no longer exists, the program has been uninstalled. Entries on currently missing drives (USB) and on the network are not touched. Everything is backed up first.')
-        Detect = { Get-StartupItems | Where-Object { $_.Zustand -eq 'fehlt' } | ForEach-Object { New-Item2 ((T '{0} – the program for it is gone') -f $_.Name) 0 $_ ("[{0}] {1} -> {2}" -f $_.Ort, $_.Name, $_.Ziel) } }
+        Detect = { Get-StartupItems | Where-Object { $_.Zustand -eq 'fehlt' } | ForEach-Object { New-Item2 ((T '{0} – the program for it is gone') -f $_.Name) 0 $_ (Get-StartupKey $_) } }
         Fix = { param($it)
             $s = $it.Data
             switch ($s.Art) {
@@ -2349,7 +2359,7 @@ $Script:Rules = @(
                 $isHeavy = [bool]($heavy | Where-Object { Test-WordMatch $id $_ })
                 $nm = if ($vi -and $vi.FileDescription -and $s.Art -ne 'StoreApp') { "{0} ({1})" -f $s.Name, ([string]$vi.FileDescription).Trim() } else { $s.Name }
                 $tag = @(); if ($s.DegradationMs -ge $Script:Cfg.BootDegradationHintMs) { $tag += ((T 'delays startup by about {0:N0} seconds') -f ($s.DegradationMs / 1000)) }; if ($isHeavy) { $tag += (T 'starts unnecessarily') }
-                $it = New-Item2 ("{0}{1}" -f $nm, $(if ($tag) { ' – ' + ($tag -join ', ') } else { '' })) 0 $s ("[{0}] {1} -> {2}" -f $s.Ort, $s.Name, $s.Ziel)
+                $it = New-Item2 ("{0}{1}" -f $nm, $(if ($tag) { ' – ' + ($tag -join ', ') } else { '' })) 0 $s (Get-StartupKey $s)
                 $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue $isHeavy
                 $it
             }
@@ -2444,7 +2454,7 @@ $Script:Rules = @(
                     $lbl = (T '{0} {1} (newest {2} stays)') -f $a.DisplayName, $a.DisplayVersion, $newest.DisplayVersion
                     # Another main version (e.g. 18 next to 19) is often kept on purpose for old projects - say so
                     if ($a.V.Major -ne $newest.V.Major -and $a.V -ne [version]'0.0') { $lbl += (T ' - different main version, may be installed on purpose') }
-                    $it = New-Item2 $lbl ([int64]$a.EstimatedSize * 1KB) $a
+                    $it = New-Item2 $lbl ([int64]$a.EstimatedSize * 1KB) $a $null ("{0} {1}" -f $a.DisplayName, $a.DisplayVersion)
                     # Uninstallers are interactive and cannot be undone: never unattended, never preselected
                     $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue $false
                     $it
@@ -2504,7 +2514,7 @@ $Script:Rules = @(
             $g = @($alle | Where-Object { $seen.ContainsKey([string]$_.InstanceId) -and $seen[[string]$_.InstanceId] -lt $limit })
             foreach ($grp in ($g | Group-Object Class | Sort-Object Count -Descending)) {
                 $bsp = ($grp.Group | Select-Object -ExpandProperty FriendlyName -Unique | Where-Object { $_ } | Select-Object -First 3) -join '; '
-                New-Item2 ((T '{0} old entries: {1} (e.g. {2})') -f $grp.Count, (Get-DeviceClassName $grp.Name), $bsp) 0 @($grp.Group | Select-Object -ExpandProperty InstanceId)
+                New-Item2 ((T '{0} old entries: {1} (e.g. {2})') -f $grp.Count, (Get-DeviceClassName $grp.Name), $bsp) 0 @($grp.Group | Select-Object -ExpandProperty InstanceId) $null ('class-' + $grp.Name)
             }
         }
         Fix = { param($it) $ok = 0; $f = 0; foreach ($id in $it.Data) { & pnputil.exe /remove-device "$id" 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { $ok++ } else { $f++ } }; (T '{0} removed, {1} not' $ok $f) }
@@ -2595,7 +2605,7 @@ $Script:Rules = @(
         Detect = {
             $k = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' -ErrorAction SilentlyContinue
             if ($k -and $k.HistoricalCaptureEnabled -eq 1 -and $k.AppCaptureEnabled -ne 0) {
-                $it = New-Item2 (T 'Background recording of the Xbox Game Bar is turned on') 0 $null
+                $it = New-Item2 (T 'Background recording of the Xbox Game Bar is turned on') 0 $null $null 'gamedvr'
                 # Switched on by someone on purpose: never preselected, never unattended
                 $it | Add-Member -NotePropertyName AutoOk -NotePropertyValue $false
                 $it
@@ -2624,38 +2634,38 @@ $Script:Rules = @(
         Warum = (T 'Windows support and updates, Secure Boot, antivirus, firewall, UAC, BIOS age and too broad antivirus exclusions. Another active antivirus or firewall is taken into account.')
         Detect = {
             $wi = Get-WindowsSupportInfo
-            if ($wi.Ende -and $wi.Ende -lt (Get-Date)) { New-Item2 ((T 'This Windows version ({0}) has not received security updates since {1:yyyy-MM-dd} – please update to the current version via Settings > Windows Update') -f $wi.Version, $wi.Ende) 0 @{ Stufe = 'krit' } }
-            elseif ($wi.Ende -and $wi.Ende -lt (Get-Date).AddDays(60)) { New-Item2 ((T 'This Windows version ({0}) only receives security updates until {1:yyyy-MM-dd} – update to the current version soon') -f $wi.Version, $wi.Ende) 0 @{ Stufe = 'warn' } }
-            if ($wi.WuDeaktiviert) { New-Item2 (T 'Windows Update is turned off – the PC receives no security updates') 0 @{ Stufe = 'krit' } }
-            elseif ($null -ne $wi.TageSeitUpdate -and $wi.TageSeitUpdate -gt 40) { New-Item2 ((T 'No Windows updates have been installed for {0} days – check Settings > Windows Update') -f $wi.TageSeitUpdate) 0 @{ Stufe = 'warn' } }
+            if ($wi.Ende -and $wi.Ende -lt (Get-Date)) { New-Item2 ((T 'This Windows version ({0}) has not received security updates since {1:yyyy-MM-dd} – please update to the current version via Settings > Windows Update') -f $wi.Version, $wi.Ende) 0 @{ Stufe = 'krit' } $null 'winsupport-end' }
+            elseif ($wi.Ende -and $wi.Ende -lt (Get-Date).AddDays(60)) { New-Item2 ((T 'This Windows version ({0}) only receives security updates until {1:yyyy-MM-dd} – update to the current version soon') -f $wi.Version, $wi.Ende) 0 @{ Stufe = 'warn' } $null 'winsupport-soon' }
+            if ($wi.WuDeaktiviert) { New-Item2 (T 'Windows Update is turned off – the PC receives no security updates') 0 @{ Stufe = 'krit' } $null 'winupdate-off' }
+            elseif ($null -ne $wi.TageSeitUpdate -and $wi.TageSeitUpdate -gt 40) { New-Item2 ((T 'No Windows updates have been installed for {0} days – check Settings > Windows Update') -f $wi.TageSeitUpdate) 0 @{ Stufe = 'warn' } $null 'winupdate-old' }
             $fw = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control' -ErrorAction SilentlyContinue).PEFirmwareType
             $sb = $null; try { $sb = Confirm-SecureBootUEFI -ErrorAction Stop } catch { }
-            if ($fw -eq 1) { New-Item2 (T 'Windows starts in the old BIOS mode (legacy) – Secure Boot (boot protection) is not possible this way. Only someone who knows what they are doing should switch it') 0 @{ Stufe = '' } }
-            elseif ($sb -eq $false) { New-Item2 (T 'Secure Boot (boot protection) is turned off. This is not an acute problem. Only someone who knows what they are doing should turn it on – done wrong, Windows no longer starts') 0 @{ Stufe = '' } }
+            if ($fw -eq 1) { New-Item2 (T 'Windows starts in the old BIOS mode (legacy) – Secure Boot (boot protection) is not possible this way. Only someone who knows what they are doing should switch it') 0 @{ Stufe = '' } $null 'legacy-bios' }
+            elseif ($sb -eq $false) { New-Item2 (T 'Secure Boot (boot protection) is turned off. This is not an acute problem. Only someone who knows what they are doing should turn it on – done wrong, Windows no longer starts') 0 @{ Stufe = '' } $null 'secureboot-off' }
             elseif ($sb -eq $true) {
                 $ca = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing' -ErrorAction SilentlyContinue).UEFICA2023Status
-                if ($ca -and [string]$ca -ne 'Updated') { New-Item2 (T 'The new Secure Boot certificates (2023) are not installed yet. Windows does this via updates; sometimes a BIOS update is needed for it') 0 @{ Stufe = '' } }
+                if ($ca -and [string]$ca -ne 'Updated') { New-Item2 (T 'The new Secure Boot certificates (2023) are not installed yet. Windows does this via updates; sometimes a BIOS update is needed for it') 0 @{ Stufe = '' } $null 'secureboot-certs' }
             }
             $avFremd = @(Get-OtherSecurityProducts 'AntiVirusProduct')
             if (-not $avFremd.Count) {
                 try {
                     $m = Get-MpComputerStatus -ErrorAction Stop
-                    if (-not $m.RealTimeProtectionEnabled) { New-Item2 (T 'The antivirus (Microsoft Defender) is turned off and no other antivirus is active') 0 @{ Stufe = 'krit' } }
-                    elseif ($m.AntivirusSignatureLastUpdated -lt (Get-Date).AddDays(-7)) { New-Item2 ((T 'The antivirus signatures are older than 7 days (as of {0:yyyy-MM-dd})') -f $m.AntivirusSignatureLastUpdated) 0 @{ Stufe = 'warn' } }
+                    if (-not $m.RealTimeProtectionEnabled) { New-Item2 (T 'The antivirus (Microsoft Defender) is turned off and no other antivirus is active') 0 @{ Stufe = 'krit' } $null 'antivirus-off' }
+                    elseif ($m.AntivirusSignatureLastUpdated -lt (Get-Date).AddDays(-7)) { New-Item2 ((T 'The antivirus signatures are older than 7 days (as of {0:yyyy-MM-dd})') -f $m.AntivirusSignatureLastUpdated) 0 @{ Stufe = 'warn' } $null 'antivirus-signatures' }
                 } catch { }
             }
             if (-not @(Get-OtherSecurityProducts 'FirewallProduct').Count) {
                 $pn = @{ 'Domain' = (T 'company networks'); 'Private' = (T 'private networks'); 'Public' = (T 'public networks') }
-                try { Get-NetFirewallProfile -ErrorAction Stop | Where-Object { -not $_.Enabled } | ForEach-Object { New-Item2 ((T 'The Windows Firewall is turned off for {0}. Turn it on under Settings > Privacy & security > Windows Security > Firewall') -f $(if ($pn.ContainsKey([string]$_.Name)) { $pn[[string]$_.Name] } else { $_.Name })) 0 @{ Stufe = 'warn' } } } catch { }
+                try { Get-NetFirewallProfile -ErrorAction Stop | Where-Object { -not $_.Enabled } | ForEach-Object { New-Item2 ((T 'The Windows Firewall is turned off for {0}. Turn it on under Settings > Privacy & security > Windows Security > Firewall') -f $(if ($pn.ContainsKey([string]$_.Name)) { $pn[[string]$_.Name] } else { $_.Name })) 0 @{ Stufe = 'warn' } $null ('firewall-' + ([string]$_.Name).ToLower()) } } catch { }
             }
-            if ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue).EnableLUA -eq 0) { New-Item2 (T 'User Account Control (confirmation for changes to the system) is turned off') 0 @{ Stufe = 'warn' } }
+            if ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue).EnableLUA -eq 0) { New-Item2 (T 'User Account Control (confirmation for changes to the system) is turned off') 0 @{ Stufe = 'warn' } $null 'uac-off' }
             $b = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
-            if ($b.ReleaseDate -and $b.ReleaseDate -lt (Get-Date).AddYears(-2)) { New-Item2 ((T 'The basic software of the motherboard (BIOS) dates from {0:yyyy-MM-dd}. An update can fix bugs and security holes – please only have it done by someone who knows what they are doing') -f $b.ReleaseDate) 0 @{ Stufe = '' } }
+            if ($b.ReleaseDate -and $b.ReleaseDate -lt (Get-Date).AddYears(-2)) { New-Item2 ((T 'The basic software of the motherboard (BIOS) dates from {0:yyyy-MM-dd}. An update can fix bugs and security holes – please only have it done by someone who knows what they are doing') -f $b.ReleaseDate) 0 @{ Stufe = '' } $null 'bios-age' }
             # Defender exclusions that switch off the scan for large parts of the PC (tuning tools, game cheats, old guides)
             if (-not $avFremd.Count) {
                 foreach ($x in @(Get-BroadDefenderExclusions (Get-DefenderExclusions))) {
                     $txt = switch ($x.Art) { 'Pfad' { (T 'The antivirus skips the whole folder {0} - malware there is not found. Check the exclusion under Windows Security > Virus & threat protection > Exclusions') } 'Endung' { (T 'The antivirus skips all files of the type {0} - a typical trick of malware and tuning tools. Check the exclusion under Windows Security > Virus & threat protection > Exclusions') } default { (T 'The antivirus ignores everything the program {0} does - check the exclusion under Windows Security > Virus & threat protection > Exclusions') } }
-                    New-Item2 ($txt -f $x.Wert) 0 @{ Stufe = 'warn' }
+                    New-Item2 ($txt -f $x.Wert) 0 @{ Stufe = 'warn' } $null ('defender-exclusion-{0}-{1}' -f $x.Art, $x.Wert)
                 }
             }
         }
@@ -2883,7 +2893,7 @@ $Script:Rules = @(
 
     [pscustomobject]@{ Id = 'EVT-HEALTH'; Kategorie = 'Stabilitaet'; Titel = (T 'Irregularities in the event log (30 days)'); Risiko = 'Info'; Wirkung = 'Stabilitaet'; Admin = $false; Standard = $true
         Warum = (T 'Unexpected shutdowns, blue screens, hardware errors (WHEA), disk errors and GPU driver resets are warning signs.')
-        Detect = {     foreach ($w in (Get-WarningSignals)) { New-Item2 ((T '{0}: {1} times') -f $w.Text, $w.Anzahl) 0 @{ Stufe = 'warn' } } }
+        Detect = {     foreach ($w in (Get-WarningSignals)) { New-Item2 ((T '{0}: {1} times') -f $w.Text, $w.Anzahl) 0 @{ Stufe = 'warn' } $null ([string]$w.Text) } }
         Fix = $null
     }
 
@@ -2930,6 +2940,167 @@ $Script:Rules = @(
         Fix = { param($it) Remove-DebloatApp $it.Data }
     }
 )
+
+# =============================================================================
+#  Exclusions ("Ausnahmen", since 1.12)
+#  Points the user wants as they are (a startup program, Game Bar recording, PowerShell policy Bypass on a developer PC ...).
+#  An exclusion is a filter that only REDUCES what WinTidy does: excluded points are not shown, never applied (also not
+#  with -Yes) and do not count in the health score. If the file cannot be read, WinTidy behaves as if there were none.
+#  File: ausnahmen.json in the (protected) data folder. Art: Objekt (one item of a rule) | Regel (a whole rule) | Abzug (one score deduction)
+# =============================================================================
+# Score deductions with their stable Ids (a rule Id where a rule reports the same thing, so a Regel exclusion covers both)
+function Get-ScoreInfo {
+    [ordered]@{
+        'SCORE-FREESPACE' = (T 'Little free space on the Windows drive'); 'SCORE-BOOT' = (T 'Windows starts slowly'); 'SCORE-AUTOSTART' = (T 'Many programs start automatically')
+        'STA-ORPHAN' = (T 'Broken startup entries'); 'SCORE-ERRORS' = (T 'Many error messages from Windows'); 'CLN-DRIVERSTORE' = (T 'Old driver versions'); 'SYS-GHOST' = (T 'Old device entries')
+        'SCORE-SECUREBOOT' = (T 'Secure Boot (boot protection) is off'); 'SCORE-UAC' = (T 'User Account Control is turned off'); 'SCORE-FIREWALL' = (T 'The firewall is turned off')
+        'SCORE-ANTIVIRUS' = (T 'No active antivirus'); 'SEC-EXECPOLICY' = (T 'Protection setting for scripts is turned off'); 'SCORE-WINSUPPORT' = (T 'This Windows version no longer receives security updates')
+        'SCORE-WINUPDATE' = (T 'Windows Update is turned off or has not run for a long time'); 'CLN-RECYCLE' = (T 'Recycle bin larger than 5 GB'); 'EVT-HEALTH' = (T 'Warning messages from Windows')
+        'SCORE-HWCRIT' = (T 'Hardware: important warnings'); 'SCORE-HWWARN' = (T 'Hardware: irregularities')
+    }
+}
+function Get-ScoreIds { return @((Get-ScoreInfo).Keys) }
+# Items of a rule that explain a deduction: 'RULE|key' = deduction Id (the keys are set by the rule, see SEC-CHECKS)
+function Get-ScoreItemLinks {
+    @{ 'SEC-CHECKS|winsupport-end' = 'SCORE-WINSUPPORT'; 'SEC-CHECKS|winupdate-off' = 'SCORE-WINUPDATE'; 'SEC-CHECKS|winupdate-old' = 'SCORE-WINUPDATE'; 'SEC-CHECKS|secureboot-off' = 'SCORE-SECUREBOOT'
+       'SEC-CHECKS|antivirus-off' = 'SCORE-ANTIVIRUS'; 'SEC-CHECKS|firewall-domain' = 'SCORE-FIREWALL'; 'SEC-CHECKS|firewall-private' = 'SCORE-FIREWALL'; 'SEC-CHECKS|firewall-public' = 'SCORE-FIREWALL'; 'SEC-CHECKS|uac-off' = 'SCORE-UAC' }
+}
+# Rules whose Regel exclusion also covers a deduction that has a different Id
+function Get-ScoreRuleLinks { @{ 'SCORE-AUTOSTART' = 'STA-HEAVY'; 'SCORE-HWCRIT' = 'HW-COOLING'; 'SCORE-HWWARN' = 'HW-COOLING' } }
+
+function Get-WtExclusionPath { return (Join-Path $Script:DataDir 'ausnahmen.json') }
+function Write-WtExclusionWarning([string]$Text) { try { W $Text 'DarkYellow' } catch { } }
+# All valid entries (cached in $Script:Exclusions; $Script:Exclusions = $null reads the file again). Never throws.
+function Read-WtExclusions {
+    if ($null -ne $Script:Exclusions) { return @($Script:Exclusions) }
+    $list = New-Object System.Collections.Generic.List[object]
+    $path = $null; try { $path = Get-WtExclusionPath } catch { return @() }
+    $Script:ExclusionsDefekt = $false
+    if (-not (Test-Path -LiteralPath $path)) { $Script:Exclusions = @(); return @() }
+    try {
+        $j = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if (-not $j -or [string]$j.Format -ne 'WinTidy-Ausnahmen') { throw (T 'This file is not a WinTidy exclusion list') }
+        if ([int]$j.Version -gt 1) { throw (T 'The exclusion list comes from a newer WinTidy version') }
+        foreach ($e in @($j.Eintraege)) {
+            if (-not $e) { continue }
+            $art = [string]$e.Art; $reg = [string]$e.Regel; $key = [string]$e.Schluessel
+            if ($art -cnotin 'Objekt', 'Regel', 'Abzug' -or $reg -cnotmatch '^[A-Z]+(-[A-Z0-9]+)+$') { continue }
+            if ($art -eq 'Objekt' -and -not $key) { continue }
+            if ($art -ne 'Objekt') { $key = '' }
+            $list.Add([pscustomobject]@{ Art = $art; Regel = $reg; Schluessel = $key; Anzeige = [string]$e.Anzeige; Titel = [string]$e.Titel; Zeit = [string]$e.Zeit })
+        }
+    } catch {
+        $Script:ExclusionsDefekt = $true
+        Write-WtExclusionWarning (T 'The exclusion list could not be read ({0}) - WinTidy works as if there were no exclusions.' ($_.Exception.Message))
+        $list.Clear()
+    }
+    $Script:Exclusions = $list.ToArray()
+    return @($Script:Exclusions)
+}
+# Writes the whole list atomically (temp file in the same folder, then move). Throws if it cannot be written.
+function Save-WtExclusions($Entries) {
+    $list = @($Entries | Where-Object { $_ })
+    $o = [ordered]@{ Format = 'WinTidy-Ausnahmen'; Version = 1; WinTidy = $Script:Version; Eintraege = @($list | ForEach-Object { [ordered]@{ Art = [string]$_.Art; Regel = [string]$_.Regel; Schluessel = [string]$_.Schluessel; Anzeige = [string]$_.Anzeige; Titel = [string]$_.Titel; Zeit = [string]$_.Zeit } }) }
+    $path = Get-WtExclusionPath; $tmp = $path + '.tmp'
+    try {
+        # An unreadable old file is kept (it may hold entries the user wants back)
+        if ($Script:ExclusionsDefekt -and (Test-Path -LiteralPath $path)) { Copy-Item -LiteralPath $path -Destination ($path + '.defekt') -Force -ErrorAction SilentlyContinue }
+        [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
+    } catch {
+        try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
+        throw (T 'The exclusion list could not be saved: {0}' ($_.Exception.Message))
+    }
+    $Script:ExclusionsDefekt = $false
+    $Script:Exclusions = $list
+}
+function Test-WtSameExclusion($e, [string]$Art, [string]$Regel, [string]$Schluessel) {
+    return ($e.Art -eq $Art -and $e.Regel -eq $Regel -and ([string]$e.Schluessel) -eq $Schluessel)
+}
+# Idempotent: the same Art/Regel/Schluessel (ignoring case) is not added twice. Returns the entry.
+function Add-WtExclusion {
+    param([string]$Art, [string]$Regel, [string]$Schluessel = '', [string]$Anzeige = '', [string]$Titel = '')
+    if ($Art -cnotin 'Objekt', 'Regel', 'Abzug') { throw (T 'Unknown exclusion type: {0}' $Art) }
+    if ($Regel -cnotmatch '^[A-Z]+(-[A-Z0-9]+)+$') { throw (T 'Invalid rule or score ID: {0}' $Regel) }
+    if ($Art -eq 'Objekt' -and -not $Schluessel) { throw (T 'An exclusion of a single point needs its key') }
+    if ($Art -ne 'Objekt') { $Schluessel = '' }
+    if ($Schluessel.Length -gt 500) { $Schluessel = $Schluessel.Substring(0, 500) }
+    if ($Anzeige.Length -gt 400) { $Anzeige = $Anzeige.Substring(0, 400) }
+    $cur = @(Read-WtExclusions)
+    $dup = $cur | Where-Object { Test-WtSameExclusion $_ $Art $Regel $Schluessel } | Select-Object -First 1
+    if ($dup) { return $dup }
+    $e = [pscustomobject]@{ Art = $Art; Regel = $Regel; Schluessel = $Schluessel; Anzeige = $Anzeige; Titel = $Titel; Zeit = (Get-Date).ToString('o') }
+    Save-WtExclusions (@($cur) + @($e))
+    return $e
+}
+# Idempotent. Returns $true if something was removed.
+function Remove-WtExclusion {
+    param([string]$Art, [string]$Regel, [string]$Schluessel = '')
+    if ($Art -ne 'Objekt') { $Schluessel = '' }
+    $cur = @(Read-WtExclusions)
+    $rest = @($cur | Where-Object { -not (Test-WtSameExclusion $_ $Art $Regel $Schluessel) })
+    if ($rest.Count -eq $cur.Count) { return $false }
+    Save-WtExclusions $rest
+    return $true
+}
+# Is the item (or the whole rule) excluded? -ItemOnly ignores Regel exclusions (used by the score for single items).
+function Test-WtExcluded([string]$RuleId, [string]$Key = '', $Entries = $null, [switch]$ItemOnly) {
+    if ($null -eq $Entries) { $Entries = @(Read-WtExclusions) }
+    foreach ($e in @($Entries)) {
+        if (-not $e -or $e.Regel -ne $RuleId) { continue }
+        if ($e.Art -eq 'Regel' -and -not $ItemOnly) { return $true }
+        if ($e.Art -eq 'Objekt' -and $Key -and ([string]$e.Schluessel) -eq $Key) { return $true }
+    }
+    return $false
+}
+# Stable key of an engine item (result of New-Item2): explicit Schluessel, Technik, simple Data, properties of Data, else the label
+function Get-WtItemKey($item) {
+    if (-not $item) { return '' }
+    if ($item.Schluessel) { return [string]$item.Schluessel }
+    if ($item.Technik) { return [string]$item.Technik }
+    $d = $item.Data
+    if ($null -ne $d) {
+        if ($d -is [string]) { if ($d) { return $d } }
+        elseif ($d -is [int] -or $d -is [long] -or $d -is [double] -or $d -is [decimal]) { return [string]$d }
+        elseif ($d -is [System.Collections.IDictionary] -or $d -is [pscustomobject]) {
+            $parts = @()
+            foreach ($n in 'Key', 'Name', 'Pfad', 'Path', 'Id') {
+                $v = $null
+                if ($d -is [System.Collections.IDictionary]) { if ($d.Contains($n)) { $v = $d[$n] } } elseif ($d.psobject.Properties[$n]) { $v = $d.psobject.Properties[$n].Value }
+                if ($null -ne $v -and ($v -is [string] -or $v -is [int] -or $v -is [long] -or $v -is [double]) -and [string]$v) { $parts += ('{0}={1}' -f $n, $v) }
+            }
+            if ($parts.Count) { return ($parts -join ';') }
+        }
+    }
+    return [string]$item.Label
+}
+# Which source excludes a score deduction? '' = none, else Abzug | Regel | Objekt. Need = how many linked items must be excluded.
+function Test-WtScoreExcluded([string]$Id, $Entries, [int]$Need = 1) {
+    $rl = Get-ScoreRuleLinks
+    foreach ($e in @($Entries)) { if ($e -and $e.Art -eq 'Abzug' -and $e.Regel -eq $Id) { return 'Abzug' } }
+    foreach ($e in @($Entries)) { if ($e -and $e.Art -eq 'Regel' -and ($e.Regel -eq $Id -or ($rl.ContainsKey($Id) -and $e.Regel -eq $rl[$Id]))) { return 'Regel' } }
+    $n = 0
+    foreach ($kv in (Get-ScoreItemLinks).GetEnumerator()) {
+        if ($kv.Value -ne $Id) { continue }
+        $p = ([string]$kv.Key) -split '\|', 2
+        if (Test-WtExcluded $p[0] $p[1] $Entries) {
+            if (@($Entries | Where-Object { $_ -and $_.Art -eq 'Regel' -and $_.Regel -eq $p[0] }).Count) { return 'Regel' }
+            $n++
+        }
+    }
+    if ($Need -gt 0 -and $n -ge $Need) { return 'Objekt' }
+    return ''
+}
+function Get-ExclusionTypeText([string]$Art) { switch ($Art) { 'Objekt' { return (T 'single point') } 'Regel' { return (T 'whole check') } 'Abzug' { return (T 'score deduction') } }; return $Art }
+# Friendly title of a rule or score deduction (for lists), else $null
+function Get-WtRuleTitle([string]$Id) {
+    $fr = $null; if ($Script:Friendly) { $fr = $Script:Friendly[$Id] }
+    if ($fr) { return [string]$fr[0] }
+    $r = $Script:Rules | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
+    if ($r) { return [string]$r.Titel }
+    $si = Get-ScoreInfo; if ($si.Contains($Id)) { return [string]$si[$Id] }
+    return $null
+}
 
 function Get-SelectedRules([switch]$ForApply) {
     $r = $Script:Rules
@@ -3037,7 +3208,7 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
         Stabilitaet = [ordered]@{ Warnsignale = $warn }
         Befunde = @()
     }
-    if ($Findings) { $snap.Befunde = @($Findings | ForEach-Object { [ordered]@{ Regel = $_.Regel; Kategorie = $_.Kategorie; Titel = $_.Titel; Risiko = $_.Risiko; Anzahl = $_.Anzahl; Bytes = $_.Bytes; Objekte = @($_.Objekte | Select-Object -First 50); Stufen = @($_.Stufen | Select-Object -First 50); Bereiche = @($_.Bereiche | Select-Object -First 50); Wertungen = @($_.Wertungen | Select-Object -First 50) } }) }
+    if ($Findings) { $snap.Befunde = @($Findings | ForEach-Object { $bf = [ordered]@{ Regel = $_.Regel; Kategorie = $_.Kategorie; Titel = $_.Titel; Risiko = $_.Risiko; Anzahl = $_.Anzahl; Bytes = $_.Bytes; Objekte = @($_.Objekte | Select-Object -First 50); Stufen = @($_.Stufen | Select-Object -First 50); Bereiche = @($_.Bereiche | Select-Object -First 50); Wertungen = @($_.Wertungen | Select-Object -First 50); Schluessel = @($_.Schluessel | Select-Object -First 50) }; if ([int]$_.Ausgeschlossen -gt 0) { $bf.Ausgeschlossen = [int]$_.Ausgeschlossen }; $bf }) }
     $snap.Score = Get-HealthScore $snap
     $f = Join-Path $Script:SnapDir ("{0}_{1}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $Label)
     $snap | ConvertTo-Json -Depth 7 | Out-File $f -Encoding utf8
@@ -3045,46 +3216,85 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
     return [pscustomobject]$snap
 }
 
-function Get-HealthScore($s) {
-    $abz = New-Object System.Collections.Generic.List[object]
-    function Abzug($p, $t) { $abz.Add([pscustomobject]@{ Punkte = $p; Grund = $t }) }
+# Deductions of the health score as a list of { Id; Punkte; Grund; Quelle }. Quelle = '' (counts) | Abzug | Regel | Objekt (excluded).
+# Single excluded items (startup entries, warning kinds, hardware points) are taken out of the counting before the thresholds.
+function Get-HealthScoreCore($s, $ex) {
+    $items = New-Object System.Collections.Generic.List[object]
+    function Abzug($id, $p, $t, $need = 1) { $items.Add([pscustomobject]@{ Id = $id; Punkte = $p; Grund = $t; Quelle = (Test-WtScoreExcluded $id $ex $need) }) }
     $sys = $s.Laufwerke | Where-Object { $_.LW -eq $env:SystemDrive.Substring(0, 1) } | Select-Object -First 1
     if ($sys) {
         # Percent alone is not enough: on 2 TB, 15 % free (300 GB) is not critical
         $fg = [double]$sys.FreiGB; $fp = [double]$sys.FreiProzent
-        if ($fg -lt 10 -or ($fp -lt 10 -and $fg -lt 20)) { Abzug 20 ((T 'Only {0:N0} GB free on the Windows drive') -f $fg) }
-        elseif ($fp -lt 15 -and $fg -lt 50) { Abzug 8 ((T 'Only {0:N0} GB free on the Windows drive') -f $fg) }
+        if ($fg -lt 10 -or ($fp -lt 10 -and $fg -lt 20)) { Abzug 'SCORE-FREESPACE' 20 ((T 'Only {0:N0} GB free on the Windows drive') -f $fg) }
+        elseif ($fp -lt 15 -and $fg -lt 50) { Abzug 'SCORE-FREESPACE' 8 ((T 'Only {0:N0} GB free on the Windows drive') -f $fg) }
     }
-    $b = $s.Boot.Mittel5; if ($b) { $t = (T 'Windows takes {0:N0} seconds to start on average') -f ($b / 1000); if ($b -gt 90000) { Abzug 15 $t } elseif ($b -gt 60000) { Abzug 10 $t } elseif ($b -gt 40000) { Abzug 5 $t } }
-    $a = $s.Autostart.Aktiv; if ($a -gt 15) { Abzug 10 (T '{0} programs start automatically' $a) } elseif ($a -gt 10) { Abzug 5 (T '{0} programs start automatically' $a) }
-    if ($s.Autostart.Verwaist -gt 0) { Abzug ([math]::Min(5, $s.Autostart.Verwaist)) (T '{0} broken startup entries' ($s.Autostart.Verwaist)) }
-    $e = $s.Ereignisse.FehlerSystem7T + $s.Ereignisse.FehlerAnwendung7T; if ($e -gt 200) { Abzug 5 (T 'Many error messages from Windows in the last 7 days ({0})' $e) } elseif ($e -gt 50) { Abzug 3 (T 'Many error messages from Windows in the last 7 days ({0})' $e) }
-    if ($s.Treiber.Duplikate -gt 10) { Abzug 3 (T '{0} old driver versions' ($s.Treiber.Duplikate)) }
-    if ($s.Treiber.Geistergeraete -gt 50) { Abzug 2 (T '{0} old device entries' ($s.Treiber.Geistergeraete)) }
+    $b = $s.Boot.Mittel5; if ($b) { $t = (T 'Windows takes {0:N0} seconds to start on average') -f ($b / 1000); if ($b -gt 90000) { Abzug 'SCORE-BOOT' 15 $t } elseif ($b -gt 60000) { Abzug 'SCORE-BOOT' 10 $t } elseif ($b -gt 40000) { Abzug 'SCORE-BOOT' 5 $t } }
+    # Startup programs the user wants (excluded STA-HEAVY items) do not count towards the limits; broken entries excluded one by one likewise
+    $a = [int]$s.Autostart.Aktiv; $vw = [int]$s.Autostart.Verwaist
+    foreach ($x in @($s.Autostart.Liste)) {
+        if (-not $x) { continue }
+        if ($x.Aktiv -and $x.Zustand -ne 'fehlt' -and (Test-WtExcluded 'STA-HEAVY' (Get-StartupKey $x) $ex -ItemOnly)) { $a-- }
+        if ($x.Zustand -eq 'fehlt') { if (Test-WtExcluded 'STA-ORPHAN' (Get-StartupKey $x) $ex -ItemOnly) { $vw--; if ($x.Aktiv) { $a-- } } }
+    }
+    if ($a -lt 0) { $a = 0 }; if ($vw -lt 0) { $vw = 0 }
+    if ($a -gt 15) { Abzug 'SCORE-AUTOSTART' 10 (T '{0} programs start automatically' $a) } elseif ($a -gt 10) { Abzug 'SCORE-AUTOSTART' 5 (T '{0} programs start automatically' $a) }
+    if ($vw -gt 0) { Abzug 'STA-ORPHAN' ([math]::Min(5, $vw)) (T '{0} broken startup entries' $vw) }
+    $e = $s.Ereignisse.FehlerSystem7T + $s.Ereignisse.FehlerAnwendung7T; if ($e -gt 200) { Abzug 'SCORE-ERRORS' 5 (T 'Many error messages from Windows in the last 7 days ({0})' $e) } elseif ($e -gt 50) { Abzug 'SCORE-ERRORS' 3 (T 'Many error messages from Windows in the last 7 days ({0})' $e) }
+    if ($s.Treiber.Duplikate -gt 10) { Abzug 'CLN-DRIVERSTORE' 3 (T '{0} old driver versions' ($s.Treiber.Duplikate)) }
+    if ($s.Treiber.Geistergeraete -gt 50) { Abzug 'SYS-GHOST' 2 (T '{0} old device entries' ($s.Treiber.Geistergeraete)) }
     # Secure Boot: only a small deduction - WinTidy itself advises non-experts not to switch it on themselves
-    if ($s.Sicherheit.SecureBoot -eq $false) { Abzug 4 (T 'Secure Boot (boot protection) is off') }
-    if ($s.Sicherheit.UacAus -eq $true) { Abzug 8 (T 'User Account Control is turned off') }
-    if ($s.Sicherheit.FirewallProfileAus -gt 0) { Abzug 10 (T 'The firewall is turned off') }
-    if ($s.Sicherheit.DefenderEchtzeit -eq $false -and -not $s.Sicherheit.AndererVirenschutz) { Abzug 15 (T 'No active antivirus') }
-    if ($s.Sicherheit.AusfuehrungsrichtlinieCU -in 'Unrestricted', 'Bypass') { Abzug 3 (T 'Protection setting for scripts is turned off') }
-    if ($s.Sicherheit.WindowsSupportEnde) { try { if ([datetime]::ParseExact([string]$s.Sicherheit.WindowsSupportEnde, 'yyyy-MM-dd', $null) -lt [datetime]$s.Zeit) { Abzug 20 (T 'This Windows version no longer receives security updates') } } catch { } }
-    if ($s.Sicherheit.WindowsUpdateAus) { Abzug 15 (T 'Windows Update is turned off') }
-    elseif ($s.Sicherheit.TageSeitUpdate -gt 40) { Abzug 10 (T 'No Windows updates installed for {0} days' ($s.Sicherheit.TageSeitUpdate)) }
-    if ($s.Speicher.PapierkorbBytes -gt 5GB) { Abzug 2 (T 'Recycle bin larger than 5 GB') }
+    if ($s.Sicherheit.SecureBoot -eq $false) { Abzug 'SCORE-SECUREBOOT' 4 (T 'Secure Boot (boot protection) is off') }
+    if ($s.Sicherheit.UacAus -eq $true) { Abzug 'SCORE-UAC' 8 (T 'User Account Control is turned off') }
+    if ($s.Sicherheit.FirewallProfileAus -gt 0) { Abzug 'SCORE-FIREWALL' 10 (T 'The firewall is turned off') ([int]$s.Sicherheit.FirewallProfileAus) }
+    if ($s.Sicherheit.DefenderEchtzeit -eq $false -and -not $s.Sicherheit.AndererVirenschutz) { Abzug 'SCORE-ANTIVIRUS' 15 (T 'No active antivirus') }
+    if ($s.Sicherheit.AusfuehrungsrichtlinieCU -in 'Unrestricted', 'Bypass') { Abzug 'SEC-EXECPOLICY' 3 (T 'Protection setting for scripts is turned off') }
+    if ($s.Sicherheit.WindowsSupportEnde) { try { if ([datetime]::ParseExact([string]$s.Sicherheit.WindowsSupportEnde, 'yyyy-MM-dd', $null) -lt [datetime]$s.Zeit) { Abzug 'SCORE-WINSUPPORT' 20 (T 'This Windows version no longer receives security updates') } } catch { } }
+    if ($s.Sicherheit.WindowsUpdateAus) { Abzug 'SCORE-WINUPDATE' 15 (T 'Windows Update is turned off') }
+    elseif ($s.Sicherheit.TageSeitUpdate -gt 40) { Abzug 'SCORE-WINUPDATE' 10 (T 'No Windows updates installed for {0} days' ($s.Sicherheit.TageSeitUpdate)) }
+    if ($s.Speicher.PapierkorbBytes -gt 5GB) { Abzug 'CLN-RECYCLE' 2 (T 'Recycle bin larger than 5 GB') }
     # Warning signs: new snapshots measure them themselves (comparable before/after), old ones only via the findings
     $nWarn = 0
-    if ($null -ne $s.Stabilitaet) { $nWarn = @($s.Stabilitaet.Warnsignale | Where-Object { $_ }).Count }
+    if ($null -ne $s.Stabilitaet) { $nWarn = @($s.Stabilitaet.Warnsignale | Where-Object { $_ -and -not (Test-WtExcluded 'EVT-HEALTH' ([string]$_.Text) $ex -ItemOnly) }).Count }
     else { foreach ($bf in @($s.Befunde)) { if ($bf.Regel -eq 'EVT-HEALTH') { $nWarn += [int]$bf.Anzahl } } }
-    if ($nWarn -gt 0) { Abzug ([math]::Min(10, 2 * $nWarn)) (T 'Warning messages from Windows (e.g. crashes) in the last 30 days') }
+    if ($nWarn -gt 0) { Abzug 'EVT-HEALTH' ([math]::Min(10, 2 * $nWarn)) (T 'Warning messages from Windows (e.g. crashes) in the last 30 days') }
     if ($s.Hardware) {
         # Only permanent states (drive, battery, memory errors ...), no snapshots such as the current temperature
-        $hp = @($s.Hardware.Punkte | Where-Object { $_ -and $_.Wertung -ne 'moment' })
+        $hp = @($s.Hardware.Punkte | Where-Object { $_ -and $_.Wertung -ne 'moment' -and -not (Test-WtExcluded 'HW-COOLING' ([string]$_.Text) $ex -ItemOnly) })
         $nk = @($hp | Where-Object { $_.Stufe -eq 'krit' }).Count; $nw = @($hp | Where-Object { $_.Stufe -eq 'warn' }).Count
-        if ($nk) { Abzug ([math]::Min(10, 5 * $nk)) (T 'Hardware: important warnings (drives, memory, cooling, battery)') }
-        if ($nw) { Abzug ([math]::Min(3, $nw)) (T 'Hardware: irregularities (drives, fans, graphics card)') }
+        if ($nk) { Abzug 'SCORE-HWCRIT' ([math]::Min(10, 5 * $nk)) (T 'Hardware: important warnings (drives, memory, cooling, battery)') }
+        if ($nw) { Abzug 'SCORE-HWWARN' ([math]::Min(3, $nw)) (T 'Hardware: irregularities (drives, fans, graphics card)') }
     }
-    $sum = ($abz | Measure-Object Punkte -Sum).Sum; if (-not $sum) { $sum = 0 }
-    [ordered]@{ Wert = [int][math]::Max(0, 100 - $sum); Abzuege = $abz.ToArray() }
+    return $items.ToArray()
+}
+# Score of a snapshot with the exclusions: Wert (what counts), Abzuege (counted), Ausgeschlossen (accepted, not counted;
+# Quelle Abzug|Regel|Objekt tells how), WertOhneAusnahmen (what the score would be without any exclusion)
+function Get-HealthScore($s, $Exclusions = $null) {
+    $ex = if ($null -eq $Exclusions) { @(Read-WtExclusions) } else { @($Exclusions) }
+    $mit = @(Get-HealthScoreCore $s $ex)
+    $zaehlt = @($mit | Where-Object { -not $_.Quelle })
+    $wert = [int][math]::Max(0, 100 - [int](($zaehlt | Measure-Object Punkte -Sum).Sum))
+    $aus = New-Object System.Collections.Generic.List[object]
+    $ohne = $wert
+    if ($ex.Count) {
+        $basis = @(Get-HealthScoreCore $s @())
+        $ohne = [int][math]::Max(0, 100 - [int](($basis | Measure-Object Punkte -Sum).Sum))
+        foreach ($bz in $basis) {
+            $m = $mit | Where-Object { $_.Id -eq $bz.Id } | Select-Object -First 1
+            if ($m -and $m.Quelle) { $aus.Add([pscustomobject]@{ Id = $bz.Id; Punkte = $bz.Punkte; Grund = $bz.Grund; Quelle = $m.Quelle }) }
+            else {
+                $rest = 0; if ($m) { $rest = [int]$m.Punkte }
+                if ($rest -lt [int]$bz.Punkte) { $aus.Add([pscustomobject]@{ Id = $bz.Id; Punkte = ([int]$bz.Punkte - $rest); Grund = $bz.Grund; Quelle = 'Objekt' }) }
+            }
+        }
+    }
+    [ordered]@{ Wert = $wert; Abzuege = @($zaehlt | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Punkte = $_.Punkte; Grund = $_.Grund } }); Ausgeschlossen = $aus.ToArray(); WertOhneAusnahmen = $ohne }
+}
+# Score of a stored snapshot, measured with today's rules and exclusions (an accepted state must not look like an
+# improvement in the trend). The stored Score of the snapshot file stays as written.
+function Get-SnapshotScore($s, $Exclusions = $null) {
+    try { return (Get-HealthScore $s $Exclusions) } catch { }
+    if ($s.Score) { return $s.Score }
+    return [ordered]@{ Wert = 0; Abzuege = @(); Ausgeschlossen = @(); WertOhneAusnahmen = 0 }
 }
 
 # =============================================================================
@@ -3098,18 +3308,22 @@ function Invoke-Rules([bool]$Apply) {
     $findings = New-Object System.Collections.Generic.List[object]
     $total = 0; $done = 0; $failed = 0; $skipped = 0; $bytes = 0
     $i = 0
+    $Script:Exclusions = $null; $exAll = @(Read-WtExclusions)
     foreach ($r in $rules) {
         $i++
         Sub ((T '[{0}/{1}] {2}  {3}  (risk: {4})') -f $i, $rules.Count, $r.Id, $r.Titel, (Get-RiskText $r.Risiko))
         if ($r.Admin -and -not $Script:IsAdmin) { W (T '    skipped: needs admin rights') 'DarkYellow'; continue }
         $items = @()
         try { $items = @(& $r.Detect | Where-Object { $_ }) } catch { W (T '    Error during the check: {0}' ($_.Exception.Message)) 'Red'; continue }
-        if (-not $items.Count) { W (T '    ok - nothing found') 'Green'; continue }
+        # Excluded points are neither shown nor confirmed nor fixed (also not with -Yes)
+        $nEx = 0; if ($items.Count -and $exAll.Count) { $rid = $r.Id; $keep = @($items | Where-Object { -not (Test-WtExcluded $rid (Get-WtItemKey $_) $exAll) }); $nEx = $items.Count - $keep.Count; $items = $keep }
+        if (-not $items.Count) { if ($nEx) { W ((T '    {0} excluded point(s) not shown (see -Mode Exclusions)') -f $nEx) 'DarkGray' } else { W (T '    ok - nothing found') 'Green' }; continue }
         $sum = ($items | Measure-Object Bytes -Sum).Sum
-        $findings.Add([pscustomobject]@{ Regel = $r.Id; Kategorie = $r.Kategorie; Titel = $r.Titel; Risiko = $r.Risiko; Anzahl = $items.Count; Bytes = [int64]$sum; Objekte = @($items | ForEach-Object { $_.Label }); Stufen = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary] -and $_.Data.Stufe) { [string]$_.Data.Stufe } else { '' } }); Bereiche = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary]) { [string]$_.Data.Bereich } else { '' } }); Wertungen = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary]) { [string]$_.Data.Wertung } else { '' } }) })
+        $findings.Add([pscustomobject]@{ Regel = $r.Id; Kategorie = $r.Kategorie; Titel = $r.Titel; Risiko = $r.Risiko; Anzahl = $items.Count; Ausgeschlossen = $nEx; Schluessel = @($items | ForEach-Object { Get-WtItemKey $_ }); Bytes = [int64]$sum; Objekte = @($items | ForEach-Object { $_.Label }); Stufen = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary] -and $_.Data.Stufe) { [string]$_.Data.Stufe } else { '' } }); Bereiche = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary]) { [string]$_.Data.Bereich } else { '' } }); Wertungen = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary]) { [string]$_.Data.Wertung } else { '' } }) })
         W ((T '    {0} finding(s){1}') -f $items.Count, $(if ($sum) { (T ', approx. ') + (Fmt-Bytes $sum) } else { '' })) 'Yellow'
         W (T '    Why: {0}' ($r.Warum)) 'DarkGray'
         foreach ($it in $items) { W ("      - {0}{1}" -f $it.Label, $(if ($it.Bytes) { "  [$(Fmt-Bytes $it.Bytes)]" } else { '' })) 'Gray' }
+        if ($nEx) { W ((T '    {0} excluded point(s) not shown (see -Mode Exclusions)') -f $nEx) 'DarkGray' }
         if (-not $Apply -or -not $r.Fix) { continue }
         # Unattended only what the rule itself allows (AutoOk), e.g. Windows.old only after the waiting period.
         # Medium needs an explicit AutoOk = $true (fail closed), otherwise -IncludeMedium would apply everything.
@@ -3189,7 +3403,7 @@ function Get-CompareMetrics($a, $b) {
     # Storage measured by the snapshot itself (MB; old snapshots without the field show no delta)
     $mb = { param($s, $n) if ($s -and $s.Speicher -and $null -ne $s.Speicher.$n) { [math]::Round([double]$s.Speicher.$n / 1MB, 0) } else { $null } }
     @(
-        (M 'Score' (T 'Health score') $a.Score.Wert $b.Score.Wert 'Punkte' 'higher'),
+        (M 'Score' (T 'Health score') (Get-SnapshotScore $a).Wert (Get-SnapshotScore $b).Wert 'Punkte' 'higher'),
         (M 'BootGesamt' (T 'Start Ø last 5 boots') $bootA $bootB 's' 'lower' 2),
         (M 'BootNach' (T 'Waiting time after the desktop appears') (Get-PerfValue $a 'BootNach') (Get-PerfValue $b 'BootNach') 's' 'lower' 1.5),
         (M 'Frei' (T 'Free on {0}' $env:SystemDrive) $sysA.FreiGB $sysB.FreiGB 'GB' 'higher'),
@@ -3364,9 +3578,10 @@ function Show-PerfEffect($e) {
 # Reads all snapshots once: scores, key figures per point in time, all boot events and the effect since the first optimization
 function Read-SnapshotHistory {
     $scores = @(); $punkte = @(); $boots = @(); $seen = @{}; $first = $null; $last = $null
+    $exAll = @(Read-WtExclusions)
     foreach ($f in (Get-Snapshots)) {
         $s = $null; try { $s = Read-Snapshot $f } catch { continue }
-        $scores += [pscustomobject]@{ Zeit = $s.Zeit; Label = $s.Label; Wert = $s.Score.Wert }
+        $scores += [pscustomobject]@{ Zeit = $s.Zeit; Label = $s.Label; Wert = (Get-SnapshotScore $s $exAll).Wert }
         $punkte += Get-PerfPoint $s
         foreach ($b in @($s.Boot.Verlauf)) { if ($b -and -not $seen.ContainsKey($b.Zeit)) { $seen[$b.Zeit] = 1; $boots += $b } }
         if (-not $first -and $s.Label -eq 'vorher') { $first = $s }
@@ -3491,6 +3706,9 @@ function New-Report {
     $df = T 'yyyy-MM-dd HH:mm'
     $all = @($snaps | ForEach-Object { Read-Snapshot $_ })
     $last = $all[-1]
+    # Scores are measured with today's rules and exclusions (an accepted state must not look like an improvement)
+    $exAll = @(Read-WtExclusions)
+    $lastScore = Get-SnapshotScore $last $exAll
     $before = ($all | Where-Object { $_.Label -eq 'vorher' } | Select-Object -Last 1); if (-not $before) { $before = $all[0] }
     $actions = @()
     foreach ($f in (Get-ChildItem $Script:RunsDir -Recurse -Filter 'actions.jsonl' -ErrorAction SilentlyContinue)) { $actions += @(Get-Content $f.FullName -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json }) }
@@ -3502,7 +3720,7 @@ function New-Report {
     $okActs = @($actions | Where-Object Status -eq 'OK')
     $freed = ($okActs | Measure-Object Bytes -Sum).Sum
     $perRule = @($okActs | Group-Object Regel | ForEach-Object { [pscustomobject]@{ Regel = $_.Name; Anzahl = $_.Count; Bytes = ($_.Group | Measure-Object Bytes -Sum).Sum } } | Sort-Object Bytes -Descending)
-    $score = $last.Score.Wert
+    $score = $lastScore.Wert
     $scoreClass = if ($score -ge 85) { 'good' } elseif ($score -ge 65) { 'mid' } else { 'bad' }
     $sysLW = $env:SystemDrive.Substring(0, 1); $sysV = $last.Laufwerke | Where-Object { $_.LW -eq $sysLW } | Select-Object -First 1
 
@@ -3539,7 +3757,13 @@ details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding
 
     # Score + KPIs
     [void]$sb.Append("<h2>$(HT 'State')</h2><div class='grid4'><div class='card score' style='grid-column:span 2'><div class='ring $scoreClass'>$score</div><div><div class='kl'>$(HT 'Health score (0-100)')</div>")
-    if (@($last.Score.Abzuege).Count) { [void]$sb.Append('<ul class="items">'); foreach ($z in $last.Score.Abzuege) { [void]$sb.Append("<li>&minus;$([int]$z.Punkte) &nbsp;$(HtmlEnc $z.Grund)</li>") }; [void]$sb.Append('</ul>') } else { [void]$sb.Append("<p>$(HT 'No deductions.')</p>") }
+    if (@($lastScore.Abzuege).Count) { [void]$sb.Append('<ul class="items">'); foreach ($z in $lastScore.Abzuege) { [void]$sb.Append("<li>&minus;$([int]$z.Punkte) &nbsp;$(HtmlEnc $z.Grund)</li>") }; [void]$sb.Append('</ul>') } else { [void]$sb.Append("<p>$(HT 'No deductions.')</p>") }
+    if (@($lastScore.Ausgeschlossen).Count) {
+        [void]$sb.Append("<p class='muted' style='margin:10px 0 2px'>$(HT 'Accepted (not counted)')</p><ul class='items'>")
+        foreach ($z in @($lastScore.Ausgeschlossen)) { [void]$sb.Append("<li class='muted'>&minus;$([int]$z.Punkte) &nbsp;$(HtmlEnc $z.Grund)</li>") }
+        [void]$sb.Append('</ul>')
+        if ([int]$lastScore.WertOhneAusnahmen -ne [int]$lastScore.Wert) { [void]$sb.Append("<p class='muted'>$(HT 'Without exclusions the score would be {0}' ([int]$lastScore.WertOhneAusnahmen))</p>") }
+    }
     [void]$sb.Append('</div></div>')
     $bootTxt = if ($last.Boot.Mittel5) { '{0:N1} s' -f ($last.Boot.Mittel5 / 1000) } else { 'n/a' }
     $kpis = @(
@@ -3585,7 +3809,7 @@ details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding
     }
     [void]$sb.Append('</div>')
 
-    $scorePts = @($all | Where-Object { $_.Score } | ForEach-Object { [pscustomobject]@{ Zeit = $_.Zeit; Label = $_.Label; Wert = $_.Score.Wert } })
+    $scorePts = @($all | ForEach-Object { [pscustomobject]@{ Zeit = $_.Zeit; Label = $_.Label; Wert = (Get-SnapshotScore $_ $exAll).Wert } })
     [void]$sb.Append("<h2>$(HT 'Health score over time')</h2><p class='muted'>$(HT 'One point per check. Green dashed lines mark optimizations. Move the mouse over a point for details.')</p>"); [void]$sb.Append((New-ScoreSvg $scorePts $runs))
 
     [void]$sb.Append("<h2>$(HT 'Boot times')</h2>"); [void]$sb.Append((New-BootSvg $boots $runs))
@@ -3605,6 +3829,17 @@ details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding
         }
         [void]$sb.Append('</table>')
     } else { [void]$sb.Append("<p class='muted'>$(HT 'No findings saved (run a scan).')</p>") }
+
+    if ($exAll.Count) {
+        [void]$sb.Append("<h2>$(HT 'Exclusions')</h2><p class='muted'>$(HT 'Excluded points are not shown, not changed and not counted in the health score.')</p><table><tr><th>$(HT 'Type')</th><th>$(HT 'Check')</th><th>$(HT 'Excluded point')</th><th>$(HT 'Since')</th></tr>")
+        foreach ($xe in $exAll) {
+            $xt = Get-WtRuleTitle ([string]$xe.Regel); if (-not $xt) { $xt = [string]$xe.Titel }
+            $xl = switch ($xe.Art) { 'Objekt' { [string]$xe.Anzeige } 'Regel' { T 'all points of this check' } default { [string]$xe.Titel } }
+            $xd = ''; try { $xd = ([datetime]$xe.Zeit).ToString($df) } catch { }
+            [void]$sb.Append("<tr><td>$(HtmlEnc (Get-ExclusionTypeText $xe.Art))</td><td>$(HtmlEnc $xt) <span class='mono muted'>$(HtmlEnc $xe.Regel)</span></td><td>$(HtmlEnc $xl)</td><td class='n'>$(HtmlEnc $xd)</td></tr>")
+        }
+        [void]$sb.Append('</table>')
+    }
 
     [void]$sb.Append("<h2>$(HT 'Startup delays according to Windows (60 days)')</h2>")
     $off = @($last.Boot.Bremser)
@@ -3642,7 +3877,7 @@ details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding
     if ($actions.Count) { [void]$sb.Append("<table><tr><th>$(HT 'Time')</th><th>$(HT 'Rule')</th><th>$(HT 'Item')</th><th>Status</th><th>$(HT 'Size')</th></tr>"); foreach ($a in ($actions | Sort-Object Zeit -Descending | Select-Object -First 400)) { [void]$sb.Append("<tr><td class='n'>$(([datetime]$a.Zeit).ToString($dfs))</td><td class='mono'>$(HtmlEnc $a.Regel)</td><td>$(HtmlEnc $a.Objekt)$(if ($a.Meldung) { "<div class='muted'>$(HtmlEnc $a.Meldung)</div>" })</td><td class='$($a.Status)'>$(HtmlEnc (Get-StatusText $a.Status))</td><td class='n'>$(if ($a.Bytes) { Fmt-Bytes $a.Bytes })</td></tr>") }; [void]$sb.Append('</table>') } else { [void]$sb.Append("<p class='muted'>$(HT 'No changes made yet.')</p>") }
 
     [void]$sb.Append("<h2>$(HT 'Snapshot history')</h2><table><tr><th>$(HT 'Time')</th><th>$(HT 'Type')</th><th>Score</th><th>$(HT 'Boot Ø')</th><th>$(HT 'Free system')</th><th>$(HT 'Startup programs')</th><th>$(HT 'Errors 7 d')</th></tr>")
-    foreach ($s in ($all | Sort-Object Zeit -Descending)) { $sv = $s.Laufwerke | Where-Object { $_.LW -eq $sysLW } | Select-Object -First 1; [void]$sb.Append("<tr><td class='n'>$(([datetime]$s.Zeit).ToString($df))</td><td>$(HtmlEnc (Get-SnapshotLabelText $s.Label))</td><td class='n'>$([int]$s.Score.Wert)</td><td class='n'>$(if ($s.Boot.Mittel5) { '{0:N1} s' -f ($s.Boot.Mittel5 / 1000) })</td><td class='n'>$(if ($sv) { "$($sv.FreiGB) GB" })</td><td class='n'>$($s.Autostart.Aktiv)</td><td class='n'>$($s.Ereignisse.FehlerSystem7T + $s.Ereignisse.FehlerAnwendung7T)</td></tr>") }
+    foreach ($s in ($all | Sort-Object Zeit -Descending)) { $sv = $s.Laufwerke | Where-Object { $_.LW -eq $sysLW } | Select-Object -First 1; [void]$sb.Append("<tr><td class='n'>$(([datetime]$s.Zeit).ToString($df))</td><td>$(HtmlEnc (Get-SnapshotLabelText $s.Label))</td><td class='n'>$([int](Get-SnapshotScore $s $exAll).Wert)</td><td class='n'>$(if ($s.Boot.Mittel5) { '{0:N1} s' -f ($s.Boot.Mittel5 / 1000) })</td><td class='n'>$(if ($sv) { "$($sv.FreiGB) GB" })</td><td class='n'>$($s.Autostart.Aktiv)</td><td class='n'>$($s.Ereignisse.FehlerSystem7T + $s.Ereignisse.FehlerAnwendung7T)</td></tr>") }
     [void]$sb.Append('</table>')
     [void]$sb.Append("<p class='muted' style='margin-top:30px'>$(HT 'Data:') <span class='mono'>$(HtmlEnc $Script:DataDir)</span> &middot; $(HT 'created {0}' (Get-Date).ToString($df))</p></div></body></html>")
     $out = Join-Path $Script:DataDir 'WinTidy-Bericht.html'
@@ -3870,6 +4105,11 @@ $Script:GuiPreselectMedium = @()
 # Readable area names for the progress of the check (no action verbs like "delete")
 $Script:AreaNames = @{ 'Speicher' = (T 'storage space'); 'Autostart' = (T 'programs at startup'); 'Aufgaben' = (T 'scheduled tasks'); 'Dienste' = (T 'background services'); 'Programme' = (T 'installed software'); 'System' = (T 'Windows system'); 'Sicherheit' = (T 'security settings'); 'Hardware' = (T 'hardware and cooling'); 'Stabilitaet' = (T 'Windows warning messages') }
 $Script:LastFindings = @()
+# Points hidden by exclusions in the last check (per page) and which pages were checked since the start (for the list of exclusions)
+$Script:LastExcludedHits = @()
+$Script:ExclChecked = @{}
+$Script:Exclusions = $null
+$Script:ExclusionsDefekt = $false
 
 $Script:LastContext = $null
 
@@ -3883,6 +4123,8 @@ function Test-RuleAllowed($r, $ctx) {
 function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $null, [string]$Page = '') {
     $Script:Cache = @{}
     $Script:Preview = $true
+    $Script:Exclusions = $null; $exAll = @(Read-WtExclusions)
+    $hits = New-Object System.Collections.Generic.List[object]
     $ctx = $null; try { $ctx = Get-WtContext } catch { }
     $Script:LastContext = $ctx
     $rules = @($Script:Rules | Where-Object { $(if ($Page) { $_.Seite -eq $Page } else { ($_.Standard -or $Expert) -and -not $_.Seite }) -and (Test-RuleAllowed $_ $ctx) })
@@ -3901,10 +4143,20 @@ function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $nul
         if ($r.Admin -and -not $Script:IsAdmin) { continue }
         $items = @()
         try { $items = @(& $r.Detect | Where-Object { $_ }) } catch { W (T 'Check {0} failed: {1}' ($r.Id) ($_.Exception.Message)) 'Red'; continue }
-        W ((T '{0}: {1} finding(s)') -f $r.Id, $items.Count) 'Gray'
-        if (-not $items.Count) { continue }
+        # Excluded points are neither offered nor counted (remembered as hits for the list of exclusions)
+        $kept = New-Object System.Collections.Generic.List[object]
+        foreach ($it in $items) {
+            $key = Get-WtItemKey $it
+            if (Test-WtExcluded $r.Id $key $exAll) { $hits.Add([pscustomobject]@{ Regel = $r.Id; Schluessel = $key; Label = [string]$it.Label; Seite = [string]$r.Seite }) }
+            else { $kept.Add([pscustomobject]@{ It = $it; Key = $key }) }
+        }
+        $nEx = $items.Count - $kept.Count
+        W ((T '{0}: {1} finding(s)') -f $r.Id, $kept.Count) 'Gray'
+        if (-not $kept.Count) { continue }
+        $keptItems = @($kept | ForEach-Object { $_.It })
         $k = 0
-        $its = foreach ($it in $items) {
+        $its = foreach ($kp in $kept) {
+            $it = $kp.It
             $pre = $false
             if ($r.Risiko -eq 'Niedrig') { $pre = ($r.Vorwahl -ne $false) }
             elseif ($r.Risiko -eq 'Mittel') {
@@ -3914,12 +4166,15 @@ function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $nul
             if ($r.Dauer -and $ctx -and $ctx.Akku) { $pre = $false }
             $stufe = ''
             if ($it.Data -and ($it.Data -is [System.Collections.IDictionary] -or $it.Data -is [pscustomobject]) -and $it.Data.Stufe) { $stufe = [string]$it.Data.Stufe }
-            [pscustomobject]@{ Index = $k; Label = $it.Label; Bytes = [int64]$it.Bytes; Vorauswahl = $pre; Selected = $pre; Stufe = $stufe; Technik = $it.Technik; Raw = $it }
+            [pscustomobject]@{ Index = $k; Label = $it.Label; Bytes = [int64]$it.Bytes; Vorauswahl = $pre; Selected = $pre; Stufe = $stufe; Technik = $it.Technik; Schluessel = $kp.Key; Raw = $it }
             $k++
         }
-        $res.Add([pscustomobject]@{ Id = $r.Id; Kategorie = $r.Kategorie; Titel = $titel; Text = $text; Warum = $r.Warum; Risiko = $r.Risiko; Fixbar = [bool]$r.Fix; Bytes = [int64](($items | Measure-Object Bytes -Sum).Sum); Items = @($its)
+        $res.Add([pscustomobject]@{ Id = $r.Id; Kategorie = $r.Kategorie; Titel = $titel; Text = $text; Warum = $r.Warum; Risiko = $r.Risiko; Fixbar = [bool]$r.Fix; Bytes = [int64](($keptItems | Measure-Object Bytes -Sum).Sum); Items = @($its); Ausgeschlossen = $nEx
                 Dauer = $r.Dauer; Endgueltig = $r.Endgueltig; Einzeln = $r.Einzeln; Umkehrbar = $r.Umkehrbar; Seite = $r.Seite })
     }
+    $Script:LastExcludedHits = @(@($Script:LastExcludedHits | Where-Object { [string]$_.Seite -ne $Page }) + @($hits.ToArray()))
+    if (-not $Script:ExclChecked) { $Script:ExclChecked = @{} }
+    $Script:ExclChecked[$Page] = $true
     # The findings of the other page stay available for Invoke-FixSelection
     $keep = @($Script:LastFindings | Where-Object { $(if ($Page) { $_.Seite -ne $Page } else { $_.Seite }) })
     $Script:LastFindings = @($res.ToArray()) + $keep
@@ -3927,7 +4182,7 @@ function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $nul
 }
 
 function ConvertTo-Befunde($findings, [switch]$NurInfo) {
-    @($findings | Where-Object { -not $NurInfo -or -not $_.Fixbar } | ForEach-Object { [pscustomobject]@{ Regel = $_.Id; Kategorie = $_.Kategorie; Titel = $_.Titel; Risiko = $_.Risiko; Anzahl = $_.Items.Count; Bytes = $(if ($NurInfo) { 0 } else { $_.Bytes }); Objekte = @($_.Items | ForEach-Object { $_.Label }); Stufen = @($_.Items | ForEach-Object { [string]$_.Stufe }); Bereiche = @($_.Items | ForEach-Object { if ($_.Raw.Data -is [System.Collections.IDictionary]) { [string]$_.Raw.Data.Bereich } else { '' } }); Wertungen = @($_.Items | ForEach-Object { if ($_.Raw.Data -is [System.Collections.IDictionary]) { [string]$_.Raw.Data.Wertung } else { '' } }) } })
+    @($findings | Where-Object { -not $NurInfo -or -not $_.Fixbar } | ForEach-Object { [pscustomobject]@{ Regel = $_.Id; Kategorie = $_.Kategorie; Titel = $_.Titel; Risiko = $_.Risiko; Anzahl = $_.Items.Count; Bytes = $(if ($NurInfo) { 0 } else { $_.Bytes }); Objekte = @($_.Items | ForEach-Object { $_.Label }); Stufen = @($_.Items | ForEach-Object { [string]$_.Stufe }); Bereiche = @($_.Items | ForEach-Object { if ($_.Raw.Data -is [System.Collections.IDictionary]) { [string]$_.Raw.Data.Bereich } else { '' } }); Wertungen = @($_.Items | ForEach-Object { if ($_.Raw.Data -is [System.Collections.IDictionary]) { [string]$_.Raw.Data.Wertung } else { '' } }); Schluessel = @($_.Items | ForEach-Object { [string]$_.Schluessel }); Ausgeschlossen = [int]$_.Ausgeschlossen } })
 }
 
 function Invoke-GuiScan([bool]$Expert = $false, [bool]$DeepScan = $false, [scriptblock]$OnProgress = $null) {
@@ -3940,7 +4195,8 @@ function Invoke-GuiScan([bool]$Expert = $false, [bool]$DeepScan = $false, [scrip
         $snap = New-Snapshot 'scan' (ConvertTo-Befunde $f)
         $rep = New-Report
     } finally { Stop-RunLog }
-    [pscustomobject]@{ Findings = $f; Snapshot = $snap; Report = $rep; Context = $Script:LastContext }
+    $ausn = $null; try { $ausn = Get-GuiExclusions } catch { }
+    [pscustomobject]@{ Findings = $f; Snapshot = $snap; Report = $rep; Context = $Script:LastContext; Ausnahmen = $ausn }
 }
 
 # "Debloat" page of the app: only the rules of that page (registry values and the app list, takes a few seconds).
@@ -3952,7 +4208,8 @@ function Invoke-GuiDebloatScan([scriptblock]$OnProgress = $null) {
     if ($ctx -and $ctx.Server) { $f = @(); $hint = (T 'WinTidy makes no changes on Windows Server.') }
     elseif ($ctx -and $ctx.Verwaltet) { $hint = (T 'This PC is managed by an organization. Its settings are controlled by the organization, so WinTidy offers nothing on this page.') }
     elseif ($ctx -and $ctx.AnderesKonto) { $hint = (T 'WinTidy runs under a different account than the one that is signed in. Settings and apps would end up in the wrong profile, so nothing is offered. Start WinTidy while signed in with your own account.') }
-    [pscustomobject]@{ Findings = $f; Hinweis = $hint; Context = $ctx }
+    $ausn = $null; try { $ausn = Get-GuiExclusions } catch { }
+    [pscustomobject]@{ Findings = $f; Hinweis = $hint; Context = $ctx; Ausnahmen = $ausn }
 }
 
 function New-RestorePointSilent {
@@ -3967,6 +4224,7 @@ function Invoke-FixSelection([object[]]$Selection, [bool]$RestorePoint = $true, 
     function Prog($i, $n, $t, $id) { if ($OnProgress) { try { & $OnProgress $i $n $t $id } catch { } } }
     # Measure fresh: the power adapter may have been unplugged since the check
     $Script:Cache = @{}
+    $Script:Exclusions = $null   # read the exclusions again: a point excluded after the check must not be changed
     $ctx = $null; try { $ctx = Get-WtContext } catch { }
     if (-not $ctx -or $ctx.Server) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = (T 'WinTidy makes no changes on Windows Server.') } }
     if (-not $Script:IsAdmin) { return [pscustomobject]@{ Status = 'GESPERRT'; Meldung = (T 'WinTidy needs administrator rights for changes.') } }
@@ -4025,6 +4283,13 @@ function Invoke-FixSelection([object[]]$Selection, [bool]$RestorePoint = $true, 
             $abbruch = $true
             $details.Add([pscustomobject]@{ Titel = $j.Titel; Objekt = $lbl; Status = 'Abgebrochen'; Meldung = (T 'Not carried out (cancelled)') })
             Add-ActionRecord $j.Rule.Id $lbl 'Uebersprungen' 0 'Abgebrochen' | Out-Null
+            continue
+        }
+        # Defense in depth: excluded after the check (or in another window) -> not touched
+        $jk = [string]$j.Item.Schluessel; if (-not $jk) { $jk = Get-WtItemKey $j.Item.Raw }
+        if (Test-WtExcluded $j.Rule.Id $jk) {
+            $details.Add([pscustomobject]@{ Titel = $j.Titel; Objekt = $lbl; Status = 'Uebersprungen'; Meldung = (T 'Excluded by you - not changed') })
+            Add-ActionRecord $j.Rule.Id $lbl 'Uebersprungen' 0 (T 'excluded') | Out-Null
             continue
         }
         if ($j.Rule.Dauer -and $ctx -and $ctx.Akku) {
@@ -4090,6 +4355,76 @@ function Get-HistoryLight {
     $h = Read-SnapshotHistory
     [pscustomobject]@{ Scores = $h.Scores; Snapshots = @(); Boots = $h.Boots; Perf = $h.Punkte; Effekt = $h.Effekt; Defs = $h.Defs; Kopfzeile = $h.Kopfzeile; Laeufe = (Get-RunList); Report = (Join-Path $Script:DataDir 'WinTidy-Bericht.html'); DataDir = $Script:DataDir }
 }
+
+# =============================================================================
+#  Exclusions: interface for the app (the app calls these in the background runspace)
+# =============================================================================
+# After excluding: take the points out of the remembered findings (Invoke-FixSelection uses them) and remember them as hits
+function Update-LastFindingsExcluded([string]$Art, [string]$Regel, [string]$Key) {
+    if ($Art -eq 'Abzug') { return }
+    $hits = New-Object System.Collections.Generic.List[object]; $neu = @()
+    foreach ($f in @($Script:LastFindings)) {
+        if ($f.Id -ne $Regel) { $neu += $f; continue }
+        $keep = @()
+        foreach ($it in @($f.Items)) {
+            if ($Art -eq 'Regel' -or ([string]$it.Schluessel) -eq $Key) { $hits.Add([pscustomobject]@{ Regel = $Regel; Schluessel = [string]$it.Schluessel; Label = [string]$it.Label; Seite = [string]$f.Seite }) } else { $keep += $it }
+        }
+        if ($keep.Count) { $f.Items = $keep; $f.Bytes = [int64](($keep | Measure-Object Bytes -Sum).Sum); $neu += $f }
+    }
+    $Script:LastFindings = @($neu)
+    $Script:LastExcludedHits = @(@($Script:LastExcludedHits) + @($hits.ToArray()))
+}
+# All exclusions with the current title of the check and whether the point was still found by the last check
+# (NochGefunden: $true | $false | $null = not checked yet), plus the score of the latest snapshot with the exclusions.
+function Get-GuiExclusions {
+    $ex = @(Read-WtExclusions)
+    $hits = @($Script:LastExcludedHits)
+    $sn = $null; try { $f1 = Get-Snapshots | Select-Object -Last 1; if ($f1) { $sn = Read-Snapshot $f1 } } catch { }
+    $score = $null; if ($sn) { $score = Get-SnapshotScore $sn $ex }
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($e in $ex) {
+        $noch = $null
+        if ($e.Art -eq 'Abzug') {
+            if ($score) { $id = [string]$e.Regel; $noch = [bool](@($score.Ausgeschlossen | Where-Object { $_.Id -eq $id }).Count) }
+        } else {
+            $id = [string]$e.Regel; $key = [string]$e.Schluessel
+            $r = $Script:Rules | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+            if (-not $r) { $noch = $false }
+            elseif ($Script:ExclChecked -and $Script:ExclChecked[[string]$r.Seite]) {
+                $noch = [bool](@($hits | Where-Object { $_.Regel -eq $id -and ($e.Art -eq 'Regel' -or ([string]$_.Schluessel) -eq $key) }).Count)
+            }
+        }
+        $rt = Get-WtRuleTitle ([string]$e.Regel); if (-not $rt) { $rt = [string]$e.Titel }
+        $out.Add([pscustomobject]@{ Art = $e.Art; Regel = $e.Regel; Schluessel = $e.Schluessel; Anzeige = $e.Anzeige; Titel = $e.Titel; Zeit = $e.Zeit; RegelTitel = $rt; NochGefunden = $noch })
+    }
+    [pscustomobject]@{ Eintraege = $out.ToArray(); Score = $score; Fehler = '' }
+}
+# Entry = @{ Art; Regel; Schluessel; Anzeige; Titel }. Never throws: Fehler holds the readable message (nothing changed then).
+function Invoke-GuiExclude($Entry) {
+    $fehler = ''
+    try {
+        $Script:Exclusions = $null
+        $ti = [string]$Entry.Titel; if (-not $ti) { $ti = [string](Get-WtRuleTitle ([string]$Entry.Regel)) }
+        $null = Add-WtExclusion -Art ([string]$Entry.Art) -Regel ([string]$Entry.Regel) -Schluessel ([string]$Entry.Schluessel) -Anzeige ([string]$Entry.Anzeige) -Titel $ti
+        Update-LastFindingsExcluded ([string]$Entry.Art) ([string]$Entry.Regel) ([string]$Entry.Schluessel)
+    } catch { $fehler = $_.Exception.Message }
+    $r = Get-GuiExclusions; $r.Fehler = $fehler
+    return $r
+}
+# The included point appears again after the next check
+function Invoke-GuiInclude($Entry) {
+    $fehler = ''
+    try { $Script:Exclusions = $null; $null = Remove-WtExclusion -Art ([string]$Entry.Art) -Regel ([string]$Entry.Regel) -Schluessel ([string]$Entry.Schluessel) } catch { $fehler = $_.Exception.Message }
+    $r = Get-GuiExclusions; $r.Fehler = $fehler
+    return $r
+}
+function Invoke-GuiIncludeAll {
+    $fehler = ''
+    try { $Script:Exclusions = $null; Save-WtExclusions @() } catch { $fehler = $_.Exception.Message }
+    $r = Get-GuiExclusions; $r.Fehler = $fehler
+    return $r
+}
+
 
 function Invoke-GuiRestore([string]$Lauf) {
     $Script:RestoreRunId = $Lauf
@@ -4605,6 +4940,60 @@ function Show-Header {
     W ((T '  {0}  |  Admin: {1}  |  Data: {2}') -f $env:COMPUTERNAME, $Script:IsAdmin, $Script:DataDir) 'DarkGray'
 }
 
+# CLI: list of the exclusions (numbered as -RemoveExclusion expects)
+function Show-WtExclusions($List) {
+    $List = @($List | Where-Object { $_ })
+    if (-not $List.Count) { W (T '  No exclusions.') 'Gray'; return }
+    $n = 0
+    foreach ($e in $List) {
+        $n++
+        $rt = Get-WtRuleTitle ([string]$e.Regel); if (-not $rt) { $rt = [string]$e.Titel }
+        $was = switch ($e.Art) { 'Objekt' { [string]$e.Anzeige } 'Regel' { T 'all points of this check' } default { [string]$e.Titel } }
+        $dt = ''; try { $dt = ([datetime]$e.Zeit).ToString((T 'yyyy-MM-dd HH:mm')) } catch { }
+        W ('  {0,3}  {1}' -f $n, $rt) 'White'
+        W ('       {0}: {1}  |  {2}  |  {3}' -f (Get-ExclusionTypeText $e.Art), $e.Regel, $was, $dt) 'DarkGray'
+    }
+}
+# CLI: -Mode Exclusions [-AddExclusion RULE-ID | SCORE:ID] [-RemoveExclusion n|all]. Checks everything first: on any error nothing is written.
+function Invoke-ExclusionsMode {
+    Section (T 'Exclusions')
+    W (T '  Excluded points are not shown, not changed and not counted in the health score. Single points are excluded in the app.') 'DarkGray'
+    $Script:Exclusions = $null
+    $cur = @(Read-WtExclusions)
+    $err = @()
+    if ($AddExclusion -and $RemoveExclusion) { W (T '  Please use -AddExclusion and -RemoveExclusion one after the other.') 'Red'; return }
+    $plan = @()
+    foreach ($a in @($AddExclusion)) {
+        if (-not $a) { continue }
+        if ($a -match '^(?i)SCORE:(.+)$') {
+            $id = $Matches[1].Trim().ToUpper(); $ids = @(Get-ScoreIds)
+            if ($ids -cnotcontains $id -and $ids -ccontains ('SCORE-' + $id)) { $id = 'SCORE-' + $id }
+            if ($ids -cnotcontains $id) { $err += ((T '  Unknown score deduction: {0} (known: {1})') -f $a, ($ids -join ', ')); continue }
+            $plan += [pscustomobject]@{ Art = 'Abzug'; Regel = $id; Titel = [string](Get-ScoreInfo)[$id] }
+        } else {
+            $id = $a.Trim().ToUpper()
+            $r = $Script:Rules | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+            if (-not $r) { $err += ((T '  Unknown rule: {0} (see -Mode Rules)') -f $a); continue }
+            $plan += [pscustomobject]@{ Art = 'Regel'; Regel = $r.Id; Titel = [string](Get-WtRuleTitle $r.Id) }
+        }
+    }
+    $del = @()
+    foreach ($d in @($RemoveExclusion)) {
+        if (-not $d) { continue }
+        if ($d -eq 'all') { $del = @($cur); break }
+        $nr = 0
+        if (-not [int]::TryParse($d, [ref]$nr) -or $nr -lt 1 -or $nr -gt $cur.Count) { $err += ((T '  There is no exclusion number {0} (the list has {1} entries)') -f $d, $cur.Count); continue }
+        $del += $cur[$nr - 1]
+    }
+    if ($err.Count) { foreach ($m in $err) { W $m 'Red' }; W (T '  Nothing was changed.') 'Red'; return }
+    try {
+        foreach ($p in $plan) { $null = Add-WtExclusion -Art $p.Art -Regel $p.Regel -Titel $p.Titel; W ((T '  Excluded: {0}') -f $p.Regel) 'Green' }
+        foreach ($e in $del) { if (Remove-WtExclusion -Art $e.Art -Regel $e.Regel -Schluessel $e.Schluessel) { W ((T '  Included again: {0}') -f $e.Regel) 'Green' } }
+    } catch { W ('  ' + $_.Exception.Message) 'Red'; return }
+    W ''
+    Show-WtExclusions (Read-WtExclusions)
+}
+
 function Invoke-Mode([string]$m) {
     $Script:Cache = @{}
     if ($Preset -and -not $Rule -and $m -in 'Rules', 'Scan', 'Preview', 'Apply') {
@@ -4638,6 +5027,11 @@ function Invoke-Mode([string]$m) {
             $snap = New-Snapshot 'scan' $res.Befunde
             Section ((T 'Health score: {0}/100') -f $snap.Score.Wert)
             foreach ($z in $snap.Score.Abzuege) { W ("  -{0,-3} {1}" -f $z.Punkte, $z.Grund) 'Yellow' }
+            if (@($snap.Score.Ausgeschlossen).Count) {
+                W (T '  Accepted (not counted):') 'DarkGray'
+                foreach ($z in @($snap.Score.Ausgeschlossen)) { W ("  -{0,-3} {1}" -f $z.Punkte, $z.Grund) 'DarkGray' }
+                if ([int]$snap.Score.WertOhneAusnahmen -ne [int]$snap.Score.Wert) { W ((T '  Without exclusions the score would be {0}') -f $snap.Score.WertOhneAusnahmen) 'DarkGray' }
+            }
             $prev = Get-Snapshots | Select-Object -SkipLast 1 | Select-Object -Last 1
             if ($prev) { Show-Compare (Read-Snapshot $prev) $snap }
             $hist = Read-SnapshotHistory; if ($hist.Effekt) { Show-PerfEffect $hist.Effekt }
@@ -4695,6 +5089,7 @@ function Invoke-Mode([string]$m) {
             else { $rep = New-Report; if ($rep) { Open-Report $rep } }
         }
         'Restore' { Start-RunLog 'restore'; $null = Invoke-Restore; Stop-RunLog }
+        'Exclusions' { Invoke-ExclusionsMode }
         'Update' {
             Section (T 'Update')
             W (T '  Installed version: {0}' $Script:Version) 'Gray'
@@ -4735,6 +5130,7 @@ function Invoke-Mode([string]$m) {
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 Show-Header
+if (($AddExclusion -or $RemoveExclusion) -and $Mode -ne 'Exclusions') { W (T '  -AddExclusion and -RemoveExclusion only work together with -Mode Exclusions.') 'DarkYellow' }
 if ($Mode -ne 'Menu') { Invoke-Mode $Mode; return }
 $rem = $null; try { $rem = Get-CheckReminder } catch { }
 if ($rem) { W ''; W ('  ' + $rem.Text + (T ' Choose [1] Scan.')) 'Yellow' }
@@ -4749,6 +5145,7 @@ while ($true) {
     W (T '  [7] Restore') 'White'
     W (T '  [8] Deep scan   - incl. file system/integrity check (slow)') 'White'
     W (T '  [9] Hardware    - cooling, fans, temperatures; optional cooling test') 'White'
+    W (T '  [E] Exclusions  - show or remove the points you excluded') 'White'
     W (T '  [U] Update      - check for a new WinTidy version and install it') 'White'
     W (T '  [0] Exit') 'White'
     $c = Read-Host (T '  Choice')
@@ -4758,6 +5155,7 @@ while ($true) {
         '8' { $Deep = $true; Invoke-Mode 'Scan'; $Deep = $false }
         '9' { $a = Read-Host (T '  Additionally run the cooling test (about 1 minute full load, fans get loud)? [y/N]'); $CoolingTest = ($a -match '^(j|ja|y|yes)$'); Invoke-Mode 'Hardware'; $CoolingTest = $false }
         'u' { Invoke-Mode 'Update' }
+        'e' { Invoke-Mode 'Exclusions' }
         '0' { return }
     }
 }

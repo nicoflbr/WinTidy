@@ -8,10 +8,10 @@
 - Command line: `-Mode Exclusions` lists the exclusions; `-AddExclusion RULE-ID` or `SCORE:ID` and `-RemoveExclusion n|all` change them (everything is validated first, nothing is written on an error). New menu entry [E]. `-ExcludeRule` is unchanged (only for one run).
 - Score: every view recomputes the score with the current exclusions (snapshots on disk are never rewritten); the report and the console show "Accepted (not counted)" and "Without exclusions the score would be N". Snapshots got the additional fields `Score.Ausgeschlossen`, `Score.WertOhneAusnahmen`, `Score.Abzuege[].Id`, `Befunde[].Schluessel` and `Befunde[].Ausgeschlossen`.
 - Rules now report stable, language-independent keys for their items (`Schluessel`), so an exclusion survives a language change.
-- Review round 1: excluding a whole check only covers its own score deduction. Hiding the hints of "Security basics" (`SEC-CHECKS`) no longer removes the UAC, firewall, Windows Update or Secure Boot deductions from the score; only excluding the single point does.
-- Review round 1: no active antivirus, Windows without security updates and critical hardware problems can never be excluded or accepted (`Get-ScoreFixedIds`): the app shows no "Accept" / "Exclude" for them, the command line and the storage refuse them, critical hardware points keep counting and stay visible. Reason: WinTidy never weakens security and never hides a dying drive.
-- Review round 1: hardware points and warning signs got stable, language-independent keys (snapshot fields `Hardware.Punkte[].Schluessel`, `Stabilitaet.Warnsignale[].Schluessel`, `Score.Abzuege[].Fest`), so an exclusion keeps matching when a temperature changes or the language is switched.
-- Review round 1: after an exclusion or inclusion the app refreshes the "Health score over time" chart.
+- Excluding a whole check only covers its own score deduction. Hiding the hints of "Security basics" (`SEC-CHECKS`) no longer removes the UAC, firewall, Windows Update or Secure Boot deductions from the score; only excluding the single point does.
+- No active antivirus, Windows without security updates and critical hardware problems can never be excluded or accepted (`Get-ScoreFixedIds`): the app shows no "Accept" / "Exclude" for them, the command line and the storage refuse them, critical hardware points keep counting and stay visible. Reason: WinTidy never weakens security and never hides a dying drive.
+- Hardware points and warning signs got stable, language-independent keys (snapshot fields `Hardware.Punkte[].Schluessel`, `Stabilitaet.Warnsignale[].Schluessel`, `Score.Abzuege[].Fest`), so an exclusion keeps matching when a temperature changes or the language is switched.
+- After an exclusion or inclusion the app refreshes the "Health score over time" chart.
 - New test `tests/Test-Exclusions.ps1` (also in the GitHub workflows).
 
 ## 1.11.1 – 2026-10-28

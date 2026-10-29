@@ -1025,7 +1025,8 @@ function Remove-ExclFromList($list, [string]$art, [string]$regel, [string]$key) 
         if ("$($f.Id)" -ne $regel) { [void]$out.Add($f); continue }
         if ($art -eq 'Regel') { continue }
         if ($art -eq 'Objekt') {
-            $keep = @(@($f.Items) | Where-Object { $_ -and [string]$_.Schluessel -ne $key })
+            # critical points are never hidden by excluding the single point
+            $keep = @(@($f.Items) | Where-Object { $_ -and ([string]$_.Schluessel -ne $key -or (Get-ItemLevel $_) -eq 'krit') })
             if (-not $keep.Count) { continue }
             $f.Items = $keep
             try { $f.Bytes = [double](@($keep | ForEach-Object { [double]$_.Bytes }) | Measure-Object -Sum).Sum } catch { }
@@ -1064,6 +1065,8 @@ function Complete-ExclOp($r, $err) {
     Hide-ExcludedFindings
     Update-Home; Build-Recs
     if ($State.DebloatScanned) { Build-Debloat }
+    # The score changed: refresh the trend (otherwise it is loaded when the history page is opened)
+    if ($UI.PageHistory.Visibility -eq 'Visible') { try { Load-History } catch { Write-ErrLog "Exclusions history: $($_.Exception.Message)" } } else { $State.HistoryPending = $true }
 }
 function Start-Exclude($Entry) {
     if (-not $Entry) { return }
@@ -1288,7 +1291,7 @@ function Add-InfoRow($panel, $f, $it, [switch]$NoTitle) {
     $tx.Inlines.Add((New-Object System.Windows.Documents.Run ([string]$it.Label)))
     [void]$row.Children.Add($ic)
     $xk = [string]$it.Schluessel
-    if ($xk -and "$($f.Id)" -and $lvl -ne 'ok' -and ($lvl -match 'warn|krit' -or "$($f.Id)" -match '^(SEC-|HW-|SYS-|EVT-)')) {
+    if ($xk -and "$($f.Id)" -and $lvl -ne 'ok' -and $lvl -notmatch 'krit' -and ($lvl -match 'warn|krit' -or "$($f.Id)" -match '^(SEC-|HW-|SYS-|EVT-)')) {
         $xb = New-LinkButton (T 'Exclude') (@{ Art = 'Objekt'; Regel = [string]$f.Id; Schluessel = $xk; Anzeige = [string]$it.Label; Titel = [string]$f.Titel }) (T 'This is how I want it – do not show it again and do not count it in the score') ((T 'Exclude: {0}') -f $it.Label)
         $xb.Margin = '12,0,0,0'; [System.Windows.Controls.DockPanel]::SetDock($xb, 'Right')
         $xb.Add_Click({ param($s, $ev) Start-Exclude $s.Tag })
@@ -1319,7 +1322,7 @@ function Update-Home {
             $row = New-Object System.Windows.Controls.DockPanel; $row.Margin = '0,0,0,4'
             $p = New-Tb ('−{0}' -f $z.Punkte) 'Bad' 14 'SemiBold'; $p.Width = 44; [System.Windows.Controls.DockPanel]::SetDock($p, 'Left')
             [void]$row.Children.Add($p)
-            if ([string]$z.Id) {
+            if ([string]$z.Id -and -not $z.Fest) {
                 $ab = New-LinkButton (T 'Accept') (@{ Art = 'Abzug'; Regel = [string]$z.Id; Schluessel = ''; Anzeige = [string]$z.Grund; Titel = [string]$z.Grund }) (T 'This is how I want it – do not count this deduction in the score') ((T 'Accept: {0}') -f $z.Grund)
                 $ab.Margin = '12,0,0,0'; [System.Windows.Controls.DockPanel]::SetDock($ab, 'Right')
                 $ab.Add_Click({ param($s, $ev) Start-Exclude $s.Tag })

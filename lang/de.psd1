@@ -1310,4 +1310,5 @@
     'Excluded points' = 'Ausgeschlossene Punkte'
     'These points are accepted as they are: WinTidy does not show them, does not change them and does not count them in the score. Points you include again appear after the next check.' = 'Diese Punkte sind so akzeptiert: WinTidy zeigt sie nicht an, ändert sie nicht und rechnet sie nicht in den Wert ein. Wieder einbezogene Punkte erscheinen nach der nächsten Prüfung.'
     'Include all again' = 'Alle wieder einbeziehen'
+    'This deduction cannot be accepted: it is a security gap or a serious hardware problem and always counts ({0})' = 'Dieser Abzug kann nicht akzeptiert werden: Er ist eine Sicherheitslücke oder ein ernstes Hardware-Problem und zählt immer ({0})'
 }

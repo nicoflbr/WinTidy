@@ -1603,15 +1603,15 @@ function Get-WarningSignals {
     if ($Script:Cache.ContainsKey('Warn')) { return $Script:Cache.Warn }
     $since = (Get-Date).AddDays(-30)
     $checks = @(
-        @{ F = @{ LogName = 'System'; Id = 41; ProviderName = 'Microsoft-Windows-Kernel-Power'; StartTime = $since }; T = (T 'Sudden power-off or restart without shutting down') },
-        @{ F = @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; StartTime = $since }; T = (T 'Blue screen (Windows crashed)') },
-        @{ F = @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; Level = 1, 2, 3; StartTime = $since }; T = (T 'Errors reported by the hardware') },
-        @{ F = @{ LogName = 'System'; ProviderName = 'disk', 'Ntfs', 'stornvme', 'storahci'; Level = 1, 2; StartTime = $since }; T = (T 'Errors reading or writing a drive') },
-        @{ F = @{ LogName = 'System'; ProviderName = 'nvlddmkm', 'amdkmdag', 'igfx'; Level = 1, 2, 3; StartTime = $since }; T = (T 'Graphics driver crashed or was restarted') },
-        @{ F = @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-TPM-WMI', 'TPM'; Level = 1, 2; StartTime = $since }; T = (T 'Security chip (TPM) errors – a BIOS update often helps') },
-        @{ F = @{ LogName = 'System'; ProviderName = 'Volsnap'; Level = 1, 2; StartTime = $since }; T = (T 'Restore points were lost') }
+        @{ K = 'power-loss'; F = @{ LogName = 'System'; Id = 41; ProviderName = 'Microsoft-Windows-Kernel-Power'; StartTime = $since }; T = (T 'Sudden power-off or restart without shutting down') },
+        @{ K = 'bluescreen'; F = @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; StartTime = $since }; T = (T 'Blue screen (Windows crashed)') },
+        @{ K = 'hardware-errors'; F = @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; Level = 1, 2, 3; StartTime = $since }; T = (T 'Errors reported by the hardware') },
+        @{ K = 'drive-errors'; F = @{ LogName = 'System'; ProviderName = 'disk', 'Ntfs', 'stornvme', 'storahci'; Level = 1, 2; StartTime = $since }; T = (T 'Errors reading or writing a drive') },
+        @{ K = 'gpu-driver-crash'; F = @{ LogName = 'System'; ProviderName = 'nvlddmkm', 'amdkmdag', 'igfx'; Level = 1, 2, 3; StartTime = $since }; T = (T 'Graphics driver crashed or was restarted') },
+        @{ K = 'tpm-errors'; F = @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-TPM-WMI', 'TPM'; Level = 1, 2; StartTime = $since }; T = (T 'Security chip (TPM) errors – a BIOS update often helps') },
+        @{ K = 'restore-points-lost'; F = @{ LogName = 'System'; ProviderName = 'Volsnap'; Level = 1, 2; StartTime = $since }; T = (T 'Restore points were lost') }
     )
-    $r = @(foreach ($c in $checks) { $n = Get-EventCount $c.F; if ($n) { [pscustomobject]@{ Text = $c.T; Anzahl = $n } } })
+    $r = @(foreach ($c in $checks) { $n = Get-EventCount $c.F; if ($n) { [pscustomobject]@{ Text = $c.T; Anzahl = $n; Schluessel = $c.K } } })
     $Script:Cache.Warn = $r
     return $r
 }
@@ -1643,7 +1643,8 @@ function Get-HardwarePoints {
     if ($Script:Cache.ContainsKey('HwPoints')) { return $Script:Cache.HwPoints }
     $c = $Script:Cfg
     $pts = New-Object System.Collections.Generic.List[object]
-    function P([string]$Stufe, [string]$Text, [string]$Bereich, [string]$Wertung = 'dauer') { $pts.Add([pscustomobject]@{ Stufe = $Stufe; Text = $Text; Bereich = $Bereich; Wertung = $Wertung }) }
+    # Key = language-independent id of the cause (no measured values), used by exclusions
+    function P([string]$Stufe, [string]$Text, [string]$Bereich, [string]$Wertung = 'dauer', [string]$Key = '') { $pts.Add([pscustomobject]@{ Stufe = $Stufe; Text = $Text; Bereich = $Bereich; Wertung = $Wertung; Schluessel = $Key }) }
     $ch = Get-ChassisInfo
     $sens = @(Get-HwMonitorSensors)
     $quelle = if ($sens.Count) { $sens[0].Quelle } else { $null }
@@ -1655,22 +1656,22 @@ function Get-HardwarePoints {
         if ($m) {
             $cpuT = $m.TempC
             $plus = if ($ch.Laptop) { 5 } else { 0 }
-            if ($null -ne $m.Auslastung -and $m.Auslastung -gt 30) { P '' ((T 'Processor: {0:N0} °C (measured while the PC was busy – not rated)') -f $cpuT) 'CPU' 'moment' }
-            elseif ($cpuT -ge $c.CpuTempIdleCritC + $plus) { P 'krit' ((T 'Processor: {0:N0} °C although it has hardly anything to do – have the cooler, fans and dust checked') -f $cpuT) 'CPU' 'moment' }
-            elseif ($cpuT -ge $c.CpuTempIdleWarnC + $plus) { P 'warn' ((T 'Processor: {0:N0} °C under light load – a bit warm. Check fans and dust filters') -f $cpuT) 'CPU' 'moment' }
-            else { P 'ok' ((T 'Processor: {0:N0} °C') -f $cpuT) 'CPU' 'moment' }
+            if ($null -ne $m.Auslastung -and $m.Auslastung -gt 30) { P '' ((T 'Processor: {0:N0} °C (measured while the PC was busy – not rated)') -f $cpuT) 'CPU' 'moment' -Key 'cpu-temp-busy' }
+            elseif ($cpuT -ge $c.CpuTempIdleCritC + $plus) { P 'krit' ((T 'Processor: {0:N0} °C although it has hardly anything to do – have the cooler, fans and dust checked') -f $cpuT) 'CPU' 'moment' -Key 'cpu-temp-high' }
+            elseif ($cpuT -ge $c.CpuTempIdleWarnC + $plus) { P 'warn' ((T 'Processor: {0:N0} °C under light load – a bit warm. Check fans and dust filters') -f $cpuT) 'CPU' 'moment' -Key 'cpu-temp-warm' }
+            else { P 'ok' ((T 'Processor: {0:N0} °C') -f $cpuT) 'CPU' 'moment' -Key 'cpu-temp-ok' }
         }
     }
     $ep7 = Get-ThrottleEventCount 7; $ep30 = Get-ThrottleEventCount 30
-    if (-not $ch.Laptop -and $ep7 -ge 3) { P 'warn' ((T 'The firmware throttled the processor {0} times in the last 7 days. Common causes: cooling, dusty fans or power limits in the BIOS') -f $ep7) 'CPU' 'moment' }
-    elseif ($ep30 -gt 0) { P '' ((T 'The firmware briefly throttled the processor {0} times in the last 30 days{1}') -f $ep30, $(if ($ch.Laptop) { (T ' – normal on laptops (e.g. on battery)') } else { (T ' – this is normal occasionally') })) 'CPU' 'moment' }
-    else { P 'ok' (T 'Processor: no throttling in the last 30 days') 'CPU' 'moment' }
+    if (-not $ch.Laptop -and $ep7 -ge 3) { P 'warn' ((T 'The firmware throttled the processor {0} times in the last 7 days. Common causes: cooling, dusty fans or power limits in the BIOS') -f $ep7) 'CPU' 'moment' -Key 'cpu-throttle-firmware' }
+    elseif ($ep30 -gt 0) { P '' ((T 'The firmware briefly throttled the processor {0} times in the last 30 days{1}') -f $ep30, $(if ($ch.Laptop) { (T ' – normal on laptops (e.g. on battery)') } else { (T ' – this is normal occasionally') })) 'CPU' 'moment' -Key 'cpu-throttle-brief' }
+    else { P 'ok' (T 'Processor: no throttling in the last 30 days') 'CPU' 'moment' -Key 'cpu-throttle-none' }
     foreach ($z in (Get-ThermalZones)) {
         if ($z.PassivLimit -gt 0 -and $z.PassivLimit -lt 100) {
             $grund = if ($z.Gruende -band 1) { (T 'due to heat') } elseif ($z.Gruende -band 2) { (T 'due to a current limit') } else { '' }
-            P $(if ($z.PassivLimit -le 80) { 'krit' } else { 'warn' }) ((T 'Windows is currently throttling the processor {0} ({1}: {2} % performance, {3:N0} °C)') -f $grund, $z.Name, $z.PassivLimit, $z.TempC).Replace('  ', ' ') 'CPU' 'moment'
+            P $(if ($z.PassivLimit -le 80) { 'krit' } else { 'warn' }) ((T 'Windows is currently throttling the processor {0} ({1}: {2} % performance, {3:N0} °C)') -f $grund, $z.Name, $z.PassivLimit, $z.TempC).Replace('  ', ' ') 'CPU' 'moment' -Key ('thermal-throttle:' + $z.Name)
         }
-        elseif ($z.TempC -ge 90) { P 'warn' ((T 'Temperature sensor {0}: {1:N0} °C') -f $z.Name, $z.TempC) 'CPU' 'moment' }
+        elseif ($z.TempC -ge 90) { P 'warn' ((T 'Temperature sensor {0}: {1:N0} °C') -f $z.Name, $z.TempC) 'CPU' 'moment' -Key ('thermal-temp:' + $z.Name) }
     }
 
     # ---- Fans (only with a hardware monitor)
@@ -1681,21 +1682,21 @@ function Get-HardwarePoints {
         $pumpen = @($fans | Where-Object { $_.Name -match '(?i)pump|aio' })
         $cpuFan = @($fans | Where-Object { $_.Name -match '(?i)\bcpu\b' -and $_.Name -notmatch '(?i)pump|aio|opt' })
         $steht = $cpuFan.Count -and -not ($cpuFan | Where-Object { $_.Wert -ge 100 })
-        if ($steht -and $null -ne $cpuT -and $cpuT -ge 60) { P 'krit' ((T 'CPU fan reports 0 RPM although the processor is at {0:N0} °C – not connected or defective. Check in the BIOS') -f $cpuT) 'Lüfter' }
-        elseif ($steht) { P '' (T 'CPU fan is currently stopped – with a cool processor this is often intended (fan stop at idle)') 'Lüfter' }
-        elseif (-not $laufend.Count -and $null -ne $cpuT -and $cpuT -ge 60) { P 'krit' (T 'No fan reports a speed although the processor is warm – check the fan connectors') 'Lüfter' }
-        if ($pumpen.Count -and -not ($pumpen | Where-Object { $_.Wert -ge 100 })) { P 'warn' (T 'The water cooling pump reports 0 RPM – either its speed cable is not connected or the pump has stopped. Check in the BIOS or in the cooling software') 'Lüfter' }
-        if ($laufend.Count) { P 'ok' ((T 'Fans: ') + (($laufend | Sort-Object Wert -Descending | Select-Object -First 6 | ForEach-Object { (T '{0} {1:N0} RPM') -f $_.Name, $_.Wert }) -join ', ')) 'Lüfter' }
+        if ($steht -and $null -ne $cpuT -and $cpuT -ge 60) { P 'krit' ((T 'CPU fan reports 0 RPM although the processor is at {0:N0} °C – not connected or defective. Check in the BIOS') -f $cpuT) 'Lüfter' -Key 'cpu-fan-zero-hot' }
+        elseif ($steht) { P '' (T 'CPU fan is currently stopped – with a cool processor this is often intended (fan stop at idle)') 'Lüfter' -Key 'cpu-fan-stopped' }
+        elseif (-not $laufend.Count -and $null -ne $cpuT -and $cpuT -ge 60) { P 'krit' (T 'No fan reports a speed although the processor is warm – check the fan connectors') 'Lüfter' -Key 'no-fan-speed' }
+        if ($pumpen.Count -and -not ($pumpen | Where-Object { $_.Wert -ge 100 })) { P 'warn' (T 'The water cooling pump reports 0 RPM – either its speed cable is not connected or the pump has stopped. Check in the BIOS or in the cooling software') 'Lüfter' -Key 'pump-stopped' }
+        if ($laufend.Count) { P 'ok' ((T 'Fans: ') + (($laufend | Sort-Object Wert -Descending | Select-Object -First 6 | ForEach-Object { (T '{0} {1:N0} RPM') -f $_.Name, $_.Wert }) -join ', ')) 'Lüfter' -Key 'fans-ok' }
         # Full speed with a cool processor: only control values whose fan is really spinning (same number #n)
         $voll = @($ctrl | Where-Object {
             $cv = $_; if ($cv.Wert -lt 95) { return $false }
             if ($cv.Name -match '#(\d+)') { $nr = $Matches[1]; return [bool]($fans | Where-Object { $_.Name -match "#$nr\b" -and $_.Wert -ge 100 }) }
             return [bool]$laufend.Count
         })
-        if ($voll.Count -and $null -ne $cpuT -and $cpuT -lt 55) { P 'warn' ((T 'Fans run at full speed although the processor is cool ({0}) – the fan curve in the BIOS is probably too aggressive (unnecessarily loud). Note: the program often only names the connectors ''Fan #1'' – in the BIOS they are called e.g. CPU_FAN or CHA_FAN') -f (($voll | Select-Object -First 3 | ForEach-Object { $_.Name }) -join ', ')) 'Lüfter' }
-        P '' ((T 'Sensor data from {0}') -f $quelle) 'Lüfter'
+        if ($voll.Count -and $null -ne $cpuT -and $cpuT -lt 55) { P 'warn' ((T 'Fans run at full speed although the processor is cool ({0}) – the fan curve in the BIOS is probably too aggressive (unnecessarily loud). Note: the program often only names the connectors ''Fan #1'' – in the BIOS they are called e.g. CPU_FAN or CHA_FAN') -f (($voll | Select-Object -First 3 | ForEach-Object { $_.Name }) -join ', ')) 'Lüfter' -Key 'fans-full-speed' }
+        P '' ((T 'Sensor data from {0}') -f $quelle) 'Lüfter' -Key 'sensor-source'
     } else {
-        P '' (T 'Fan speeds: this motherboard does not report them directly to Windows. If the free program LibreHardwareMonitor (version 0.9.5 or later) is running, WinTidy reads fans and processor temperature automatically. The cooling test works anyway.') 'Lüfter'
+        P '' (T 'Fan speeds: this motherboard does not report them directly to Windows. If the free program LibreHardwareMonitor (version 0.9.5 or later) is running, WinTidy reads fans and processor temperature automatically. The cooling test works anyway.') 'Lüfter' -Key 'no-fan-readings'
     }
     foreach ($p in (Get-FanToolPoints)) { $pts.Add($p) }
 
@@ -1707,51 +1708,51 @@ function Get-HardwarePoints {
         $leerlauf = ($null -ne $g.Auslastung -and $g.Auslastung -lt 10)
         $slow = if ($g.SlowdownC) { $g.SlowdownC } else { $c.GpuTempCritC }
         $grenzeLast = if ($g.MaxOpC) { $g.MaxOpC - 5 } elseif ($g.ZielC) { $g.ZielC + 3 } else { $c.GpuTempWarnC }
-        if (($m -band 0x40) -or ($null -ne $g.TempC -and $g.TempC -ge $slow)) { P 'krit' ($txt + (T ' – throttled due to heat. Check case fans and dust')) 'Grafikkarte' 'moment' }
-        elseif ($null -ne $g.TempC -and $null -ne $g.LuefterProzent -and $g.LuefterProzent -eq 0 -and $g.TempC -ge 70) { P 'warn' ($txt + (T ' – the fans do not start despite the high temperature. Check the fan curve or the graphics card software')) 'Grafikkarte' 'moment' }
-        elseif ($leerlauf -and $null -ne $g.TempC -and $g.TempC -ge 70) { P 'warn' ($txt + (T ' – unusually warm at idle. Check the airflow in the case')) 'Grafikkarte' 'moment' }
-        elseif (-not $leerlauf -and $null -ne $g.TempC -and $g.TempC -ge $grenzeLast) { P 'warn' ($txt + (T ' – running at the temperature limit')) 'Grafikkarte' 'moment' }
-        elseif ($m -band 0x88) { P 'warn' ($txt + (T ' – throttled: ') + ((Get-NvidiaReasonText ($m -band 0x88)) -join ', ')) 'Grafikkarte' 'moment' }
-        elseif ($m -band 0x20) { P '' ($txt + (T ' – lowers its clock to stay within its temperature limit (normal under load)')) 'Grafikkarte' 'moment' }
-        elseif ($null -ne $g.LuefterProzent -and $g.LuefterProzent -eq 0) { P 'ok' ($txt + (T ' (fans stop at low load – this is intended and quiet)')) 'Grafikkarte' 'moment' }
-        else { P 'ok' $txt 'Grafikkarte' 'moment' }
+        if (($m -band 0x40) -or ($null -ne $g.TempC -and $g.TempC -ge $slow)) { P 'krit' ($txt + (T ' – throttled due to heat. Check case fans and dust')) 'Grafikkarte' 'moment' -Key ('gpu-throttled-heat:' + $g.Name) }
+        elseif ($null -ne $g.TempC -and $null -ne $g.LuefterProzent -and $g.LuefterProzent -eq 0 -and $g.TempC -ge 70) { P 'warn' ($txt + (T ' – the fans do not start despite the high temperature. Check the fan curve or the graphics card software')) 'Grafikkarte' 'moment' -Key ('gpu-fan-zero:' + $g.Name) }
+        elseif ($leerlauf -and $null -ne $g.TempC -and $g.TempC -ge 70) { P 'warn' ($txt + (T ' – unusually warm at idle. Check the airflow in the case')) 'Grafikkarte' 'moment' -Key ('gpu-warm-idle:' + $g.Name) }
+        elseif (-not $leerlauf -and $null -ne $g.TempC -and $g.TempC -ge $grenzeLast) { P 'warn' ($txt + (T ' – running at the temperature limit')) 'Grafikkarte' 'moment' -Key ('gpu-at-limit:' + $g.Name) }
+        elseif ($m -band 0x88) { P 'warn' ($txt + (T ' – throttled: ') + ((Get-NvidiaReasonText ($m -band 0x88)) -join ', ')) 'Grafikkarte' 'moment' -Key ('gpu-throttled:' + $g.Name) }
+        elseif ($m -band 0x20) { P '' ($txt + (T ' – lowers its clock to stay within its temperature limit (normal under load)')) 'Grafikkarte' 'moment' -Key ('gpu-clock-down:' + $g.Name) }
+        elseif ($null -ne $g.LuefterProzent -and $g.LuefterProzent -eq 0) { P 'ok' ($txt + (T ' (fans stop at low load – this is intended and quiet)')) 'Grafikkarte' 'moment' -Key ('gpu-fans-stop:' + $g.Name) }
+        else { P 'ok' $txt 'Grafikkarte' 'moment' -Key ('gpu-ok:' + $g.Name) }
         if ($g.PcieBreite -and $g.PcieBreiteMax -and $g.PcieBreite -lt $g.PcieBreiteMax) {
-            if ($g.PcieBreite -le 4) { P 'warn' ((T '{0} is only connected with x{1} instead of x{2} – is it in the right slot (usually the top long one)?') -f $g.Name, $g.PcieBreite, $g.PcieBreiteMax) 'Grafikkarte' }
-            else { P '' ((T '{0} is connected with x{1} instead of x{2} – normal on some motherboards when other slots or M.2 slots are in use') -f $g.Name, $g.PcieBreite, $g.PcieBreiteMax) 'Grafikkarte' }
+            if ($g.PcieBreite -le 4) { P 'warn' ((T '{0} is only connected with x{1} instead of x{2} – is it in the right slot (usually the top long one)?') -f $g.Name, $g.PcieBreite, $g.PcieBreiteMax) 'Grafikkarte' -Key ('gpu-pcie-x:' + $g.Name) }
+            else { P '' ((T '{0} is connected with x{1} instead of x{2} – normal on some motherboards when other slots or M.2 slots are in use') -f $g.Name, $g.PcieBreite, $g.PcieBreiteMax) 'Grafikkarte' -Key ('gpu-pcie-info:' + $g.Name) }
         }
     }
 
     # ---- Drives
     foreach ($d in (Get-DiskHealth)) {
-        if ($d.Zustand -in 'Unhealthy', '2' -or $d.Betrieb -match 'Predictive Failure' -or $d.Ausfallwarnung) { P 'krit' ((T 'Drive {0}: reports an imminent failure – back up important data now and have the drive replaced') -f $d.Name) 'Laufwerke'; continue }
-        if ($d.Zustand -in 'Warning', '1') { P 'warn' ((T 'Drive {0}: reports irregularities – back up data and have the drive checked') -f $d.Name) 'Laufwerke' }
-        if ($null -ne $d.Verschleiss -and $d.Verschleiss -ge 100) { P 'krit' ((T 'SSD {0}: rated lifetime used up according to the manufacturer ({1} %) – back up data, replace the SSD') -f $d.Name, $d.Verschleiss) 'Laufwerke' }
-        elseif ($null -ne $d.Verschleiss -and $d.Verschleiss -ge 80) { P 'warn' ((T 'SSD {0}: {1} % of its rated lifetime used') -f $d.Name, $d.Verschleiss) 'Laufwerke' }
+        if ($d.Zustand -in 'Unhealthy', '2' -or $d.Betrieb -match 'Predictive Failure' -or $d.Ausfallwarnung) { P 'krit' ((T 'Drive {0}: reports an imminent failure – back up important data now and have the drive replaced') -f $d.Name) 'Laufwerke' -Key ('drive-failing:' + $d.Name); continue }
+        if ($d.Zustand -in 'Warning', '1') { P 'warn' ((T 'Drive {0}: reports irregularities – back up data and have the drive checked') -f $d.Name) 'Laufwerke' -Key ('drive-warning:' + $d.Name) }
+        if ($null -ne $d.Verschleiss -and $d.Verschleiss -ge 100) { P 'krit' ((T 'SSD {0}: rated lifetime used up according to the manufacturer ({1} %) – back up data, replace the SSD') -f $d.Name, $d.Verschleiss) 'Laufwerke' -Key ('ssd-worn-out:' + $d.Name) }
+        elseif ($null -ne $d.Verschleiss -and $d.Verschleiss -ge 80) { P 'warn' ((T 'SSD {0}: {1} % of its rated lifetime used') -f $d.Name, $d.Verschleiss) 'Laufwerke' -Key ('ssd-wear:' + $d.Name) }
         if ($null -ne $d.TempC) {
             $art = if ($d.Art) { $d.Art } else { 'HDD' }
             $w = $c.DiskTempWarnC.$art; $k = $c.DiskTempCritC.$art
-            if ($k -and $d.TempC -ge $k) { P 'krit' ((T 'Drive {0}: {1} °C – much too hot. Improve the airflow in the case (NVMe: heatsink)') -f $d.Name, $d.TempC) 'Laufwerke' 'moment' }
-            elseif ($w -and $d.TempC -ge $w) { P 'warn' ((T 'Drive {0}: {1} °C – warm. Check the airflow in the case') -f $d.Name, $d.TempC) 'Laufwerke' 'moment' }
-            else { P 'ok' ((T 'Drive {0}: {1} °C') -f $d.Name, $d.TempC) 'Laufwerke' 'moment' }
+            if ($k -and $d.TempC -ge $k) { P 'krit' ((T 'Drive {0}: {1} °C – much too hot. Improve the airflow in the case (NVMe: heatsink)') -f $d.Name, $d.TempC) 'Laufwerke' 'moment' -Key ('drive-temp-hot:' + $d.Name) }
+            elseif ($w -and $d.TempC -ge $w) { P 'warn' ((T 'Drive {0}: {1} °C – warm. Check the airflow in the case') -f $d.Name, $d.TempC) 'Laufwerke' 'moment' -Key ('drive-temp-warm:' + $d.Name) }
+            else { P 'ok' ((T 'Drive {0}: {1} °C') -f $d.Name, $d.TempC) 'Laufwerke' 'moment' -Key ('drive-temp:' + $d.Name) }
         }
     }
-    if ($Script:Cache.SmartUnmapped -gt 0) { P 'krit' (T 'A drive warns of failure via its self-diagnosis (SMART) – back up important data now') 'Laufwerke' }
+    if ($Script:Cache.SmartUnmapped -gt 0) { P 'krit' (T 'A drive warns of failure via its self-diagnosis (SMART) – back up important data now') 'Laufwerke' -Key 'smart-failure' }
 
     # ---- Memory and processor errors (events)
     $since90 = (Get-Date).AddDays(-90); $since30 = (Get-Date).AddDays(-30)
-    if ((Get-EventCount @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-MemoryDiagnostics-Results'; Id = 1202; StartTime = $since90 }) -gt 0) { P 'krit' (T 'Windows Memory Diagnostic found errors in the RAM – have the RAM checked (modules, XMP/EXPO setting)') 'Speicher' }
+    if ((Get-EventCount @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-MemoryDiagnostics-Results'; Id = 1202; StartTime = $since90 }) -gt 0) { P 'krit' (T 'Windows Memory Diagnostic found errors in the RAM – have the RAM checked (modules, XMP/EXPO setting)') 'Speicher' -Key 'ram-diagnostic-errors' }
     $w19 = Get-EventCount @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; Id = 19; StartTime = $since30 }
-    if ($w19 -ge 5) { P 'warn' ((T 'The processor reported {0} corrected errors – common with overclocking (PBO, Curve Optimizer, XMP/EXPO). Check BIOS settings for defaults') -f $w19) 'CPU' }
+    if ($w19 -ge 5) { P 'warn' ((T 'The processor reported {0} corrected errors – common with overclocking (PBO, Curve Optimizer, XMP/EXPO). Check BIOS settings for defaults') -f $w19) 'CPU' -Key 'cpu-corrected-errors' }
     $w17 = Get-EventCount @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; Id = 17; StartTime = $since30 }
-    if ($w17 -ge 5) { P 'warn' ((T 'A connection (PCIe) reported {0} corrected errors – check the seating of graphics card/SSD, riser cables or the PCIe setting in the BIOS') -f $w17) 'CPU' }
+    if ($w17 -ge 5) { P 'warn' ((T 'A connection (PCIe) reported {0} corrected errors – check the seating of graphics card/SSD, riser cables or the PCIe setting in the BIOS') -f $w17) 'CPU' -Key 'pcie-corrected-errors' }
 
     # ---- Battery
     if ($ch.HatAkku) {
         $wear = Get-BatteryWear
         if ($null -ne $wear) {
-            if ($wear -ge 50) { P 'krit' ((T 'Battery: has lost {0} % of its original capacity – a replacement is worthwhile') -f $wear) 'Akku' }
-            elseif ($wear -ge 30) { P 'warn' ((T 'Battery: has lost {0} % of its original capacity') -f $wear) 'Akku' }
-            else { P 'ok' ((T 'Battery: {0} % capacity loss (normal)') -f [math]::Max(0, $wear)) 'Akku' }
+            if ($wear -ge 50) { P 'krit' ((T 'Battery: has lost {0} % of its original capacity – a replacement is worthwhile') -f $wear) 'Akku' -Key 'battery-wear-high' }
+            elseif ($wear -ge 30) { P 'warn' ((T 'Battery: has lost {0} % of its original capacity') -f $wear) 'Akku' -Key 'battery-wear' }
+            else { P 'ok' ((T 'Battery: {0} % capacity loss (normal)') -f [math]::Max(0, $wear)) 'Akku' -Key 'battery-ok' }
         }
     }
     $Script:Cache.HwPoints = $pts.ToArray()
@@ -1766,13 +1767,15 @@ function Get-FanToolPoints {
     }
     $proc = @(Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName -Unique)
     $res = @()
+    $gi = 0
     foreach ($g in $gruppen.Keys) {
+        $gid = @('fan-tools-board', 'fan-tools-gpu')[$gi]; $gi++
         $tab = $gruppen[$g]
         $treffer = @($tab.Keys | Where-Object { $n = $_; $proc | Where-Object { $_ -like "$n*" } } | ForEach-Object { $tab[$_] } | Select-Object -Unique)
-        if ($treffer.Count -ge 2) { $res += [pscustomobject]@{ Stufe = 'warn'; Text = ((T 'Several programs control the {0} at the same time: {1} – this can cause fluctuating or wrong fan speeds. Best use only one of them') -f $g, ($treffer -join ', ')); Bereich = 'Lüfter'; Wertung = 'dauer' } }
+        if ($treffer.Count -ge 2) { $res += [pscustomobject]@{ Stufe = 'warn'; Text = ((T 'Several programs control the {0} at the same time: {1} – this can cause fluctuating or wrong fan speeds. Best use only one of them') -f $g, ($treffer -join ', ')); Bereich = 'Lüfter'; Wertung = 'dauer'; Schluessel = $gid } }
     }
     $tuning = @(@{ 'ThrottleStop' = 'ThrottleStop'; 'XtuService' = 'Intel XTU'; 'AMDRyzenMasterDriver' = 'Ryzen Master'; 'RyzenMaster' = 'Ryzen Master' }.GetEnumerator() | Where-Object { $n = $_.Key; $proc | Where-Object { $_ -like "$n*" } } | ForEach-Object { $_.Value } | Select-Object -Unique)
-    if ($tuning.Count) { $res += [pscustomobject]@{ Stufe = ''; Text = ((T 'Tuning program active ({0}) – voltages/clocks are changed manually; this affects temperatures and the cooling test') -f ($tuning -join ', ')); Bereich = 'CPU'; Wertung = 'dauer' } }
+    if ($tuning.Count) { $res += [pscustomobject]@{ Stufe = ''; Text = ((T 'Tuning program active ({0}) – voltages/clocks are changed manually; this affects temperatures and the cooling test') -f ($tuning -join ', ')); Bereich = 'CPU'; Wertung = 'dauer'; Schluessel = 'tuning-tool' } }
     return $res
 }
 
@@ -1792,7 +1795,7 @@ function Get-HardwareSnapshot {
         Drosselung30T = (Get-ThrottleEventCount 30)
         Thermalzonen = @(Get-ThermalZones)
         AkkuVerschleiss = $(if ($ch.HatAkku) { Get-BatteryWear } else { $null })
-        Punkte = @($pts | Where-Object { $_.Stufe -in 'warn', 'krit' } | ForEach-Object { [ordered]@{ Stufe = $_.Stufe; Text = $_.Text; Wertung = $_.Wertung } })
+        Punkte = @($pts | Where-Object { $_.Stufe -in 'warn', 'krit' } | ForEach-Object { [ordered]@{ Stufe = $_.Stufe; Text = $_.Text; Wertung = $_.Wertung; Schluessel = [string]$_.Schluessel } })
     }
 }
 
@@ -2828,13 +2831,13 @@ $Script:Rules = @(
     [pscustomobject]@{ Id = 'HW-COOLING'; Kategorie = 'Hardware'; Titel = (T 'Cooling, fans and temperatures'); Risiko = 'Info'; Wirkung = 'Stabilitaet/Lebensdauer'; Admin = $false; Standard = $true
         Warum = (T 'Components that are too hot get throttled and age faster; stopped or permanently full-speed fans indicate a defect or an unsuitable fan curve in the BIOS. Windows can neither read nor set fan curves - so WinTidy measures the effects (temperatures, throttling, fan speed) and offers a short cooling test.')
         Detect = {
-            foreach ($p in (Get-HardwarePoints)) { New-Item2 $p.Text 0 @{ Stufe = $p.Stufe; Bereich = $p.Bereich; Wertung = $p.Wertung } }
+            foreach ($p in (Get-HardwarePoints)) { New-Item2 $p.Text 0 @{ Stufe = $p.Stufe; Bereich = $p.Bereich; Wertung = $p.Wertung } $null ([string]$p.Schluessel) }
             $lt = Get-LastCoolingTest
             if ($lt -and $lt.Zeit) {
                 $z = [datetime]$lt.Zeit
                 if ($z -gt (Get-Date).AddDays(-60)) {
                     $pt = @($lt.Punkte | Where-Object { $_.Stufe -eq 'krit' }) + @($lt.Punkte | Where-Object { $_.Stufe -eq 'warn' }) + @($lt.Punkte | Where-Object { $_.Stufe -eq 'ok' })
-                    if ($pt.Count) { New-Item2 ((T 'Last cooling test ({0:yyyy-MM-dd}{1}): {2}') -f $z, $(if ($lt.Status -eq 'GESTOPPT') { (T ', stopped early') } else { '' }), $pt[0].Text) 0 @{ Stufe = $pt[0].Stufe; Bereich = 'Test' } }
+                    if ($pt.Count) { New-Item2 ((T 'Last cooling test ({0:yyyy-MM-dd}{1}): {2}') -f $z, $(if ($lt.Status -eq 'GESTOPPT') { (T ', stopped early') } else { '' }), $pt[0].Text) 0 @{ Stufe = $pt[0].Stufe; Bereich = 'Test' } $null 'last-cooling-test' }
                 }
             }
         }
@@ -2893,7 +2896,7 @@ $Script:Rules = @(
 
     [pscustomobject]@{ Id = 'EVT-HEALTH'; Kategorie = 'Stabilitaet'; Titel = (T 'Irregularities in the event log (30 days)'); Risiko = 'Info'; Wirkung = 'Stabilitaet'; Admin = $false; Standard = $true
         Warum = (T 'Unexpected shutdowns, blue screens, hardware errors (WHEA), disk errors and GPU driver resets are warning signs.')
-        Detect = {     foreach ($w in (Get-WarningSignals)) { New-Item2 ((T '{0}: {1} times') -f $w.Text, $w.Anzahl) 0 @{ Stufe = 'warn' } $null ([string]$w.Text) } }
+        Detect = {     foreach ($w in (Get-WarningSignals)) { New-Item2 ((T '{0}: {1} times') -f $w.Text, $w.Anzahl) 0 @{ Stufe = 'warn' } $null $(if ($w.Schluessel) { [string]$w.Schluessel } else { [string]$w.Text }) } }
         Fix = $null
     }
 
@@ -2962,11 +2965,15 @@ function Get-ScoreInfo {
 function Get-ScoreIds { return @((Get-ScoreInfo).Keys) }
 # Items of a rule that explain a deduction: 'RULE|key' = deduction Id (the keys are set by the rule, see SEC-CHECKS)
 function Get-ScoreItemLinks {
-    @{ 'SEC-CHECKS|winsupport-end' = 'SCORE-WINSUPPORT'; 'SEC-CHECKS|winupdate-off' = 'SCORE-WINUPDATE'; 'SEC-CHECKS|winupdate-old' = 'SCORE-WINUPDATE'; 'SEC-CHECKS|secureboot-off' = 'SCORE-SECUREBOOT'
-       'SEC-CHECKS|antivirus-off' = 'SCORE-ANTIVIRUS'; 'SEC-CHECKS|firewall-domain' = 'SCORE-FIREWALL'; 'SEC-CHECKS|firewall-private' = 'SCORE-FIREWALL'; 'SEC-CHECKS|firewall-public' = 'SCORE-FIREWALL'; 'SEC-CHECKS|uac-off' = 'SCORE-UAC' }
+    @{ 'SEC-CHECKS|winupdate-off' = 'SCORE-WINUPDATE'; 'SEC-CHECKS|winupdate-old' = 'SCORE-WINUPDATE'; 'SEC-CHECKS|secureboot-off' = 'SCORE-SECUREBOOT'
+       'SEC-CHECKS|firewall-domain' = 'SCORE-FIREWALL'; 'SEC-CHECKS|firewall-private' = 'SCORE-FIREWALL'; 'SEC-CHECKS|firewall-public' = 'SCORE-FIREWALL'; 'SEC-CHECKS|uac-off' = 'SCORE-UAC' }
 }
 # Rules whose Regel exclusion also covers a deduction that has a different Id
-function Get-ScoreRuleLinks { @{ 'SCORE-AUTOSTART' = 'STA-HEAVY'; 'SCORE-HWCRIT' = 'HW-COOLING'; 'SCORE-HWWARN' = 'HW-COOLING' } }
+function Get-ScoreRuleLinks { @{ 'SCORE-AUTOSTART' = 'STA-HEAVY'; 'SCORE-HWWARN' = 'HW-COOLING' } }
+# Deductions that are never a wanted state: they cannot be accepted or excluded by any route (the hint is still shown).
+# No active antivirus and a Windows without security updates are security gaps; critical hardware points (failing drive,
+# memory errors, critical battery or cooling) must not be hidden from the score.
+function Get-ScoreFixedIds { return @('SCORE-ANTIVIRUS', 'SCORE-WINSUPPORT', 'SCORE-HWCRIT') }
 
 function Get-WtExclusionPath { return (Join-Path $Script:DataDir 'ausnahmen.json') }
 function Write-WtExclusionWarning([string]$Text) { try { W $Text 'DarkYellow' } catch { } }
@@ -2986,6 +2993,7 @@ function Read-WtExclusions {
             $art = [string]$e.Art; $reg = [string]$e.Regel; $key = [string]$e.Schluessel
             if ($art -cnotin 'Objekt', 'Regel', 'Abzug' -or $reg -cnotmatch '^[A-Z]+(-[A-Z0-9]+)+$') { continue }
             if ($art -eq 'Objekt' -and -not $key) { continue }
+            if ($art -eq 'Abzug' -and (Get-ScoreFixedIds) -contains $reg) { continue }
             if ($art -ne 'Objekt') { $key = '' }
             $list.Add([pscustomobject]@{ Art = $art; Regel = $reg; Schluessel = $key; Anzeige = [string]$e.Anzeige; Titel = [string]$e.Titel; Zeit = [string]$e.Zeit })
         }
@@ -3022,6 +3030,7 @@ function Add-WtExclusion {
     param([string]$Art, [string]$Regel, [string]$Schluessel = '', [string]$Anzeige = '', [string]$Titel = '')
     if ($Art -cnotin 'Objekt', 'Regel', 'Abzug') { throw (T 'Unknown exclusion type: {0}' $Art) }
     if ($Regel -cnotmatch '^[A-Z]+(-[A-Z0-9]+)+$') { throw (T 'Invalid rule or score ID: {0}' $Regel) }
+    if ($Art -eq 'Abzug' -and (Get-ScoreFixedIds) -contains $Regel) { throw (T 'This deduction cannot be accepted: it is a security gap or a serious hardware problem and always counts ({0})' $Regel) }
     if ($Art -eq 'Objekt' -and -not $Schluessel) { throw (T 'An exclusion of a single point needs its key') }
     if ($Art -ne 'Objekt') { $Schluessel = '' }
     if ($Schluessel.Length -gt 500) { $Schluessel = $Schluessel.Substring(0, 500) }
@@ -3044,16 +3053,22 @@ function Remove-WtExclusion {
     return $true
 }
 # Is the item (or the whole rule) excluded? -ItemOnly ignores Regel exclusions (used by the score for single items).
-function Test-WtExcluded([string]$RuleId, [string]$Key = '', $Entries = $null, [switch]$ItemOnly) {
+# -Stufe 'krit': a critical point is never hidden by an exclusion of the single point (only by excluding the whole rule).
+function Test-WtExcluded([string]$RuleId, [string]$Key = '', $Entries = $null, [switch]$ItemOnly, [string]$Stufe = '') {
     if ($null -eq $Entries) { $Entries = @(Read-WtExclusions) }
     foreach ($e in @($Entries)) {
         if (-not $e -or $e.Regel -ne $RuleId) { continue }
         if ($e.Art -eq 'Regel' -and -not $ItemOnly) { return $true }
-        if ($e.Art -eq 'Objekt' -and $Key -and ([string]$e.Schluessel) -eq $Key) { return $true }
+        if ($e.Art -eq 'Objekt' -and $Stufe -ne 'krit' -and $Key -and ([string]$e.Schluessel) -eq $Key) { return $true }
     }
     return $false
 }
 # Stable key of an engine item (result of New-Item2): explicit Schluessel, Technik, simple Data, properties of Data, else the label
+function Get-WtItemStufe($item) {
+    if (-not $item) { return '' }
+    foreach ($v in @($item.Stufe, $item.Data.Stufe, $item.Raw.Stufe, $item.Raw.Data.Stufe)) { if ($v) { return ([string]$v).ToLower() } }
+    return ''
+}
 function Get-WtItemKey($item) {
     if (-not $item) { return '' }
     if ($item.Schluessel) { return [string]$item.Schluessel }
@@ -3076,17 +3091,17 @@ function Get-WtItemKey($item) {
 }
 # Which source excludes a score deduction? '' = none, else Abzug | Regel | Objekt. Need = how many linked items must be excluded.
 function Test-WtScoreExcluded([string]$Id, $Entries, [int]$Need = 1) {
+    if ((Get-ScoreFixedIds) -contains $Id) { return '' }
     $rl = Get-ScoreRuleLinks
     foreach ($e in @($Entries)) { if ($e -and $e.Art -eq 'Abzug' -and $e.Regel -eq $Id) { return 'Abzug' } }
+    # A whole-rule exclusion only covers the deduction with the same Id or the one listed in Get-ScoreRuleLinks.
+    # Hiding e.g. the hints of SEC-CHECKS must not remove security deductions from the score.
     foreach ($e in @($Entries)) { if ($e -and $e.Art -eq 'Regel' -and ($e.Regel -eq $Id -or ($rl.ContainsKey($Id) -and $e.Regel -eq $rl[$Id]))) { return 'Regel' } }
     $n = 0
     foreach ($kv in (Get-ScoreItemLinks).GetEnumerator()) {
         if ($kv.Value -ne $Id) { continue }
         $p = ([string]$kv.Key) -split '\|', 2
-        if (Test-WtExcluded $p[0] $p[1] $Entries) {
-            if (@($Entries | Where-Object { $_ -and $_.Art -eq 'Regel' -and $_.Regel -eq $p[0] }).Count) { return 'Regel' }
-            $n++
-        }
+        if (Test-WtExcluded $p[0] $p[1] $Entries -ItemOnly) { $n++ }
     }
     if ($Need -gt 0 -and $n -ge $Need) { return 'Objekt' }
     return ''
@@ -3187,7 +3202,7 @@ function New-Snapshot([string]$Label = 'scan', [object[]]$Findings) {
     $wsi = $null; try { $wsi = Get-WindowsSupportInfo } catch { }
     $hw = $null; try { $hw = Get-HardwareSnapshot } catch { W (T '  Hardware measurement failed: {0}' ($_.Exception.Message)) 'DarkYellow' }
     $brw = $null; try { $brw = [int64]((@(Get-BrowserCacheDirs) | Measure-Object Bytes -Sum).Sum) } catch { }
-    $warn = @(); try { $warn = @(Get-WarningSignals | ForEach-Object { [ordered]@{ Text = $_.Text; Anzahl = $_.Anzahl } }) } catch { }
+    $warn = @(); try { $warn = @(Get-WarningSignals | ForEach-Object { [ordered]@{ Text = $_.Text; Anzahl = $_.Anzahl; Schluessel = [string]$_.Schluessel } }) } catch { }
     $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
     $snap = [ordered]@{
         Tool = $Script:Version; Label = $Label; Zeit = (Get-Date).ToString('o'); Admin = $Script:IsAdmin
@@ -3254,12 +3269,13 @@ function Get-HealthScoreCore($s, $ex) {
     if ($s.Speicher.PapierkorbBytes -gt 5GB) { Abzug 'CLN-RECYCLE' 2 (T 'Recycle bin larger than 5 GB') }
     # Warning signs: new snapshots measure them themselves (comparable before/after), old ones only via the findings
     $nWarn = 0
-    if ($null -ne $s.Stabilitaet) { $nWarn = @($s.Stabilitaet.Warnsignale | Where-Object { $_ -and -not (Test-WtExcluded 'EVT-HEALTH' ([string]$_.Text) $ex -ItemOnly) }).Count }
+    if ($null -ne $s.Stabilitaet) { $nWarn = @($s.Stabilitaet.Warnsignale | Where-Object { $_ -and -not (Test-WtExcluded 'EVT-HEALTH' $(if ($_.Schluessel) { [string]$_.Schluessel } else { [string]$_.Text }) $ex -ItemOnly) }).Count }
     else { foreach ($bf in @($s.Befunde)) { if ($bf.Regel -eq 'EVT-HEALTH') { $nWarn += [int]$bf.Anzahl } } }
     if ($nWarn -gt 0) { Abzug 'EVT-HEALTH' ([math]::Min(10, 2 * $nWarn)) (T 'Warning messages from Windows (e.g. crashes) in the last 30 days') }
     if ($s.Hardware) {
         # Only permanent states (drive, battery, memory errors ...), no snapshots such as the current temperature
-        $hp = @($s.Hardware.Punkte | Where-Object { $_ -and $_.Wertung -ne 'moment' -and -not (Test-WtExcluded 'HW-COOLING' ([string]$_.Text) $ex -ItemOnly) })
+        # Critical points ('krit') always count; only warn points can be excluded from the count
+        $hp = @($s.Hardware.Punkte | Where-Object { $_ -and $_.Wertung -ne 'moment' -and ($_.Stufe -eq 'krit' -or -not (Test-WtExcluded 'HW-COOLING' $(if ($_.Schluessel) { [string]$_.Schluessel } else { [string]$_.Text }) $ex -ItemOnly)) })
         $nk = @($hp | Where-Object { $_.Stufe -eq 'krit' }).Count; $nw = @($hp | Where-Object { $_.Stufe -eq 'warn' }).Count
         if ($nk) { Abzug 'SCORE-HWCRIT' ([math]::Min(10, 5 * $nk)) (T 'Hardware: important warnings (drives, memory, cooling, battery)') }
         if ($nw) { Abzug 'SCORE-HWWARN' ([math]::Min(3, $nw)) (T 'Hardware: irregularities (drives, fans, graphics card)') }
@@ -3287,7 +3303,7 @@ function Get-HealthScore($s, $Exclusions = $null) {
             }
         }
     }
-    [ordered]@{ Wert = $wert; Abzuege = @($zaehlt | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Punkte = $_.Punkte; Grund = $_.Grund } }); Ausgeschlossen = $aus.ToArray(); WertOhneAusnahmen = $ohne }
+    [ordered]@{ Wert = $wert; Abzuege = @($zaehlt | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Punkte = $_.Punkte; Grund = $_.Grund; Fest = [bool]((Get-ScoreFixedIds) -contains $_.Id) } }); Ausgeschlossen = $aus.ToArray(); WertOhneAusnahmen = $ohne }
 }
 # Score of a stored snapshot, measured with today's rules and exclusions (an accepted state must not look like an
 # improvement in the trend). The stored Score of the snapshot file stays as written.
@@ -3316,7 +3332,7 @@ function Invoke-Rules([bool]$Apply) {
         $items = @()
         try { $items = @(& $r.Detect | Where-Object { $_ }) } catch { W (T '    Error during the check: {0}' ($_.Exception.Message)) 'Red'; continue }
         # Excluded points are neither shown nor confirmed nor fixed (also not with -Yes)
-        $nEx = 0; if ($items.Count -and $exAll.Count) { $rid = $r.Id; $keep = @($items | Where-Object { -not (Test-WtExcluded $rid (Get-WtItemKey $_) $exAll) }); $nEx = $items.Count - $keep.Count; $items = $keep }
+        $nEx = 0; if ($items.Count -and $exAll.Count) { $rid = $r.Id; $keep = @($items | Where-Object { -not (Test-WtExcluded $rid (Get-WtItemKey $_) $exAll -Stufe (Get-WtItemStufe $_)) }); $nEx = $items.Count - $keep.Count; $items = $keep }
         if (-not $items.Count) { if ($nEx) { W ((T '    {0} excluded point(s) not shown (see -Mode Exclusions)') -f $nEx) 'DarkGray' } else { W (T '    ok - nothing found') 'Green' }; continue }
         $sum = ($items | Measure-Object Bytes -Sum).Sum
         $findings.Add([pscustomobject]@{ Regel = $r.Id; Kategorie = $r.Kategorie; Titel = $r.Titel; Risiko = $r.Risiko; Anzahl = $items.Count; Ausgeschlossen = $nEx; Schluessel = @($items | ForEach-Object { Get-WtItemKey $_ }); Bytes = [int64]$sum; Objekte = @($items | ForEach-Object { $_.Label }); Stufen = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary] -and $_.Data.Stufe) { [string]$_.Data.Stufe } else { '' } }); Bereiche = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary]) { [string]$_.Data.Bereich } else { '' } }); Wertungen = @($items | ForEach-Object { if ($_.Data -is [System.Collections.IDictionary]) { [string]$_.Data.Wertung } else { '' } }) })
@@ -4147,7 +4163,7 @@ function Get-AllFindings([bool]$Expert = $false, [scriptblock]$OnProgress = $nul
         $kept = New-Object System.Collections.Generic.List[object]
         foreach ($it in $items) {
             $key = Get-WtItemKey $it
-            if (Test-WtExcluded $r.Id $key $exAll) { $hits.Add([pscustomobject]@{ Regel = $r.Id; Schluessel = $key; Label = [string]$it.Label; Seite = [string]$r.Seite }) }
+            if (Test-WtExcluded $r.Id $key $exAll -Stufe (Get-WtItemStufe $it)) { $hits.Add([pscustomobject]@{ Regel = $r.Id; Schluessel = $key; Label = [string]$it.Label; Seite = [string]$r.Seite }) }
             else { $kept.Add([pscustomobject]@{ It = $it; Key = $key }) }
         }
         $nEx = $items.Count - $kept.Count
@@ -4969,6 +4985,7 @@ function Invoke-ExclusionsMode {
             $id = $Matches[1].Trim().ToUpper(); $ids = @(Get-ScoreIds)
             if ($ids -cnotcontains $id -and $ids -ccontains ('SCORE-' + $id)) { $id = 'SCORE-' + $id }
             if ($ids -cnotcontains $id) { $err += ((T '  Unknown score deduction: {0} (known: {1})') -f $a, ($ids -join ', ')); continue }
+            if ((Get-ScoreFixedIds) -contains $id) { $err += ('  ' + (T 'This deduction cannot be accepted: it is a security gap or a serious hardware problem and always counts ({0})' $id)); continue }
             $plan += [pscustomobject]@{ Art = 'Abzug'; Regel = $id; Titel = [string](Get-ScoreInfo)[$id] }
         } else {
             $id = $a.Trim().ToUpper()

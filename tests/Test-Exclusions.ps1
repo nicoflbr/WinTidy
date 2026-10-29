@@ -106,7 +106,7 @@ $Script:Rules = @(
     [pscustomobject]@{ Id = 'CLN-ALL'; Kategorie = 'Speicher'; Titel = 'All'; Warum = 'x'; Risiko = 'Niedrig'; Admin = $false; Standard = $true
         Detect = { New-Item2 'z1' 0 'z1' }; Fix = { param($it) $Script:Done.Add($it.Label); 'ok' } }
     [pscustomobject]@{ Id = 'HW-X'; Kategorie = 'Hardware'; Titel = 'X'; Warum = 'x'; Risiko = 'Info'; Admin = $false; Standard = $true
-        Detect = { New-Item2 'Fan stopped' 0 @{ Stufe = 'krit' } $null 'fan-stop'; New-Item2 'Fine' 0 @{ Stufe = 'ok' } }; Fix = $null }
+        Detect = { New-Item2 'Fan stopped' 0 @{ Stufe = 'krit' } $null 'fan-stop'; New-Item2 'Drive warm' 0 @{ Stufe = 'warn' } $null 'drive-warm'; New-Item2 'Fine' 0 @{ Stufe = 'ok' } }; Fix = $null }
     [pscustomobject]@{ Id = 'DBL-T'; Kategorie = 'System'; Seite = 'Debloat'; Titel = 'T'; Warum = 't'; Risiko = 'Niedrig'; Admin = $false; Standard = $false
         Detect = { New-Item2 'tweak' 0 'tw1' }; Fix = { param($it) $Script:Done.Add($it.Label); 'ok' } }
 )
@@ -117,14 +117,15 @@ Check 'No exclusions: no hits, nothing excluded' (@($Script:LastExcludedHits).Co
 $null = Add-WtExclusion -Art Objekt -Regel 'CLN-A' -Schluessel 'C:\a1' -Anzeige 'a1'
 $null = Add-WtExclusion -Art Regel -Regel 'CLN-ALL'
 $null = Add-WtExclusion -Art Objekt -Regel 'HW-X' -Schluessel 'fan-stop' -Anzeige 'Fan stopped'
+$null = Add-WtExclusion -Art Objekt -Regel 'HW-X' -Schluessel 'drive-warm' -Anzeige 'Drive warm'
 $null = Add-WtExclusion -Art Objekt -Regel 'DBL-T' -Schluessel 'tw1' -Anzeige 'tweak'
 $f = @(Get-AllFindings $false $null)
 $a = $f | Where-Object Id -eq 'CLN-A'
 Check 'Excluded item is hidden, the other stays (index and key intact)' ($a.Items.Count -eq 1 -and $a.Items[0].Label -eq 'a2' -and $a.Items[0].Index -eq 0 -and $a.Ausgeschlossen -eq 1 -and $a.Bytes -eq 200)
 Check 'Rule with all items excluded does not appear' (-not ($f | Where-Object Id -eq 'CLN-ALL') -and $f.Count -eq 3)
-Check 'Info item excluded by its explicit key' ((($f | Where-Object Id -eq 'HW-X').Items | ForEach-Object Label) -join ',' -eq 'Fine')
+Check 'Info item (warn) excluded by its explicit key; the critical one stays visible' ((($f | Where-Object Id -eq 'HW-X').Items | ForEach-Object Label) -join ',' -eq 'Fan stopped,Fine')
 $h = @($Script:LastExcludedHits)
-Check 'Hits collected for the normal page' ($h.Count -eq 3 -and ($h | Where-Object { $_.Regel -eq 'CLN-A' -and $_.Schluessel -eq 'C:\a1' -and $_.Label -eq 'a1' }) -and ($h | Where-Object Regel -eq 'CLN-ALL'))
+Check 'Hits collected for the normal page' ($h.Count -eq 3 -and -not ($h | Where-Object Schluessel -eq 'fan-stop') -and ($h | Where-Object { $_.Regel -eq 'CLN-A' -and $_.Schluessel -eq 'C:\a1' -and $_.Label -eq 'a1' }) -and ($h | Where-Object Regel -eq 'CLN-ALL'))
 $d = @(Get-AllFindings $false $null 'Debloat')
 Check 'Debloat page: excluded item hidden' ($d.Count -eq 0)
 $h2 = @($Script:LastExcludedHits)
@@ -177,8 +178,8 @@ function MkScoreSnap {
     [pscustomobject]@{ Zeit = '2026-10-29T10:00:00'; Laufwerke = @(); Boot = [pscustomobject]@{ Mittel5 = $null }
         Autostart = [pscustomobject]@{ Aktiv = 12; Verwaist = 0; Liste = @(1..12 | ForEach-Object { [pscustomobject]@{ Name = "App$_"; Art = 'Registry'; Ort = 'HKCU Run'; Ziel = "C:\app$_.exe"; Zustand = 'ok'; Aktiv = $true; DegradationMs = 0 } }) }
         Ereignisse = [pscustomobject]@{ FehlerSystem7T = 0; FehlerAnwendung7T = 0 }; Treiber = [pscustomobject]@{ Duplikate = 0; Geistergeraete = 0 }; Speicher = [pscustomobject]@{ PapierkorbBytes = 0 }
-        Stabilitaet = [pscustomobject]@{ Warnsignale = @([pscustomobject]@{ Text = 'Blue screen'; Anzahl = 1 }, [pscustomobject]@{ Text = 'Drive errors'; Anzahl = 2 }) }
-        Hardware = [pscustomobject]@{ Punkte = @([pscustomobject]@{ Stufe = 'krit'; Text = 'Fan stopped'; Wertung = 'dauer' }, [pscustomobject]@{ Stufe = 'warn'; Text = 'Drive warm'; Wertung = 'dauer' }) }
+        Stabilitaet = [pscustomobject]@{ Warnsignale = @([pscustomobject]@{ Text = 'Blue screen'; Anzahl = 1; Schluessel = 'bluescreen' }, [pscustomobject]@{ Text = 'Drive errors'; Anzahl = 2; Schluessel = 'drive-errors' }) }
+        Hardware = [pscustomobject]@{ Punkte = @([pscustomobject]@{ Stufe = 'krit'; Text = 'Fan stopped'; Wertung = 'dauer'; Schluessel = 'fan-stop' }, [pscustomobject]@{ Stufe = 'warn'; Text = 'Drive warm'; Wertung = 'dauer'; Schluessel = 'drive-warm' }) }
         Sicherheit = [pscustomobject]@{ SecureBoot = $false; DefenderEchtzeit = $true; AndererVirenschutz = $false; AusfuehrungsrichtlinieCU = 'Bypass'; UacAus = $true; FirewallProfileAus = 2 } }
 }
 $s = MkScoreSnap
@@ -203,7 +204,7 @@ $e += [pscustomobject]@{ Art = 'Objekt'; Regel = 'SEC-CHECKS'; Schluessel = 'fir
 Check 'Firewall: both profiles excluded - accepted' ((Get-HealthScore $s $e).Wert -eq 70)
 $e = @([pscustomobject]@{ Art = 'Regel'; Regel = 'SEC-CHECKS'; Schluessel = '' })
 $sc = Get-HealthScore $s $e
-Check 'Whole SEC-CHECKS excluded: all linked security deductions accepted' ($sc.Wert -eq 82 -and @($sc.Ausgeschlossen | Where-Object Quelle -eq 'Regel').Count -eq 3) (($sc.Ausgeschlossen | ForEach-Object { "$($_.Id)/$($_.Quelle)" }) -join ' ')
+Check 'Whole SEC-CHECKS excluded: hints hidden, security deductions stay in the score' ($sc.Wert -eq 60 -and @($sc.Ausgeschlossen).Count -eq 0) (($sc.Ausgeschlossen | ForEach-Object { "$($_.Id)/$($_.Quelle)" }) -join ' ')
 # startup items
 $e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'STA-HEAVY'; Schluessel = '[HKCU Run] App1 -> C:\app1.exe' }, [pscustomobject]@{ Art = 'Objekt'; Regel = 'STA-HEAVY'; Schluessel = '[HKCU Run] App2 -> C:\app2.exe' })
 $sc = Get-HealthScore $s $e
@@ -215,12 +216,29 @@ Check 'Autostart text shows the counted number' ((($sc.Abzuege | Where-Object Id
 $e = @([pscustomobject]@{ Art = 'Regel'; Regel = 'STA-HEAVY'; Schluessel = '' })
 Check 'Whole STA-HEAVY excluded accepts the autostart deduction' ((Get-HealthScore $s $e).Ausgeschlossen[0].Id -eq 'SCORE-AUTOSTART')
 # event log and hardware items
-$e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'EVT-HEALTH'; Schluessel = 'Blue screen' })
+$e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'EVT-HEALTH'; Schluessel = 'bluescreen' })
 Check 'Warning kind excluded one by one (2 points less)' ((Get-HealthScore $s $e).Wert -eq 62)
-$e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'HW-COOLING'; Schluessel = 'Fan stopped' })
-Check 'Hardware point excluded (critical 5 less)' ((Get-HealthScore $s $e).Wert -eq 65)
+$e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'HW-COOLING'; Schluessel = 'fan-stop' })
+Check 'Critical hardware point cannot be excluded from the count' ((Get-HealthScore $s $e).Wert -eq 60)
+$e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'HW-COOLING'; Schluessel = 'drive-warm' })
+Check 'Warn hardware point excluded (1 point less)' ((Get-HealthScore $s $e).Wert -eq 61)
 $e = @([pscustomobject]@{ Art = 'Regel'; Regel = 'HW-COOLING'; Schluessel = '' })
-Check 'Whole HW-COOLING excluded covers both hardware deductions' ((Get-HealthScore $s $e).Wert -eq 66)
+Check 'Whole HW-COOLING excluded covers only the warn deduction, never the critical one' ((Get-HealthScore $s $e).Wert -eq 61)
+$sOld = MkScoreSnap; foreach ($p in $sOld.Hardware.Punkte) { $p.psobject.Properties.Remove('Schluessel') }; foreach ($p in $sOld.Stabilitaet.Warnsignale) { $p.psobject.Properties.Remove('Schluessel') }
+$e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'HW-COOLING'; Schluessel = 'Drive warm' }, [pscustomobject]@{ Art = 'Objekt'; Regel = 'EVT-HEALTH'; Schluessel = 'Blue screen' })
+Check 'Old snapshots without Schluessel: fallback to the text' ((Get-HealthScore $sOld $e).Wert -eq 63)
+# deductions that are never a wanted state
+Check 'Fixed deduction Ids' ((Get-ScoreFixedIds) -join ',' -eq 'SCORE-ANTIVIRUS,SCORE-WINSUPPORT,SCORE-HWCRIT')
+foreach ($fx in (Get-ScoreFixedIds)) { $err = ''; try { $null = Add-WtExclusion -Art Abzug -Regel $fx } catch { $err = $_.Exception.Message }; Check "Abzug exclusion of $fx is refused" ($err -like '*cannot be accepted*' -and -not (Test-Path $ExPath)) }
+$sAv = MkScoreSnap; $sAv.Sicherheit.DefenderEchtzeit = $false; $sAv.Sicherheit | Add-Member WindowsSupportEnde '2020-01-01' -Force
+$base = (Get-HealthScore $sAv @()).Wert
+$e = @([pscustomobject]@{ Art = 'Abzug'; Regel = 'SCORE-ANTIVIRUS' }, [pscustomobject]@{ Art = 'Abzug'; Regel = 'SCORE-WINSUPPORT' }, [pscustomobject]@{ Art = 'Abzug'; Regel = 'SCORE-HWCRIT' }, [pscustomobject]@{ Art = 'Regel'; Regel = 'SEC-CHECKS' }, [pscustomobject]@{ Art = 'Regel'; Regel = 'HW-COOLING' }, [pscustomobject]@{ Art = 'Objekt'; Regel = 'SEC-CHECKS'; Schluessel = 'antivirus-off' }, [pscustomobject]@{ Art = 'Objekt'; Regel = 'SEC-CHECKS'; Schluessel = 'winsupport-end' })
+$sc = Get-HealthScore $sAv $e
+Check 'Antivirus, Windows support and critical hardware count by every route' (@($sc.Abzuege | Where-Object Id -in (Get-ScoreFixedIds)).Count -eq 3 -and $sc.Wert -eq $base + 1 -and (@($sc.Abzuege | Where-Object Fest).Count -eq 3)) (($sc.Abzuege | ForEach-Object { "$($_.Id)/$($_.Fest)" }) -join ' ')
+Check 'Other deductions are not marked fixed' (@((Get-HealthScore $s @()).Abzuege | Where-Object Fest).Count -eq 1)
+Set-Content $ExPath '{"Format":"WinTidy-Ausnahmen","Version":1,"Eintraege":[{"Art":"Abzug","Regel":"SCORE-ANTIVIRUS","Schluessel":"","Anzeige":"","Titel":"","Zeit":""},{"Art":"Abzug","Regel":"SCORE-UAC","Schluessel":"","Anzeige":"","Titel":"","Zeit":""}]}' -Encoding UTF8; $Script:Exclusions = $null
+Check 'Reading drops a fixed Abzug entry, keeps the others' (@(Read-WtExclusions).Count -eq 1 -and (Read-WtExclusions)[0].Regel -eq 'SCORE-UAC')
+Remove-Item $ExPath -Force; $Script:Exclusions = $null
 # orphans
 $s3 = MkScoreSnap; $s3.Autostart.Verwaist = 2; $s3.Autostart.Liste[0].Zustand = 'fehlt'; $s3.Autostart.Liste[1].Zustand = 'fehlt'
 $e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'STA-ORPHAN'; Schluessel = '[HKCU Run] App1 -> C:\app1.exe' })
@@ -237,6 +255,7 @@ $ids = @(Get-ScoreIds)
 Check 'All score Ids are known and every known Id is produced' (@($core | Where-Object { $ids -cnotcontains $_.Id }).Count -eq 0 -and @($ids | Where-Object { $_ -notin @($core | ForEach-Object Id) }).Count -eq 0) ((@($ids | Where-Object { $_ -notin @($core | ForEach-Object Id) })) -join ',')
 Check 'Score info has a text for every Id' (@($ids | Where-Object { -not (Get-ScoreInfo)[$_] }).Count -eq 0)
 Check 'Score links point to known deductions' (@((Get-ScoreItemLinks).Values + (Get-ScoreRuleLinks).Keys | Where-Object { $ids -cnotcontains $_ }).Count -eq 0)
+Check 'No link reaches a fixed deduction' (@((Get-ScoreItemLinks).Values + (Get-ScoreRuleLinks).Keys | Where-Object { (Get-ScoreFixedIds) -contains $_ }).Count -eq 0)
 # nothing readable -> as if there were no exclusions
 Set-Content $ExPath 'garbage' -Encoding UTF8; $Script:Exclusions = $null
 Check 'Unreadable file: score as without exclusions' ((Get-HealthScore $s).Wert -eq 60)
@@ -341,6 +360,46 @@ $o = Run-Mode @('CLN-TEMP') @('1')
 Check 'Add and remove together are refused' ($o -match 'one after the other' -and @(Read-WtExclusions).Count -eq 2)
 $o = Run-Mode $null @('all')
 Check 'Remove all' (@(Read-WtExclusions).Count -eq 0 -and $o -match 'No exclusions')
+
+
+# 10) Stable keys of hardware points and warning signals
+$o = Run-Mode @('SCORE:SCORE-ANTIVIRUS') $null
+$Script:Exclusions = $null
+Check 'CLI: fixed deduction is refused, nothing written' ($o -match 'cannot be accepted' -and @(Read-WtExclusions).Count -eq 0)
+$o = Run-Mode @('SCORE:ANTIVIRUS', 'SCORE:SCORE-UAC') $null
+$Script:Exclusions = $null
+Check 'CLI: one refused entry stops the whole call' ($o -match 'Nothing was changed' -and @(Read-WtExclusions).Count -eq 0)
+$def = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-HardwarePoints' }, $true) | Select-Object -First 1
+Invoke-Expression ($def.Extent.Text -replace 'function Get-HardwarePoints', 'function Get-HwPointsReal')
+$Script:Mock = @{}
+function Get-HwMonitorSensors([switch]$NoCache) { @($Script:Mock.Sensors | Where-Object { $_ }) }
+function Get-NvidiaGpus { @($Script:Mock.Gpus | Where-Object { $_ }) }
+function Get-ThermalZones { @() }
+function Get-ThrottleEventCount([int]$Days = 30, [datetime]$Since = [datetime]::MinValue) { 0 }
+function Get-DiskHealth { @($Script:Mock.Disks | Where-Object { $_ }) }
+function Get-ChassisInfo { [pscustomobject]@{ Laptop = $false; Akku = $false; HatAkku = $false; Typen = @(); VM = $false; CpuName = 'CPU' } }
+function Get-EventCount([hashtable]$Filter) { 0 }
+function Get-FanToolPoints { @() }
+function Get-BatteryWear { $null }
+function SS($Name, $Typ, $Wert, $GTyp = 'Motherboard') { [pscustomobject]@{ Quelle = 'LibreHardwareMonitor'; Name = $Name; Typ = $Typ; Wert = [double]$Wert; Geraet = 'Board'; GeraeteTyp = $GTyp } }
+function Gpu2($T, $F, $U = 5) { [pscustomobject]@{ Name = 'RTX'; TempC = $T; LuefterProzent = $F; LeistungW = 40; LimitW = 285; TaktMHz = 2600; TaktMaxMHz = 3100; Auslastung = $U; PcieBreite = $null; PcieBreiteMax = $null; GruendeStabil = 0; SlowdownC = $null; MaxOpC = $null; ZielC = $null } }
+function Disk2($Name, $T, $Wear = $null) { [pscustomobject]@{ Name = $Name; Art = 'SSD'; Bus = ''; Zustand = 'Healthy'; TempC = $T; Verschleiss = $Wear; Betriebsstunden = 100; Ausfallwarnung = $false } }
+function RunHw([hashtable]$m, [string]$lang) { $Script:Mock = $m; $Script:Cache = @{}; $Script:Lang = $lang; @(Get-HwPointsReal) }
+$p1 = RunHw @{ Sensors = @((SS 'CPU Package' 'Temperature' 44 'Cpu'), (SS 'CPU Fan' 'Fan' 800)); Gpus = @(Gpu2 74 0 5); Disks = @(Disk2 'Samsung' 61 85) } 'en'
+$p2 = RunHw @{ Sensors = @((SS 'CPU Package' 'Temperature' 47 'Cpu'), (SS 'CPU Fan' 'Fan' 800)); Gpus = @(Gpu2 78 0 5); Disks = @(Disk2 'Samsung' 62 85) } 'en'
+$k1 = @($p1 | ForEach-Object Schluessel) -join '|'; $k2 = @($p2 | ForEach-Object Schluessel) -join '|'
+Check 'Every hardware point has a key' (@($p1 | Where-Object { -not $_.Schluessel }).Count -eq 0 -and $p1.Count -ge 5) $k1
+Check 'Keys do not change when the measured values change' ($k1 -eq $k2 -and (($p1 | ForEach-Object Text) -join '|') -ne (($p2 | ForEach-Object Text) -join '|')) "$k1 // $k2"
+Check 'Keys contain the cause, the device name but no numbers from measurements' (($p1 | Where-Object Schluessel -eq 'gpu-fan-zero:RTX') -and ($p1 | Where-Object { $_.Schluessel -in 'drive-temp-hot:Samsung', 'drive-temp-warm:Samsung' }) -and ($p1 | Where-Object Schluessel -eq 'ssd-wear:Samsung'))
+$Script:De = New-Object "System.Collections.Generic.Dictionary[string,string]"; $p3 = RunHw @{ Sensors = @((SS 'CPU Package' 'Temperature' 44 'Cpu'), (SS 'CPU Fan' 'Fan' 800)); Gpus = @(Gpu2 74 0 5); Disks = @(Disk2 'Samsung' 61 85) } 'de'
+Check 'Keys do not change with the language' ((@($p3 | ForEach-Object Schluessel) -join '|') -eq $k1)
+$Script:Lang = 'en'; $Script:De = $null
+function Get-EventCount([hashtable]$Filter) { if ($Filter.Id -eq 41) { 3 } elseif ($Filter.Id -eq 1001) { 1 } else { 0 } }
+$Script:Cache = @{}; $w = @(Get-WarningSignals)
+Check 'Warning signals carry a key per check' ($w.Count -eq 2 -and ($w | ForEach-Object Schluessel) -join ',' -eq 'power-loss,bluescreen')
+$Script:Cache = @{}
+$snap = @(Get-WarningSignals | ForEach-Object { [ordered]@{ Text = $_.Text; Anzahl = $_.Anzahl; Schluessel = [string]$_.Schluessel } })
+Check 'Warning signal key is used by the EVT-HEALTH item' ((($Script:RealRules | Where-Object Id -eq 'EVT-HEALTH').Detect.ToString()) -match 'Schluessel')
 
 Remove-Item $TestData -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail) { Write-Host "$fail test(s) failed" -ForegroundColor Red } else { Write-Host 'All exclusion tests passed' -ForegroundColor Green }

@@ -27,7 +27,8 @@ Double-click `WinTidy App.cmd` → confirm the Windows prompt with **Yes** → t
 4. **Hardware** (Overview, "For experts"): cooling, fans, temperatures of processor, graphics card and drives, throttling, battery wear and refresh rate. With **"Test cooling"** WinTidy puts the processor under load for about a minute and checks whether the cooling keeps up.
 5. **Debloat**: removes what Windows and PC makers put in your way - ads and suggestions, tracking and personalisation, unneeded taskbar buttons, preinstalled apps. It has its own check and its own "Apply selected" button. Only ads and suggestions are ticked, the rest is up to you. Settings can be undone under History; removed apps can be reinstalled from the Store. Not offered on managed PCs and Windows Server.
 6. **History**: trend of eight key figures (start time, waiting time after the desktop appears, startup programs, background processes, memory, processor and drive load at idle, free space) plus the boot time chart across all restarts, all checks and optimizations. The home page and the report answer "Did WinTidy help?" at a glance. Start times are only judged from restarts after the optimization (at least 2), so they show "not measurable yet" at first.
-7. **Settings**: appearance (same as Windows, light or dark), language, **updates**, undo, create desktop shortcut, thorough check, expert mode.
+7. **Exclusions**: if a point is how you want it, click **Exclude** next to it (or **Exclude this check** on the card, or **Accept** next to a deduction under "Why not 100?"). WinTidy then no longer shows it, never changes it - not even in unattended runs - and does not count it in the health score. The card **Excluded points** at the bottom of the recommendations page (also reachable from the overview) lists everything you excluded, since when, and whether WinTidy still finds it. **Include again** brings a point back; it appears again after the next check. Some things cannot be excluded because they are never a wanted state: no active antivirus, a Windows version without security updates, and critical hardware problems (failing drive, memory errors, critical battery or cooling). They keep counting in the score; the app offers no "Accept" / "Exclude" for them and the command line refuses them. Excluding the whole security check only hides its hints; the security deductions stay in the score. Excluding is not the same as `-ExcludeRule` (which only skips a rule for one run).
+8. **Settings**: appearance (same as Windows, light or dark), language, **updates**, undo, create desktop shortcut, thorough check, expert mode.
 
 The app uses the same logic and the same data as the command line – you can use both alternately.
 
@@ -51,6 +52,7 @@ The app uses the same logic and the same data as the command line – you can us
 | `Restore` | restores backed-up registry values, tasks and service start types of a run | yes |
 | `Rules` | lists all rules with their risk | no |
 | `Hardware` | cooling, fans, temperatures, drives, battery; with `-CoolingTest [-Seconds 90]` additionally a cooling test under load | no |
+| `Exclusions` | lists the points you excluded; with `-AddExclusion` / `-RemoveExclusion` changes the list | only the exclusion list |
 | `Update` | checks GitHub for a newer release, shows the release notes and (after confirmation, or with `-Yes`) installs it | yes (WinTidy itself) |
 
 Examples:
@@ -68,6 +70,10 @@ Examples:
 .\WinTidy.ps1 -Mode Hardware -CoolingTest      # check cooling, 60 s full load
 .\WinTidy.ps1 -Mode Scan -Language de          # German output and report
 .\WinTidy.ps1 -Mode Update                     # look for a new WinTidy version and install it
+.\WinTidy.ps1 -Mode Exclusions                 # list the excluded points
+.\WinTidy.ps1 -Mode Exclusions -AddExclusion STA-HEAVY          # exclude a whole rule
+.\WinTidy.ps1 -Mode Exclusions -AddExclusion SCORE:SCORE-UAC     # accept one score deduction
+.\WinTidy.ps1 -Mode Exclusions -RemoveExclusion 2                # include entry no. 2 again (or: all)
 ```
 
 ## Profiles (save and reuse the rule selection)
@@ -156,6 +162,7 @@ The folder and file names are internal and stay German in both languages:
   WinTidy-Bericht.html              # report (score, boot time history, before/after, findings, action log)
   snapshots\<time>_<scan|vorher|nachher>.json
   kuehltest\<time>.json             # measurement series of the cooling tests
+  ausnahmen.json                    # points you excluded (since 1.12)
   runs\<time>_<scan|preview|apply|restore|hardware|kuehltest>\
       konsole.txt                   # complete console log
       actions.jsonl                 # every action as a JSON line (time, rule, object, status, bytes, message)

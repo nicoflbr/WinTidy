@@ -364,6 +364,7 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
               <StackPanel Grid.Column="1" Margin="30,6,0,0" VerticalAlignment="Center">
                 <TextBlock x:Name="ScoreHeadline" Text="Not checked yet" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource Ink}" TextWrapping="Wrap"/>
                 <TextBlock x:Name="ScoreDetail" Style="{StaticResource Sub}" Margin="0,6,0,6" Text="The check usually takes one to three minutes. Afterwards you see what can be improved – in plain words."/>
+                <Button x:Name="ScoreExclLink" Style="{StaticResource LinkBtn}" Content="Excluded points" HorizontalAlignment="Left" Margin="0,0,0,6" Visibility="Collapsed"/>
                 <TextBlock x:Name="ScoreLimited" FontSize="12" Foreground="{DynamicResource Warn}" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="Collapsed" Text="Limited check without administrator rights – the value is only partly meaningful."/>
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                   <Button x:Name="BtnScan" Style="{StaticResource Primary}" Content="_Check now"/>
@@ -438,7 +439,17 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           </StackPanel>
         </StackPanel>
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-          <StackPanel x:Name="RecsPanel" Margin="36,6,36,20" MaxWidth="980"/>
+          <StackPanel>
+            <StackPanel x:Name="RecsPanel" Margin="36,6,36,8" MaxWidth="980"/>
+            <Border x:Name="ExclCard" Style="{StaticResource Card}" Margin="36,0,36,20" MaxWidth="980" Visibility="Collapsed">
+              <StackPanel>
+                <TextBlock Text="Excluded points" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource Ink}"/>
+                <TextBlock Style="{StaticResource Sub}" FontSize="13" Margin="0,4,0,10" TextWrapping="Wrap" Text="These points are accepted as they are: WinTidy does not show them, does not change them and does not count them in the score. Points you include again appear after the next check."/>
+                <StackPanel x:Name="ExclPanel"/>
+                <Button x:Name="BtnExclAll" Style="{StaticResource LinkBtn}" Content="Include all again" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+              </StackPanel>
+            </Border>
+          </StackPanel>
         </ScrollViewer>
         <Border Grid.Row="2" Background="{DynamicResource CardBg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="36,14">
           <DockPanel>
@@ -988,6 +999,124 @@ $NavItems = 'NavHome', 'NavRecs', 'NavDebloat', 'NavHistory', 'NavSettings', 'Na
 # Open files (report) via Explorer so that the browser does not start with admin rights
 function Open-AsUser([string]$Path) { try { Start-Process -FilePath (Join-Path $env:windir 'explorer.exe') -ArgumentList ('"{0}"' -f $Path) } catch { try { Start-Process -FilePath $Path } catch { } } }
 function Test-Busy { if ($State.Busy) { Show-Msg (T 'WinTidy is still busy. Please try again in a few seconds.') | Out-Null; return $true }; return $false }
+
+# =============================================================================
+#  Exclusions (since 1.12): points the user accepts as they are
+#  The engine does the work (Invoke-GuiExclude / Invoke-GuiInclude / Invoke-GuiIncludeAll) and returns the
+#  list plus the new score. Data for the click handlers travels in .Tag (handlers do not see local variables).
+# =============================================================================
+$State.Exclusions = @(); $State.ExclPending = $null
+function Set-Exclusions($r) {
+    if (-not $r) { return }
+    $State.Exclusions = @(@($r.Eintraege) | Where-Object { $_ })
+    if ($r.Score -and $State.Snapshot) { try { $State.Snapshot.Score = $r.Score } catch { Write-ErrLog "Exclusions score: $($_.Exception.Message)" } }
+}
+function New-LinkButton([string]$text, $tag, [string]$tip = '', [string]$a11y = '') {
+    $b = New-Object System.Windows.Controls.Button; $b.Style = $Win.FindResource('LinkBtn'); $b.Content = $text; $b.Tag = $tag
+    $b.VerticalAlignment = 'Center'; $b.FontSize = 12
+    if ($tip) { $b.ToolTip = $tip }
+    if ($a11y) { Set-A11y $b $a11y }
+    $b
+}
+function Remove-ExclFromList($list, [string]$art, [string]$regel, [string]$key) {
+    $out = New-Object System.Collections.ArrayList
+    foreach ($f in @($list)) {
+        if (-not $f) { continue }
+        if ("$($f.Id)" -ne $regel) { [void]$out.Add($f); continue }
+        if ($art -eq 'Regel') { continue }
+        if ($art -eq 'Objekt') {
+            # critical points are never hidden by excluding the single point
+            $keep = @(@($f.Items) | Where-Object { $_ -and ([string]$_.Schluessel -ne $key -or (Get-ItemLevel $_) -eq 'krit') })
+            if (-not $keep.Count) { continue }
+            $f.Items = $keep
+            try { $f.Bytes = [double](@($keep | ForEach-Object { [double]$_.Bytes }) | Measure-Object -Sum).Sum } catch { }
+        }
+        [void]$out.Add($f)
+    }
+    $out.ToArray()
+}
+# Remove everything that is excluded from the lists the app holds (idempotent)
+function Hide-ExcludedFindings {
+    foreach ($xe in @($State.Exclusions)) {
+        if (-not $xe -or [string]$xe.Art -eq 'Abzug') { continue }
+        $a = [string]$xe.Art; $r = [string]$xe.Regel; $k = [string]$xe.Schluessel
+        $State.Findings = @(Remove-ExclFromList $State.Findings $a $r $k)
+        $State.InfoFindings = @(Remove-ExclFromList $State.InfoFindings $a $r $k)
+        $State.DebloatFindings = @(Remove-ExclFromList $State.DebloatFindings $a $r $k)
+    }
+}
+function Start-ExclOp([string]$Mode, $Entry) {
+    if (-not $State.EngineOk) { return }
+    if (Test-Busy) { return }
+    $State.ExclPending = @{ Mode = $Mode }
+    $Sync.Excl = $Entry
+    $cmd = if ($Mode -eq 'add') { 'Invoke-GuiExclude $Sync.Excl' } elseif ($Mode -eq 'remove') { 'Invoke-GuiInclude $Sync.Excl' } else { 'Invoke-GuiIncludeAll' }
+    [void](Start-Op 'silent' $cmd { param($r, $err, $cancelled) Complete-ExclOp $r $err } -Silent)
+}
+function Complete-ExclOp($r, $err) {
+    $p = $State.ExclPending; $State.ExclPending = $null
+    if (-not $r -or $r.Fehler) {
+        $why = $(if ($r) { [string]$r.Fehler } else { [string]$err })
+        Write-ErrLog "Exclusions: $why"
+        Show-Msg ((T 'The change could not be saved. Nothing was changed.') + $(if ($why) { "`n`n$why" } else { '' })) 'OK' 'Warning' | Out-Null
+        return
+    }
+    Set-Exclusions $r
+    Hide-ExcludedFindings
+    Update-Home; Build-Recs
+    if ($State.DebloatScanned) { Build-Debloat }
+    # The score changed: refresh the trend (otherwise it is loaded when the history page is opened)
+    if ($UI.PageHistory.Visibility -eq 'Visible') { try { Load-History } catch { Write-ErrLog "Exclusions history: $($_.Exception.Message)" } } else { $State.HistoryPending = $true }
+}
+function Start-Exclude($Entry) {
+    if (-not $Entry) { return }
+    if ([string]$Entry.Art -eq 'Regel') {
+        if ((Show-Msg ((T 'Exclude "{0}" completely? WinTidy will no longer show this check, will not change anything for it and will not count it in the score. You can include it again under Excluded points.') -f $Entry.Titel) 'YesNo' 'Question') -ne 'Yes') { return }
+    }
+    Start-ExclOp 'add' (@{ Art = [string]$Entry.Art; Regel = [string]$Entry.Regel; Schluessel = [string]$Entry.Schluessel; Anzeige = [string]$Entry.Anzeige; Titel = [string]$Entry.Titel })
+}
+function Start-Include($Entry) {
+    if (-not $Entry) { return }
+    Start-ExclOp 'remove' (@{ Art = [string]$Entry.Art; Regel = [string]$Entry.Regel; Schluessel = [string]$Entry.Schluessel; Anzeige = [string]$Entry.Anzeige; Titel = [string]$Entry.Titel })
+}
+function Update-Excluded {
+    $ex = @($State.Exclusions | Where-Object { $_ })
+    $UI.ScoreExclLink.Visibility = $(if ($ex.Count) { 'Visible' } else { 'Collapsed' })
+    $UI.ScoreExclLink.Content = (T '{0} excluded – not counted' $ex.Count)
+    Set-A11y $UI.ScoreExclLink ((T '{0} excluded – not counted' $ex.Count)) (T 'Shows the excluded points')
+    $UI.ExclPanel.Children.Clear()
+    $UI.ExclCard.Visibility = $(if ($ex.Count) { 'Visible' } else { 'Collapsed' })
+    foreach ($xe in $ex) {
+        $art = [string]$xe.Art
+        $row = New-Object System.Windows.Controls.DockPanel; $row.Margin = '0,0,0,10'
+        $code = $(if ($art -eq 'Regel') { 0xE71C } elseif ($art -eq 'Abzug') { 0xE73A } else { 0xE8FD })
+        $ic = New-Icon $code 'Muted' 16; $ic.Margin = '0,2,12,0'; [System.Windows.Controls.DockPanel]::SetDock($ic, 'Left')
+        $rt = [string]$xe.RegelTitel; if (-not $rt) { $rt = [string]$xe.Titel }
+        $name = $(if ($art -eq 'Regel') { $rt } elseif ($art -eq 'Abzug') { $(if ([string]$xe.Anzeige) { [string]$xe.Anzeige } else { [string]$xe.Titel }) } else { $(if ([string]$xe.Anzeige) { [string]$xe.Anzeige } else { $rt }) })
+        $typ = $(if ($art -eq 'Regel') { (T 'whole check') } elseif ($art -eq 'Abzug') { (T 'score deduction') } else { (T 'single point') })
+        if ($typ) { $typ = $typ.Substring(0, 1).ToUpper() + $typ.Substring(1) }
+        $parts = New-Object System.Collections.ArrayList
+        [void]$parts.Add($typ)
+        if ($art -eq 'Objekt' -and $rt) { [void]$parts.Add($rt) }
+        $d = ''; try { if ($xe.Zeit) { $d = ([datetime]$xe.Zeit).ToString((T 'yyyy-MM-dd, HH:mm')) } } catch { }
+        if ($d) { [void]$parts.Add((T 'since {0}' $d)) }
+        if ($xe.NochGefunden -eq $true) { [void]$parts.Add((T 'still found')) } elseif ($xe.NochGefunden -eq $false) { [void]$parts.Add((T 'no longer found')) }
+        $bt = New-LinkButton (T 'Include again') $xe '' ((T 'Include again: {0}') -f $name); $bt.Margin = '12,0,0,0'
+        [System.Windows.Controls.DockPanel]::SetDock($bt, 'Right')
+        $bt.Add_Click({ param($s, $ev) Start-Include $s.Tag })
+        $sp = New-Object System.Windows.Controls.StackPanel
+        [void]$sp.Children.Add((New-Tb $name 'Text' 14))
+        [void]$sp.Children.Add((New-Tb ($parts -join ' · ') 'Muted' 12))
+        [void]$row.Children.Add($ic); [void]$row.Children.Add($bt); [void]$row.Children.Add($sp)
+        Set-A11y $row ("{0}: {1}" -f $name, ($parts -join ', '))
+        [void]$UI.ExclPanel.Children.Add($row)
+    }
+}
+$UI.ScoreExclLink.Add_Click({ Go 'NavRecs'; try { $UI.ExclCard.UpdateLayout(); $UI.ExclCard.BringIntoView() } catch { } })
+$UI.BtnExclAll.Add_Click({
+    if ((Show-Msg (T 'Include all excluded points again? They are shown and counted again after the next check.') 'YesNo' 'Question') -ne 'Yes') { return }
+    Start-ExclOp 'all' $null
+})
 function Show-Page([string]$name) { foreach ($p in $Pages) { $UI[$p].Visibility = $(if ($p -eq $name) { 'Visible' } else { 'Collapsed' }) } }
 function Set-Nav([bool]$on) { foreach ($n in $NavItems) { $UI[$n].IsEnabled = $on } }
 function Clear-NavSelection { foreach ($n in $NavItems) { $UI[$n].IsChecked = $false } }
@@ -1136,9 +1265,9 @@ function Get-ItemRating($it) { foreach ($v in @($it.Wertung, $it.Raw.Data.Wertun
 function Get-InfoFromSnapshot($s) {
     @(foreach ($b in @($s.Befunde)) {
         if ($b -and $b.Risiko -eq 'Info') {
-            $obj = @($b.Objekte); $st = @($b.Stufen); $be = @($b.Bereiche); $we = @($b.Wertungen)
+            $obj = @($b.Objekte); $st = @($b.Stufen); $be = @($b.Bereiche); $we = @($b.Wertungen); $sk = @($b.Schluessel)
             $titel = if ($State.Friendly -and $State.Friendly[[string]$b.Regel]) { [string]$State.Friendly[[string]$b.Regel][0] } else { [string]$b.Titel }
-            $items = @(for ($i = 0; $i -lt $obj.Count; $i++) { [pscustomobject]@{ Label = [string]$obj[$i]; Stufe = $(if ($i -lt $st.Count) { [string]$st[$i] } else { '' }); Bereich = $(if ($i -lt $be.Count) { [string]$be[$i] } else { '' }); Wertung = $(if ($i -lt $we.Count) { [string]$we[$i] } else { '' }) } })
+            $items = @(for ($i = 0; $i -lt $obj.Count; $i++) { [pscustomobject]@{ Label = [string]$obj[$i]; Stufe = $(if ($i -lt $st.Count) { [string]$st[$i] } else { '' }); Bereich = $(if ($i -lt $be.Count) { [string]$be[$i] } else { '' }); Wertung = $(if ($i -lt $we.Count) { [string]$we[$i] } else { '' }); Schluessel = $(if ($i -lt $sk.Count) { [string]$sk[$i] } else { '' }) } })
             [pscustomobject]@{ Id = $b.Regel; Kategorie = $b.Kategorie; Titel = $titel; Fixbar = $false; Gruppe = $null; Items = $items }
         }
     })
@@ -1160,7 +1289,15 @@ function Add-InfoRow($panel, $f, $it, [switch]$NoTitle) {
     if (-not $NoTitle) { $r1 = New-Object System.Windows.Documents.Run ([string]$f.Titel + ': '); $r1.FontWeight = 'SemiBold'; $tx.Inlines.Add($r1) }
     if ($vor) { $r0 = New-Object System.Windows.Documents.Run $vor; $r0.FontWeight = 'SemiBold'; $tx.Inlines.Add($r0) }
     $tx.Inlines.Add((New-Object System.Windows.Documents.Run ([string]$it.Label)))
-    [void]$row.Children.Add($ic); [void]$row.Children.Add($tx)
+    [void]$row.Children.Add($ic)
+    $xk = [string]$it.Schluessel
+    if ($xk -and "$($f.Id)" -and $lvl -ne 'ok' -and $lvl -notmatch 'krit' -and ($lvl -match 'warn|krit' -or "$($f.Id)" -match '^(SEC-|HW-|SYS-|EVT-)')) {
+        $xb = New-LinkButton (T 'Exclude') (@{ Art = 'Objekt'; Regel = [string]$f.Id; Schluessel = $xk; Anzeige = [string]$it.Label; Titel = [string]$f.Titel }) (T 'This is how I want it – do not show it again and do not count it in the score') ((T 'Exclude: {0}') -f $it.Label)
+        $xb.Margin = '12,0,0,0'; [System.Windows.Controls.DockPanel]::SetDock($xb, 'Right')
+        $xb.Add_Click({ param($s, $ev) Start-Exclude $s.Tag })
+        [void]$row.Children.Add($xb)
+    }
+    [void]$row.Children.Add($tx)
     Set-A11y $row ("{0}{1}: {2}" -f $(if ($lvl -match 'krit') { (T 'Critical, ') } elseif ($lvl -match 'warn') { (T 'Warning, ') } elseif ($lvl -eq 'ok') { (T 'OK, ') } else { '' }), $f.Titel, $it.Label)
     [void]$panel.Children.Add($row)
 }
@@ -1184,8 +1321,33 @@ function Update-Home {
             if (-not $z) { continue }
             $row = New-Object System.Windows.Controls.DockPanel; $row.Margin = '0,0,0,4'
             $p = New-Tb ('−{0}' -f $z.Punkte) 'Bad' 14 'SemiBold'; $p.Width = 44; [System.Windows.Controls.DockPanel]::SetDock($p, 'Left')
-            [void]$row.Children.Add($p); [void]$row.Children.Add((New-Tb ([string]$z.Grund) 'Text' 14))
+            [void]$row.Children.Add($p)
+            if ([string]$z.Id -and -not $z.Fest) {
+                $ab = New-LinkButton (T 'Accept') (@{ Art = 'Abzug'; Regel = [string]$z.Id; Schluessel = ''; Anzeige = [string]$z.Grund; Titel = [string]$z.Grund }) (T 'This is how I want it – do not count this deduction in the score') ((T 'Accept: {0}') -f $z.Grund)
+                $ab.Margin = '12,0,0,0'; [System.Windows.Controls.DockPanel]::SetDock($ab, 'Right')
+                $ab.Add_Click({ param($s, $ev) Start-Exclude $s.Tag })
+                [void]$row.Children.Add($ab)
+            }
+            [void]$row.Children.Add((New-Tb ([string]$z.Grund) 'Text' 14))
             [void]$UI.ScoreWhyList.Children.Add($row)
+        }
+        $acc = @(@($s.Score.Ausgeschlossen) | Where-Object { $_ })
+        if ($acc.Count) {
+            $ah = New-Tb (T 'Accepted – not counted') 'Muted' 12 'SemiBold'; $ah.Margin = '0,10,0,4'
+            [void]$UI.ScoreWhyList.Children.Add($ah)
+            foreach ($z in $acc) {
+                $row = New-Object System.Windows.Controls.DockPanel; $row.Margin = '0,0,0,4'
+                $p = New-Tb '−0' 'Muted' 14; $p.Width = 44; [System.Windows.Controls.DockPanel]::SetDock($p, 'Left')
+                [void]$row.Children.Add($p)
+                if ([string]$z.Quelle -eq 'Abzug' -and [string]$z.Id) {
+                    $ab = New-LinkButton (T 'Count again') (@{ Art = 'Abzug'; Regel = [string]$z.Id; Schluessel = ''; Anzeige = [string]$z.Grund; Titel = [string]$z.Grund }) '' ((T 'Count again: {0}') -f $z.Grund)
+                    $ab.Margin = '12,0,0,0'; [System.Windows.Controls.DockPanel]::SetDock($ab, 'Right')
+                    $ab.Add_Click({ param($s, $ev) Start-Include $s.Tag })
+                    [void]$row.Children.Add($ab)
+                }
+                [void]$row.Children.Add((New-Tb ([string]$z.Grund) 'Muted' 14))
+                [void]$UI.ScoreWhyList.Children.Add($row)
+            }
         }
         $UI.ScoreWhy.Visibility = $(if ($UI.ScoreWhyList.Children.Count) { 'Visible' } else { 'Collapsed' })
         # Key figures
@@ -1214,6 +1376,7 @@ function Update-Home {
     $UI.HintsCard.Visibility = $(if ($UI.HintsPanel.Children.Count) { 'Visible' } else { 'Collapsed' })
     Show-CoolTest
     $UI.HwCard.Visibility = $(if ($UI.HwPanel.Children.Count -or $State.CoolTest) { 'Visible' } else { 'Collapsed' })
+    Update-Excluded
 }
 
 # Cooling test: show the result below the hardware points
@@ -1343,8 +1506,17 @@ function New-RecCard($f) {
         if ($expert -and $it.Technik -and [string]$it.Technik -ne [string]$it.Label) { [void]$ct.Children.Add((New-Tb ([string]$it.Technik) 'Muted' 11.5)) }
         $ib.Content = $ct
         Set-A11y $ib ([string]$it.Label) ("{0} – {1}" -f $f.Titel, $riskName)
-        $ib.Add_Click({ param($s, $e) $s.Tag.Selected = [bool]$s.IsChecked; Sync-RuleBox $s.Parent; Update-SelSummary })
-        [void]$list.Children.Add($ib); [void]$itemBoxes.Add($ib)
+        $ib.Add_Click({ param($s, $e) $s.Tag.Selected = [bool]$s.IsChecked; $pl = $s.Parent; if ($pl -isnot [System.Windows.Controls.StackPanel]) { $pl = $pl.Parent }; Sync-RuleBox $pl; Update-SelSummary })
+        $rowEl = $ib
+        if ([string]$it.Schluessel) {
+            $dp = New-Object System.Windows.Controls.DockPanel
+            $lb = New-LinkButton (T 'Exclude') (@{ Art = 'Objekt'; Regel = [string]$f.Id; Schluessel = [string]$it.Schluessel; Anzeige = [string]$it.Label; Titel = [string]$f.Titel }) (T 'This is how I want it – do not show it again and do not count it in the score') ((T 'Exclude: {0}') -f $it.Label)
+            $lb.Margin = '12,0,0,0'; [System.Windows.Controls.DockPanel]::SetDock($lb, 'Right')
+            $lb.Add_Click({ param($s, $e) Start-Exclude $s.Tag })
+            [void]$dp.Children.Add($lb); [void]$dp.Children.Add($ib)
+            $rowEl = $dp
+        }
+        [void]$list.Children.Add($rowEl); [void]$itemBoxes.Add($ib)
     }
     if ($expert -and $f.Warum) {
         $w = Get-CleanWhy ([string]$f.Warum)
@@ -1357,6 +1529,12 @@ function New-RecCard($f) {
         $cb.Add_Click({ param($s, $e) $v = [bool]$s.IsChecked; foreach ($ib in $s.Tag) { if ($ib.IsEnabled) { $ib.IsChecked = $v; $ib.Tag.Selected = $v } }; Update-SelSummary })
     }
     [void]$outer.Children.Add($exp)
+    if ([string]$f.Id) {
+        $xl = New-LinkButton (T 'Exclude this check') (@{ Art = 'Regel'; Regel = [string]$f.Id; Schluessel = ''; Anzeige = [string]$f.Titel; Titel = [string]$f.Titel }) (T 'This is how I want it – WinTidy no longer shows this check and does not count it in the score') ((T 'Exclude this check: {0}') -f $f.Titel)
+        $xl.HorizontalAlignment = 'Left'; $xl.Margin = '32,8,0,0'
+        $xl.Add_Click({ param($s, $e) Start-Exclude $s.Tag })
+        [void]$outer.Children.Add($xl)
+    }
     $card.Child = $outer
     Sync-RuleBox $list
     $card
@@ -1437,6 +1615,7 @@ $r
             return
         }
         $State.DebloatFindings = @($r.Findings); $State.DebloatHint = [string]$r.Hinweis; $State.DebloatScanned = $true; $State.DebloatScanTime = Get-Date
+        Set-Exclusions $r.Ausnahmen; Update-Excluded
         if ($r.Context) { $State.Context = $r.Context; Update-Banners }
         Build-Debloat; Go 'NavDebloat'
     } (T 'Looking for ads, suggestions and apps ...') (T 'Nothing is changed. This only takes a few seconds.'))
@@ -1482,6 +1661,7 @@ $r
         }
         $State.Findings = @($r.Findings); $State.Snapshot = $r.Snapshot; $State.ScanTime = Get-Date; $State.InfoFindings = @(); $State.Reminder = ''
         if ($r.Context) { $State.Context = $r.Context }
+        Set-Exclusions $r.Ausnahmen
         Update-Banners
         Update-Home; Build-Recs; Go 'NavHome'
         Load-Effect
@@ -2153,7 +2333,7 @@ $last = Get-Snapshots | Select-Object -Last 1
 $ctx = $null; if (Get-Command Get-WtContext -ErrorAction SilentlyContinue) { try { $ctx = Get-WtContext } catch { } }
 $upd = $null; if (Get-Command Get-WtUpdateBlocker -ErrorAction SilentlyContinue) { try { $upd = [pscustomobject]@{ Blocker = [string](Get-WtUpdateBlocker); Stunden = [int]$Script:Cfg.UpdateIntervalHours } } catch { } }
 $rem = $null; if (Get-Command Get-CheckReminder -ErrorAction SilentlyContinue) { try { $rem = Get-CheckReminder } catch { } }
-[pscustomobject]@{ Version = $Script:Version; Last = $(if ($last) { Read-Snapshot $last } else { $null }); DataDir = $Script:DataDir; Context = $ctx; Friendly = $Script:Friendly; Migriert = [bool]$Script:DataMigrated; Update = $upd; Erinnerung = $(if ($rem) { [string]$rem.Text } else { '' }); Ok = [bool](Get-Command Invoke-GuiScan -ErrorAction SilentlyContinue) }
+[pscustomobject]@{ Version = $Script:Version; Last = $(if ($last) { Read-Snapshot $last } else { $null }); DataDir = $Script:DataDir; Context = $ctx; Friendly = $Script:Friendly; Migriert = [bool]$Script:DataMigrated; Update = $upd; Erinnerung = $(if ($rem) { [string]$rem.Text } else { '' }); Ausnahmen = $(if (Get-Command Get-GuiExclusions -ErrorAction SilentlyContinue) { try { Get-GuiExclusions } catch { $null } } else { $null }); Ok = [bool](Get-Command Invoke-GuiScan -ErrorAction SilentlyContinue) }
 '@ {
         param($init, $err, $c)
         if (-not $init -or -not $init.Ok -or -not $init.Version) {
@@ -2175,10 +2355,12 @@ $rem = $null; if (Get-Command Get-CheckReminder -ErrorAction SilentlyContinue) {
             $State.Snapshot = $init.Last
             $State.Findings = @()
             $State.InfoFindings = @(Get-InfoFromSnapshot $init.Last)
+            Set-Exclusions $init.Ausnahmen
+            Hide-ExcludedFindings
             Update-Home
             $UI.ScoreDetail.Text = (T 'Result of the last check. Please check again for current recommendations.')
             $UI.BtnToRecs.Visibility = 'Collapsed'
-        }
+        } else { Set-Exclusions $init.Ausnahmen; Update-Excluded }
         Update-SelSummary
         # Updates: only on request (setting), at most once per interval; failures stay silent
         $State.UpdateBlocker = $(if ($init.Update) { [string]$init.Update.Blocker } else { (T 'Updates are not available.') })

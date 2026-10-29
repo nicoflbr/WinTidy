@@ -2,7 +2,7 @@
 
 This document is the basis for further development. It describes the goal and principles, the architecture, the rule contract, the data formats, the tests, the lessons learned from the first deployment and open ideas.
 
-As of version 1.11.1, 2026-10-28.
+As of version 1.12.0, 2026-10-29.
 
 ---
 
@@ -51,6 +51,7 @@ WinTidy\
     Test-Perf.ps1        # performance key figures: idle median, verdict with tolerance, start times after the optimization, history, report
     Test-Features.ps1    # SEC-HEALTH, SYS-STORAGESENSE, SYS-AI, profiles (export/import), shareable report
     Test-Rules.ps1       # rule review 1.10: unattended mode, quarantine, blue screen dumps, ghost devices, new checks, score
+    Test-Exclusions.ps1  # exclusions 1.12: storage, item keys, filtered findings, fix defense, score with exclusions, history/report, GUI API, CLI
     Probe-Hardware.ps1   # diagnosis on real PCs: which sensor sources deliver what (writes probe-hardware.json)
     Probe-Display.ps1    # diagnosis: refresh rates according to driver and EDID
   WinTidy-Daten\         # runtime data up to 1.2 (in .gitignore); since 1.3 see below
@@ -66,7 +67,7 @@ A single script file is intentional: copy and run, no module path, no signature 
 
 ```
 Show-Header
-  └─ Invoke-Mode <Scan|Preview|Apply|Compare|Report|Restore|Rules|Hardware>
+  └─ Invoke-Mode <Scan|Preview|Apply|Compare|Report|Restore|Rules|Hardware|Exclusions>
         Scan    : Start-RunLog → Invoke-Rules($false) → New-Snapshot('scan', findings) → score → Show-Compare(previous) → New-Report
         Preview : Start-RunLog → Invoke-Rules($false)
         Apply   : Start-RunLog → New-Snapshot('vorher') → New-RestorePoint → Invoke-Rules($true)
@@ -74,6 +75,7 @@ Show-Header
         Compare : Get-Snapshots → Show-Compare(a, b)
         Report  : New-Report (from all snapshots + all actions.jsonl)
         Restore : single-value undo from actions.jsonl, register tasks from XML, service start types from undo info
+        Exclusions : list / add / remove the points the user accepts (section 3h)
 ```
 
 ### Central building blocks
@@ -201,6 +203,20 @@ Every rule was challenged against the principles in section 1 (details: section 
 - **New checks:** `CLN-DRIVERINSTALL` (unpacked driver installers from `DriverInstallerDirs`), `CLN-PROFILE-ORPHAN` (info), `SYS-REBOOT` (info), too broad Defender exclusions in `SEC-CHECKS` (`Get-DefenderExclusions`, `Get-BroadDefenderExclusions`), Windows Search off / hosts file blocking updates / Windows held by policy in `SYS-TWEAKS` (`Select-HostsUpdateBlocks`, `Get-UpdatePolicyPin`), graphics driver age in `HW-HINTS` (`GpuDriverMaxAgeDays`). `SEC-HEALTH` no longer warns if BitLocker is only paused until the next restart (`Get-BitLockerSuspendCount`).
 - **No personal defaults:** `WingetExclude` and `BloatApps` are empty by default; entries that only one PC needs belong in its `WinTidy.config.local.json`.
 
+### 3h. Exclusions (since 1.12)
+Users can accept points as they are. An exclusion only ever **reduces** what WinTidy shows, changes and counts - it never adds an action.
+- **Kinds (`Art`, internal German values):** `Objekt` = one item of a rule (`Regel` + `Schluessel`), `Regel` = a whole rule, `Abzug` = one deduction of the health score (`Regel` holds the deduction Id, see section 6).
+- **Storage:** `ausnahmen.json` in `$Script:DataDir` (`Get-WtExclusionPath`, `Read-WtExclusions`, `Save-WtExclusions`, `Add-WtExclusion`, `Remove-WtExclusion`; cached in `$Script:Exclusions`, set it to `$null` to read again). Written atomically (tmp file + `Move-Item`), UTF-8 without BOM. A damaged, foreign or newer file means "no exclusions" plus a warning; writing over it first keeps a copy `.defekt`. Entries with an invalid kind or rule Id are skipped.
+- **Item keys:** an item is identified by `Schluessel`, which must not depend on the display language. Rules set it explicitly (5th parameter of `New-Item2`, e.g. `SEC-CHECKS` `uac-off`, `firewall-public`, `defender-exclusion-<Art>-<Wert>`; `Get-StartupKey` for startup entries). Fallback `Get-WtItemKey`: `Technik`, string/number `Data`, `Key`/`Name`/`Pfad`/`Path`/`Id` of `Data`, then `Label`. A new rule whose items users may want to exclude should set `Schluessel`.
+- **Findings:** `Get-AllFindings` removes excluded items (and rules whose last item was excluded), sets `Schluessel` on the kept items and `Ausgeschlossen` (count) on the rule, and collects what it removed in `$Script:LastExcludedHits` (the app shows "still found / no longer found" from it; `$Script:ExclChecked[$Page]` says that a page was checked). `Invoke-Rules` filters the same way and prints a gray line. `Invoke-FixSelection` reads the exclusions again and skips excluded items with status `Uebersprungen` - a point excluded after the check is never changed.
+- **Score:** `Get-HealthScoreCore` produces the deductions (each with `Id`, `Punkte`, `Grund`, `Quelle`); `Get-HealthScore($s, $Exclusions)` returns `Wert`, `Abzuege`, `Ausgeschlossen` (accepted ones, with `Quelle` Objekt|Regel|Abzug) and `WertOhneAusnahmen`. `Get-ScoreItemLinks` maps items to deductions (`SEC-CHECKS|uac-off` = `SCORE-UAC`), `Get-ScoreRuleLinks` maps rules to deductions with another Id (`SCORE-AUTOSTART` = `STA-HEAVY`). Startup entries excluded via `STA-HEAVY` / `STA-ORPHAN` are subtracted before the thresholds; warning kinds (`EVT-HEALTH`) and hardware points (`HW-COOLING`) are excluded one by one. Snapshots on disk are never rewritten: `Get-SnapshotScore`, `Read-SnapshotHistory`, `Get-CompareMetrics` and `New-Report` recompute the score with the current exclusions.
+- **GUI API:** `Get-GuiExclusions`, `Invoke-GuiExclude`, `Invoke-GuiInclude`, `Invoke-GuiIncludeAll` return `{ Eintraege[], Score, Fehler }` and never throw (readable text in `Fehler`, nothing changed then). `Invoke-GuiScan` / `Invoke-GuiDebloatScan` carry the same data as `.Ausnahmen`. The app keeps it in `$State.Exclusions` and replaces `$State.Snapshot.Score` with the returned score. Click handlers get their data via `.Tag` (`Start-Exclude`, `Start-Include` in `WinTidy-App.ps1`).
+- **Command line:** `-Mode Exclusions` (`Invoke-ExclusionsMode`, `Show-WtExclusions`), `-AddExclusion RULE-ID|SCORE:ID`, `-RemoveExclusion n|all`, menu entry [E]. Input is validated completely first; on any error nothing is written. `-ExcludeRule` stays a per-run switch.
+- **What cannot be excluded (`Get-ScoreFixedIds`):** `SCORE-ANTIVIRUS` (no active antivirus), `SCORE-WINSUPPORT` (Windows without security updates) and `SCORE-HWCRIT` (failing drive, memory errors, critical battery or cooling) are never a wanted state. Reason: WinTidy never weakens security and never hides a dying drive. `Add-WtExclusion` refuses an `Abzug` exclusion of them with a readable error, `Read-WtExclusions` drops such entries from a hand-edited file, the CLI refuses `-AddExclusion SCORE:...` (nothing is written), `Test-WtScoreExcluded` returns '' by every route, and the app gets `Fest = $true` on those entries of `Score.Abzuege` (no "Accept" link). Hardware points with `Stufe = 'krit'` are not subtracted by an `Objekt` exclusion either, and an `Objekt` exclusion never hides a critical item (`Test-WtExcluded -Stufe 'krit'`, `Get-WtItemStufe`; no "Exclude" link for them in the app). The hint itself is still shown.
+- **A whole-rule exclusion only covers its own deduction:** `Regel` covers the deduction with the same Id or the one in `Get-ScoreRuleLinks` (`SCORE-AUTOSTART` = `STA-HEAVY`, `SCORE-HWWARN` = `HW-COOLING`). `Get-ScoreItemLinks` (`SEC-CHECKS|uac-off` = `SCORE-UAC` ...) only counts `Objekt` exclusions. So hiding the `SEC-CHECKS` hints ("Security basics") leaves every security deduction in the score.
+- **Stable keys for hardware and warning signs:** every point of `Get-HardwarePoints` has a `Schluessel` that names the cause without measured values or text (`cpu-temp-high`, `gpu-fan-zero:<GPU name>`, `drive-temp-warm:<drive name>`, `pump-stopped`, `fan-tools-board` ...; set with `P ... -Key`), every entry of `Get-WarningSignals` has an Id per check (`power-loss`, `bluescreen`, `hardware-errors`, `drive-errors`, `gpu-driver-crash`, `tpm-errors`, `restore-points-lost`). They are the item keys of `HW-COOLING` / `EVT-HEALTH`, are stored in the snapshot (`Hardware.Punkte[].Schluessel`, `Stabilitaet.Warnsignale[].Schluessel`) and used by `Get-HealthScoreCore`; snapshots without the field fall back to the text. New points need a key, and keys are never renamed.
+- **Tests:** `tests/Test-Exclusions.ps1`.
+
 ## 4. Rule contract
 
 Every rule is a `[pscustomobject]` in `$Script:Rules`:
@@ -277,12 +293,21 @@ Speicher   { PapierkorbBytes, TempBytes, CrashDumpsBytes, BrowserCacheBytes (1.7
 Sicherheit { SecureBoot, DefenderEchtzeit, AndererVirenschutz (1.2), AusfuehrungsrichtlinieCU, WindowsSupportEnde (1.3, yyyy-MM-dd), TageSeitUpdate (1.3), WindowsUpdateAus (1.3) }
 Hardware   (1.2) { Laptop, Sensorquelle, CpuTempC, Luefter [ {Name, Upm} ], Gpu {Name, TempC, LuefterProzent, Gruende},
                    Laufwerke [ {Name, Art, TempC, Verschleiss, Zustand} ], Drosselung30T, Thermalzonen [ {Name, TempC, PassivLimit, Gruende} ],
-                   AkkuVerschleiss, Punkte [ {Stufe warn|krit, Text} ] }
-Stabilitaet (1.2) { Warnsignale [ {Text, Anzahl} ] }
+                   AkkuVerschleiss, Punkte [ {Stufe warn|krit, Text, Wertung, Schluessel (1.12)} ] }
+Stabilitaet (1.2) { Warnsignale [ {Text, Anzahl, Schluessel (1.12)} ] }
 (1.3) Hardware.Punkte[].Wertung = 'dauer' | 'moment'; Befunde[].Stufen = level per item (for the traffic light after an app restart)
-Befunde    [ {Regel, Kategorie, Titel, Risiko, Anzahl, Bytes, Objekte[max 50]} ]
-Score      { Wert, Abzuege [ {Punkte, Grund} ] }
+Befunde    [ {Regel, Kategorie, Titel, Risiko, Anzahl, Bytes, Objekte[max 50], Schluessel[] (1.12, parallel to Objekte), Ausgeschlossen (1.12, only if > 0)} ]
+Score      { Wert, Abzuege [ {Id (1.12), Punkte, Grund, Fest (1.12, only in the recomputed score: cannot be accepted)} ], Ausgeschlossen (1.12) [ {Id, Punkte, Grund, Quelle} ], WertOhneAusnahmen (1.12) }
 ```
+
+### Exclusion list (`ausnahmen.json`, since 1.12)
+
+```
+{ Format = 'WinTidy-Ausnahmen', Version = 1, WinTidy = '<version>',
+  Eintraege = [ { Art (Objekt|Regel|Abzug), Regel, Schluessel, Anzeige, Titel, Zeit (ISO) } ] }
+```
+
+`Regel` is a rule Id or (for `Abzug`) a deduction Id from `Get-ScoreInfo`; `Schluessel` is only set for `Objekt`. Rule Ids, deduction Ids and item keys are never renamed because stored exclusions refer to them.
 
 Only **add** new fields, never rename them. The report also reads old snapshots; missing fields must be handled tolerantly there. Texts stored in snapshots (`Titel`, `Text`, `Grund`) are in the language of the run that wrote them.
 
@@ -323,6 +348,8 @@ Start at 100, deductions (see `Get-HealthScore`):
 | hardware: critical points with `Wertung = dauer` (drive, memory errors, battery, stopped fan …) | 5 per point, max. 10 |
 | hardware: irregularities with `Wertung = dauer` | 1 per point, max. 3 |
 
+Each deduction has a stable Id (`Get-ScoreInfo`, stored in `Score.Abzuege[].Id`) so that it can be accepted (section 3h): `SCORE-FREESPACE`, `SCORE-BOOT`, `SCORE-AUTOSTART`, `STA-ORPHAN`, `SCORE-ERRORS`, `CLN-DRIVERSTORE`, `SYS-GHOST`, `SCORE-SECUREBOOT`, `SCORE-UAC`, `SCORE-FIREWALL`, `SCORE-ANTIVIRUS`, `SEC-EXECPOLICY`, `SCORE-WINSUPPORT`, `SCORE-WINUPDATE`, `CLN-RECYCLE`, `EVT-HEALTH`, `SCORE-HWCRIT`, `SCORE-HWWARN`. Three of them cannot be accepted (`SCORE-ANTIVIRUS`, `SCORE-WINSUPPORT`, `SCORE-HWCRIT`, see 3h). Accepted deductions count 0; the report shows them and "Without exclusions the score would be N".
+
 Snapshots in time (current temperature, current throttling, event 37) deliberately don't count: they depend on what the PC is doing at the moment and would distort before/after.
 
 Important: everything that goes into the score is measured by the snapshot **itself**. Up to 1.1.1 the warning signs came from the findings of the scan; the "before" snapshot of an optimization had no findings and therefore got a value that was too good (87 → 83 after an optimization, although nothing had gotten worse).
@@ -344,6 +371,7 @@ pwsh ./tests/Test-Storage.ps1   # browser caches (only cache folders, browser op
 pwsh ./tests/Test-Perf.ps1      # performance key figures: idle median/calm, verdict + tolerance, starts after the optimization, history, report (EN/DE)
 pwsh ./tests/Test-Features.ps1  # security health check, Storage Sense, AI inventory, profiles round trip and errors, anonymized report, PDF fallback
 pwsh ./tests/Test-Rules.ps1     # rule review 1.10: -Yes fails closed, quarantine, dumps kept, ghost devices by age, new checks, score
+pwsh ./tests/Test-Exclusions.ps1 # exclusions 1.12: storage, item keys, filtered findings, fix defense, score, history/report, GUI API, CLI
 ```
 
 All of them also run on Linux/macOS with PowerShell 7. Functions are loaded via the AST so that Windows-specific startup code is not executed. `Test-Hardware.ps1` replaces the data sources (`Get-HwMonitorSensors`, `Get-NvidiaGpus`, `Get-ThermalZones`, `Get-DiskHealth`, `Get-CpuPerfSample` …) with functions returning synthetic values – so always build new hardware data sources as their own `Get-*` function.
@@ -434,6 +462,7 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 - `CLN-ORPHANDIR` is a name heuristic → only on explicit request.
 - Restore cannot bring back deletions and uninstalls (that's what the restore point is for). Exception since 1.10: folders set aside by `CLN-ORPHANDIR`, until `CLN-QUARANTINE` deletes them.
 - `SYS-GHOST` needs the last arrival/removal date of a device (`DEVPKEY_Device_LastRemovalDate`/`LastArrivalDate`); devices without a date are not offered.
+- Exclusion keys of info items without an explicit `Schluessel` fall back to their display text (`Label`), which depends on the language; such an exclusion may stop matching after a language change. Rules that users are likely to exclude set a language-independent `Schluessel` (section 3h). Hardware points and warning signs have one since 1.12 (`Get-HardwarePoints`, `Get-WarningSignals`); snapshots from before that only match by text. The cooling test result ("Last cooling test") has the fixed key `last-cooling-test`.
 - `CLN-PROFILE-ORPHAN` only shows folders, it never deletes them (they may hold the only copy of personal files).
 - Fan curves and BIOS settings are not readable. Desktop motherboards only report CPU temperature and fans via additional programs (LibreHardwareMonitor, HWiNFO). AMD/Intel graphics cards: only via these programs (no counterpart to `nvidia-smi` without additional software).
 - `HW-DISPLAY` only rates with exactly one monitor; monitors that report high rates only in EDID extension blocks are not detected (no false alarm, just no hint).
@@ -450,7 +479,7 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 - [x] `SYS-GHOST` only devices not seen for ≥ 90 days (`DEVPKEY_Device_LastRemovalDate`) (1.10)
 - [ ] NVMe PCIe link, GPU stays in P0 at idle
 - [ ] `SYS-TWEAKS` with a fix (pagefile automatic, Prefetch/SysMain on) incl. undo
-- [ ] Autostart via scheduled tasks with a logon trigger and services of vendor tools; score only without protected entries
+- [ ] Autostart via scheduled tasks with a logon trigger and services of vendor tools; score only without protected entries (partly done in 1.12: the user can exclude startup entries, section 3h; automatic detection of vendor entries is still open)
 - [ ] Error counting with an exclusion list (DCOM 10016 etc.) and per day of uptime; score cap per category; mark "coverage" (admin/sensors) and comparability before/after
 - [x] Report "for sharing" (anonymize user name/PC name/paths) (1.9.0, `-Share`/`-Pdf`; best effort - hardware and program names stay)
 - [ ] App: banners can be hidden, time axis in the boot time chart, focus after page change, live region for progress, "larger font", result tiles only on change, plain/technical text separated (`Technik` field)

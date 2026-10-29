@@ -60,7 +60,7 @@ Save-WtExclusions @()
 # damaged files: behave as if there were none, warn, keep the old file when writing again
 $Script:Out.Clear(); $Script:Exclusions = $null
 Set-Content $ExPath '{ this is not json' -Encoding UTF8
-Check 'Corrupt JSON: empty list and a warning, no exception' (@(Read-WtExclusions).Count -eq 0 -and ($Script:Out -join ' ') -match 'could not be read')
+Check 'Corrupt JSON: empty list and a warning, does not throw' (@(Read-WtExclusions).Count -eq 0 -and ($Script:Out -join ' ') -match 'could not be read')
 $null = Add-WtExclusion -Art Regel -Regel 'CLN-TEMP'
 Check 'Writing over a damaged file keeps a copy' ((Test-Path ($ExPath + '.defekt')) -and (Get-Content ($ExPath + '.defekt') -Raw) -match 'not json' -and @(Read-WtExclusions).Count -eq 1)
 $Script:Out.Clear(); $Script:Exclusions = $null

@@ -3285,7 +3285,8 @@ function Get-HealthScoreCore($s, $ex) {
 # Score of a snapshot with the exclusions: Wert (what counts), Abzuege (counted), Ausgeschlossen (accepted, not counted;
 # Quelle Abzug|Regel|Objekt tells how), WertOhneAusnahmen (what the score would be without any exclusion)
 function Get-HealthScore($s, $Exclusions = $null) {
-    $ex = if ($null -eq $Exclusions) { @(Read-WtExclusions) } else { @($Exclusions) }
+    # @(...) around the if: an assignment from if unrolls a one-element array, and Windows PowerShell 5.1 has no .Count on a single object
+    $ex = @(if ($null -eq $Exclusions) { Read-WtExclusions } else { $Exclusions })
     $mit = @(Get-HealthScoreCore $s $ex)
     $zaehlt = @($mit | Where-Object { -not $_.Quelle })
     $wert = [int][math]::Max(0, 100 - [int](($zaehlt | Measure-Object Punkte -Sum).Sum))

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.12.0 – 2026-10-29
+**Exclusions: accept points as they are**
+- New: points WinTidy reports can be excluded - a single point, a whole check, or one deduction in the health score ("Why not 100?"). Excluded points are not shown, not changed (also not by `-Yes`) and not counted in the score. Typical use: a startup entry or a Defender exclusion you want, a firewall profile you switched off on purpose.
+- Stored in `ausnahmen.json` in the data folder (written atomically; a damaged or newer file means "no exclusions" plus a warning, a copy `.defekt` is kept). Exclusions only ever reduce what WinTidy does.
+- App: "Exclude" link per item, "Exclude this check" per card (with confirmation), "Accept" per deduction in "Why not 100?" (accepted ones are listed greyed with "Count again"), and a new card "Excluded points" on the recommendations page with "Include again" / "Include all again". The overview shows "N excluded - not counted". Works on the Debloat page too.
+- Command line: `-Mode Exclusions` lists the exclusions; `-AddExclusion RULE-ID` or `SCORE:ID` and `-RemoveExclusion n|all` change them (everything is validated first, nothing is written on an error). New menu entry [E]. `-ExcludeRule` is unchanged (only for one run).
+- Score: every view recomputes the score with the current exclusions (snapshots on disk are never rewritten); the report and the console show "Accepted (not counted)" and "Without exclusions the score would be N". Snapshots got the additional fields `Score.Ausgeschlossen`, `Score.WertOhneAusnahmen`, `Score.Abzuege[].Id`, `Befunde[].Schluessel` and `Befunde[].Ausgeschlossen`.
+- Rules now report stable, language-independent keys for their items (`Schluessel`), so an exclusion survives a language change.
+- New test `tests/Test-Exclusions.ps1` (also in the GitHub workflows).
+
 ## 1.11.1 – 2026-10-28
 **Fix: trend charts in the app showed no line and no points**
 - The charts "Did WinTidy help?", "Health score over time" and the start time chart on the history page only drew axes and the green optimization markers. PowerShell variable names are case-insensitive: the loop variable `$x` replaced the scaling scriptblock `$X`, so drawing stopped with an error (only visible in `WinTidy-App-Fehler.log`). Renamed to `$rx`.

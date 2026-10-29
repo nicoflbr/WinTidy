@@ -36,6 +36,8 @@
 
 A built-in **cooling test** loads the CPU for about a minute. It checks whether performance drops because of heat, whether the CPU reaches its TjMax, and whether the fans react. It stops on its own on overheating, heavy throttling, or when a laptop is unplugged.
 
+**Exclusions.** If a finding is how you want it (a startup program, a firewall profile, a Defender exclusion), exclude it: WinTidy stops showing it, never changes it and does not count it in the health score. You can include it again at any time (app: card "Excluded points"; command line: `-Mode Exclusions`).
+
 ### What WinTidy deliberately does *not* do
 
 - No registry "cleaners" and no tweaks without measurable benefit. The optional **Debloat** page is the one exception: it only changes settings that Windows itself offers (per user, undoable), and only ads and suggestions are ticked.
@@ -65,6 +67,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 .\WinTidy.ps1 -Mode Restore -RunId 20261021-183100
 .\WinTidy.ps1 -Mode Hardware -CoolingTest     # cooling test under load
 .\WinTidy.ps1 -Mode Rules                     # list all rules with risk level
+.\WinTidy.ps1 -Mode Exclusions                # list the points you excluded
 .\WinTidy.ps1 -Mode Update                    # check for a new version and install it
 .\WinTidy.ps1 -Mode Scan -Language de         # German output and report
 .\WinTidy.ps1 -Mode Rules -SavePreset mine.json   # save the rule selection as a profile
@@ -99,6 +102,7 @@ pwsh ./tests/Test-Storage.ps1
 pwsh ./tests/Test-Perf.ps1
 pwsh ./tests/Test-Features.ps1
 pwsh ./tests/Test-Rules.ps1
+pwsh ./tests/Test-Exclusions.ps1
 ```
 
 GitHub Actions runs them on Windows PowerShell 5.1 and PowerShell 7 for every push and pull request. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the rule contract in [DEVELOPMENT.md](DEVELOPMENT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).

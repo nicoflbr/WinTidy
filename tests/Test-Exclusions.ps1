@@ -189,13 +189,13 @@ Check 'Score without exclusions' ($sc.Wert -eq 60 -and $sc.WertOhneAusnahmen -eq
 Check 'Every deduction has an Id' (@($sc.Abzuege | Where-Object { -not $_.Id }).Count -eq 0 -and @($sc.Abzuege).Count -eq 8)
 $e = @([pscustomobject]@{ Art = 'Abzug'; Regel = 'SCORE-UAC'; Schluessel = '' })
 $sc = Get-HealthScore $s $e
-Check 'Abzug exclusion: deduction accepted, 0 points, listed' ($sc.Wert -eq 68 -and $sc.WertOhneAusnahmen -eq 60 -and @($sc.Ausgeschlossen).Count -eq 1 -and $sc.Ausgeschlossen[0].Id -eq 'SCORE-UAC' -and $sc.Ausgeschlossen[0].Punkte -eq 8 -and $sc.Ausgeschlossen[0].Quelle -eq 'Abzug' -and -not ($sc.Abzuege | Where-Object Id -eq 'SCORE-UAC'))
+Check 'Abzug exclusion: deduction accepted, 0 points, listed' ($sc.Wert -eq 68 -and $sc.WertOhneAusnahmen -eq 60 -and @($sc.Ausgeschlossen).Count -eq 1 -and $sc.Ausgeschlossen[0].Id -eq 'SCORE-UAC' -and $sc.Ausgeschlossen[0].Punkte -eq 8 -and $sc.Ausgeschlossen[0].Quelle -eq 'Abzug' -and -not ($sc.Abzuege | Where-Object Id -eq 'SCORE-UAC')) ("W=$($sc.Wert) O=$($sc.WertOhneAusnahmen) A=" + (@($sc.Ausgeschlossen) | ForEach-Object { "$($_.Id)/$($_.Quelle)/$($_.Punkte)" }) -join ' ') + ' Z=' + ((@($sc.Abzuege) | ForEach-Object { "$($_.Id)" }) -join ',')
 $e = @([pscustomobject]@{ Art = 'Regel'; Regel = 'SEC-EXECPOLICY'; Schluessel = '' })
 $sc = Get-HealthScore $s $e
-Check 'Regel exclusion SEC-EXECPOLICY covers the deduction of the same Id' ($sc.Wert -eq 63 -and $sc.Ausgeschlossen[0].Id -eq 'SEC-EXECPOLICY' -and $sc.Ausgeschlossen[0].Quelle -eq 'Regel')
+Check 'Regel exclusion SEC-EXECPOLICY covers the deduction of the same Id' ($sc.Wert -eq 63 -and $sc.Ausgeschlossen[0].Id -eq 'SEC-EXECPOLICY' -and $sc.Ausgeschlossen[0].Quelle -eq 'Regel') ("W=$($sc.Wert) O=$($sc.WertOhneAusnahmen) A=" + (@($sc.Ausgeschlossen) | ForEach-Object { "$($_.Id)/$($_.Quelle)/$($_.Punkte)" }) -join ' ') + ' Z=' + ((@($sc.Abzuege) | ForEach-Object { "$($_.Id)" }) -join ',')
 $e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'SEC-CHECKS'; Schluessel = 'uac-off' })
 $sc = Get-HealthScore $s $e
-Check 'SEC-CHECKS item uac-off excludes SCORE-UAC' ($sc.Wert -eq 68 -and $sc.Ausgeschlossen[0].Id -eq 'SCORE-UAC' -and $sc.Ausgeschlossen[0].Quelle -eq 'Objekt')
+Check 'SEC-CHECKS item uac-off excludes SCORE-UAC' ($sc.Wert -eq 68 -and $sc.Ausgeschlossen[0].Id -eq 'SCORE-UAC' -and $sc.Ausgeschlossen[0].Quelle -eq 'Objekt') ("W=$($sc.Wert) O=$($sc.WertOhneAusnahmen) A=" + (@($sc.Ausgeschlossen) | ForEach-Object { "$($_.Id)/$($_.Quelle)/$($_.Punkte)" }) -join ' ') + ' Z=' + ((@($sc.Abzuege) | ForEach-Object { "$($_.Id)" }) -join ',')
 $e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'SEC-CHECKS'; Schluessel = 'secureboot-off' })
 Check 'SEC-CHECKS item secureboot-off excludes SCORE-SECUREBOOT' ((Get-HealthScore $s $e).Wert -eq 64)
 $e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'SEC-CHECKS'; Schluessel = 'firewall-domain' })
@@ -214,7 +214,8 @@ $s2 = MkScoreSnap; $s2.Autostart.Aktiv = 16
 $sc = Get-HealthScore $s2 $e
 Check 'Autostart text shows the counted number' ((($sc.Abzuege | Where-Object Id -eq 'SCORE-AUTOSTART').Grund) -like '15 *' -and (($sc.Abzuege | Where-Object Id -eq 'SCORE-AUTOSTART').Punkte) -eq 5)
 $e = @([pscustomobject]@{ Art = 'Regel'; Regel = 'STA-HEAVY'; Schluessel = '' })
-Check 'Whole STA-HEAVY excluded accepts the autostart deduction' ((Get-HealthScore $s $e).Ausgeschlossen[0].Id -eq 'SCORE-AUTOSTART')
+$sc = Get-HealthScore $s $e
+Check 'Whole STA-HEAVY excluded accepts the autostart deduction' ($sc.Ausgeschlossen[0].Id -eq 'SCORE-AUTOSTART') ("W=$($sc.Wert) O=$($sc.WertOhneAusnahmen) A=" + (@($sc.Ausgeschlossen) | ForEach-Object { "$($_.Id)/$($_.Quelle)/$($_.Punkte)" }) -join ' ') + ' Z=' + ((@($sc.Abzuege) | ForEach-Object { "$($_.Id)" }) -join ',')
 # event log and hardware items
 $e = @([pscustomobject]@{ Art = 'Objekt'; Regel = 'EVT-HEALTH'; Schluessel = 'bluescreen' })
 Check 'Warning kind excluded one by one (2 points less)' ((Get-HealthScore $s $e).Wert -eq 62)

@@ -376,6 +376,8 @@ $Script:Mock = @{}
 function Get-HwMonitorSensors([switch]$NoCache) { @($Script:Mock.Sensors | Where-Object { $_ }) }
 function Get-NvidiaGpus { @($Script:Mock.Gpus | Where-Object { $_ }) }
 function Get-ThermalZones { @() }
+# fixed, low CPU load: the real load of the test machine would turn cpu-temp-ok into cpu-temp-busy at random
+function Get-CpuPerfSample { [pscustomobject]@{ Leistung = 100; Limit = 100; MHz = 4000; Auslastung = 5 } }
 function Get-ThrottleEventCount([int]$Days = 30, [datetime]$Since = [datetime]::MinValue) { 0 }
 function Get-DiskHealth { @($Script:Mock.Disks | Where-Object { $_ }) }
 function Get-ChassisInfo { [pscustomobject]@{ Laptop = $false; Akku = $false; HatAkku = $false; Typen = @(); VM = $false; CpuName = 'CPU' } }
@@ -393,7 +395,8 @@ Check 'Every hardware point has a key' (@($p1 | Where-Object { -not $_.Schluesse
 Check 'Keys do not change when the measured values change' ($k1 -eq $k2 -and (($p1 | ForEach-Object Text) -join '|') -ne (($p2 | ForEach-Object Text) -join '|')) "$k1 // $k2"
 Check 'Keys contain the cause, the device name but no numbers from measurements' (($p1 | Where-Object Schluessel -eq 'gpu-fan-zero:RTX') -and ($p1 | Where-Object { $_.Schluessel -in 'drive-temp-hot:Samsung', 'drive-temp-warm:Samsung' }) -and ($p1 | Where-Object Schluessel -eq 'ssd-wear:Samsung'))
 $Script:De = New-Object "System.Collections.Generic.Dictionary[string,string]"; $p3 = RunHw @{ Sensors = @((SS 'CPU Package' 'Temperature' 44 'Cpu'), (SS 'CPU Fan' 'Fan' 800)); Gpus = @(Gpu2 74 0 5); Disks = @(Disk2 'Samsung' 61 85) } 'de'
-Check 'Keys do not change with the language' ((@($p3 | ForEach-Object Schluessel) -join '|') -eq $k1)
+$k3 = @($p3 | ForEach-Object Schluessel) -join '|'
+Check 'Keys do not change with the language' ($k3 -eq $k1) "$k1 // $k3"
 $Script:Lang = 'en'; $Script:De = $null
 function Get-EventCount([hashtable]$Filter) { if ($Filter.Id -eq 41) { 3 } elseif ($Filter.Id -eq 1001) { 1 } else { 0 } }
 $Script:Cache = @{}; $w = @(Get-WarningSignals)

@@ -44,7 +44,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 - **Slow startup, sign-in and processing** - computer policy at startup, user policy at sign-in and background refresh (median of the last 30 days), the slowest client-side extensions and the GPOs that use them;
 - **Slowdown patterns** - "Always wait for the network", synchronous startup/logon scripts, unlimited script wait time, Folder Redirection / Software Installation (forced synchronous processing), drive maps, loopback in merge mode, very short refresh intervals, "process even if unchanged", many GPOs or WMI filters, slow link.
 
-It writes its own report (`WinTidy-Richtlinien.html`) and never changes a policy - the cleanup happens in the GPO or in Intune. Intune-side duplicates between profiles are only visible in the Intune admin center.
+In the app the tiles filter the findings by kind. It writes its own report (`WinTidy-Richtlinien.html`) plus a CSV for scripts and Excel (`WinTidy-Richtlinien.csv`, separator `;`, one row per finding with stable keys and GPO GUIDs) and never changes a policy - the cleanup happens in the GPO or in Intune. Intune-side duplicates between profiles are only visible in the Intune admin center.
 
 **Exclusions.** If a finding is how you want it (a startup program, a firewall profile, a Defender exclusion), exclude it: WinTidy stops showing it, never changes it and does not count it in the health score. You can include it again at any time (app: card "Excluded points"; command line: `-Mode Exclusions`).
 

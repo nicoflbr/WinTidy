@@ -1,4 +1,4 @@
-﻿# Test-Policies.ps1 - checks the policy analysis of version 1.13 (GPO/Intune, -Mode Policies, app page "Policies"):
+﻿# Test-Policies.ps1 - checks the policy analysis of version 1.13 (CSV export since 1.14) (GPO/Intune, -Mode Policies, app page "Policies"):
 # RSoP parser, duplicates and conflicts per GPO pair, GPOs without own effect, multiple links, processing times from the
 # event log (startup, sign-in, background, per extension), slowdown patterns, Intune/MDM overlaps, report (EN/DE),
 # GUI API and that the section never changes anything. gpresult, the event log and the registry are replaced.
@@ -246,6 +246,26 @@ $html = Get-Content -LiteralPath $rep -Raw -Encoding UTF8
 Check 'Report written to the data folder' ($rep -eq (Join-Path $TestData 'WinTidy-Richtlinien.html') -and $html -match '<html lang=''en''>')
 Check 'Report: names are HTML-encoded' ($html -match 'Old Baseline &amp; Co' -and $html -notmatch 'Old Baseline & Co')
 Check 'Report: findings, extension table and GPO table' ($html -match 'Software Installation' -and $html -match 'Applied GPOs' -and $html -match 'Filtered GPO' -and $html -match 'not applied')
+# --- CSV export (since 1.14) ---
+$csvPath = New-PolicyCsv $an
+$raw = [IO.File]::ReadAllBytes($csvPath)
+Check 'CSV written to the data folder, UTF-8 with BOM' ($csvPath -eq (Join-Path $TestData 'WinTidy-Richtlinien.csv') -and $raw[0] -eq 0xEF -and $raw[1] -eq 0xBB -and $raw[2] -eq 0xBF)
+$rows = @(Import-Csv -LiteralPath $csvPath -Delimiter ';' -Encoding UTF8)
+$hdr = (Get-Content -LiteralPath $csvPath -Encoding UTF8 -TotalCount 1)
+Check 'CSV: stable English header, separator ;' ($hdr -eq '"Computer";"Time";"Kind";"Severity";"Source";"Check";"Key";"GpoIds";"Gpos";"Title";"Text";"Details"') $hdr
+Check 'CSV: one row per finding, same order' ($rows.Count -eq @($an.Befunde).Count -and $rows[0].Key -eq $an.Befunde[0].Schluessel) ("$($rows.Count) / $(@($an.Befunde).Count)")
+Check 'CSV: internal, language-independent kind and severity' (@($rows | Where-Object { $_.Kind -notin 'Konflikt', 'Doppelt', 'Startzeit', 'Ladezeit', 'Bremse' -or $_.Severity -notin 'krit', 'warn', '' }).Count -eq 0)
+$dupRow = @($rows | Where-Object { $_.Check -eq 'dup' })[0]
+Check 'CSV: GPO ids of a duplicate, winner first' ($dupRow -and ($dupRow.GpoIds -split '; ').Count -eq 2 -and $dupRow.Key -eq ('dup:' + ($dupRow.GpoIds -replace '; ', ':'))) $(if ($dupRow) { $dupRow.Key + ' / ' + $dupRow.GpoIds })
+Check 'CSV: no GPO ids for extension checks' (@($rows | Where-Object { $_.Check -like 'cse*' -and $_.GpoIds }).Count -eq 0)
+$detRow = @($rows | Where-Object { @($an.Befunde | Where-Object Schluessel -eq $_.Key)[0].Details.Count -ge 2 })[0]
+Check 'CSV: details survive as lines of one cell' ($detRow -and @($detRow.Details -split "`r?`n").Count -ge 2)
+Check 'CSV: names with special characters intact' ((Get-Content -LiteralPath $csvPath -Raw -Encoding UTF8) -match 'Old Baseline & Co')
+$evil = [pscustomobject]@{ Computer = 'PC'; Zeit = 'now'; Befunde = @([pscustomobject]@{ Art = 'Doppelt'; Stufe = ''; Quelle = 'GPO'; Titel = '=HYPERLINK("x")'; Text = '+1'; Gpos = @('@evil', 'a;b'); Details = @('-ok'); Schluessel = 'multilink:{AAAAAAAA-0000-0000-0000-000000000001}' }) }
+$er = @(Get-PolicyCsvRows $evil)[0]
+Check 'CSV: cells starting with = + @ are not formulas' ($er.Title -eq "'=HYPERLINK(""x"")" -and $er.Text -eq "'+1" -and $er.Gpos -eq "'@evil; a;b" -and $er.Details -eq '-ok' -and $er.GpoIds -eq '{AAAAAAAA-0000-0000-0000-000000000001}')
+$emptyCsv = New-PolicyCsv ([pscustomobject]@{ Computer = 'PC'; Zeit = 'now'; Befunde = @() })
+Check 'CSV without findings: header only' (@(Get-Content -LiteralPath $emptyCsv -Encoding UTF8).Count -eq 1)
 $Script:Out = @()
 Show-PolicyAnalysis $an
 Check 'CLI output contains the findings' ((@($Script:Out) -join "`n") -match 'Software Installation' -and (@($Script:Out) -join "`n") -match 'Findings:')
@@ -259,7 +279,7 @@ Check 'Nothing readable: no findings, but hints' (@($e.Befunde).Count -eq 0 -and
 Check 'Nothing readable: report still works' ((Test-Path -LiteralPath (New-PolicyReport $e)))
 function Get-GpRsopXml { throw 'boom' }
 $g = Invoke-GuiPolicyScan
-Check 'GUI API never throws: failing source becomes a hint' ($g.Analyse -and -not $g.Fehler -and (@($g.Analyse.Hinweise) -join ' ') -match 'boom' -and $g.Report)
+Check 'GUI API never throws: failing source becomes a hint' ($g.Analyse -and -not $g.Fehler -and (@($g.Analyse.Hinweise) -join ' ') -match 'boom' -and $g.Report -and $g.Csv -and (Test-Path -LiteralPath $g.Csv))
 function Get-PolicyAnalysis { throw 'kaputt' }
 $g2 = Invoke-GuiPolicyScan
 Check 'GUI API never throws: readable error' (-not $g2.Analyse -and $g2.Fehler -match 'kaputt')

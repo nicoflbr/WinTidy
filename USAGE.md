@@ -167,6 +167,25 @@ For admins who want to tidy up their GPOs or Intune policies. Run it on a typica
 | **Processing time** | single client-side extensions slower than `PolicyCseWarnMs` (3 s; critical from `PolicyCseCritMs` 15 s), slow background refresh, refresh interval below 30 minutes, "process even if the GPOs have not changed" |
 | **Slowdown patterns** | "Always wait for the network", synchronous startup scripts (default!) and synchronous logon scripts, unlimited script wait time, Folder Redirection and Software Installation (force synchronous processing), drive maps, loopback merge, long startup network wait, more than 40 GPOs, 5+ WMI filters, slow link |
 
+**CSV for scripts and Excel (since 1.14):** every analysis also writes `WinTidy-Richtlinien.csv` (app: link "Export CSV ..." on the *Policies* page saves a copy). One row per finding, separator `;`, UTF-8 with BOM:
+
+| Column | Content |
+|---|---|
+| `Computer`, `Time` | device and time of the analysis |
+| `Kind` | `Konflikt`, `Doppelt`, `Startzeit`, `Ladezeit`, `Bremse` (internal, same in every language) |
+| `Severity` | `krit`, `warn` or empty (hint) |
+| `Source` | `GPO`, `Intune` or `GPO+Intune` |
+| `Check`, `Key` | kind of check (`dup`, `conflict`, `multilink`, `noeffect`, `cse`, `startup-scripts` ...) and the stable key of the finding |
+| `GpoIds` | GPO GUIDs for `dup`/`conflict` (winner first, then the GPO to clean up), `multilink`, `noeffect` |
+| `Gpos`, `Title`, `Text`, `Details` | GPO names and the texts in the chosen language; `Details` has one line per setting |
+
+Example - list the GPOs whose duplicate entries can go:
+```powershell
+Import-Csv .\WinTidy-Richtlinien.csv -Delimiter ';' | Where-Object Check -eq 'dup' |
+    ForEach-Object { $w, $l = $_.GpoIds -split '; '; [pscustomobject]@{ CleanUp = $l; Keep = $w; Settings = $_.Details } }
+```
+In the app, a click on a tile shows only the findings of that kind (*Intune involved*: only findings in which Intune takes part); click again or "Show all" to see everything.
+
 Limits: GPO names and settings come from this device's point of view - a GPO that does nothing here may still be needed elsewhere. Settings that gpresult does not report (some third-party extensions) are not compared. Duplicates between Intune profiles and their assignments are only visible in the Intune admin center. The thresholds can be changed in `WinTidy.config.local.json`.
 
 ## Data, logs, report
@@ -182,6 +201,7 @@ The folder and file names are internal and stay German in both languages:
   kuehltest\<time>.json             # measurement series of the cooling tests
   ausnahmen.json                    # points you excluded (since 1.12)
   WinTidy-Richtlinien.html          # policy analysis for IT admins (since 1.13)
+  WinTidy-Richtlinien.csv           # the same findings as CSV for scripts and Excel (since 1.14)
   richtlinien-rsop.xml              # raw gpresult data of the last policy analysis
   runs\<time>_<scan|preview|apply|restore|hardware|kuehltest>\
       konsole.txt                   # complete console log

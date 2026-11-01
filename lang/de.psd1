@@ -1484,4 +1484,18 @@
     'Open report' = 'Bericht öffnen'
     'Policies (for IT admins)' = 'Richtlinien (für IT-Admins)'
     'On company PCs (or in expert mode) the page Policies analyzes the Group Policy and Intune settings of this PC: settings set twice, conflicting GPOs, GPOs without effect, slow extensions at startup and sign-in and known slowdowns such as synchronous scripts or loopback in merge mode. WinTidy only reads - the cleanup happens in the GPO or in Intune. The page writes its own report (WinTidy-Richtlinien.html).' = 'Auf Firmen-PCs (oder im Expertenmodus) analysiert die Seite Richtlinien die Gruppenrichtlinien- und Intune-Einstellungen dieses PCs: doppelt gesetzte Einstellungen, widersprüchliche GPOs, GPOs ohne Wirkung, langsame Erweiterungen bei Start und Anmeldung und bekannte Bremsen wie synchrone Skripts oder Loopback im Modus „Zusammenführen“. WinTidy liest nur – aufgeräumt wird in der GPO oder in Intune. Die Seite schreibt einen eigenen Bericht (WinTidy-Richtlinien.html).'
+    # 1.14: policy page filter and CSV export
+    'The CSV file could not be written: {0}' = 'Die CSV-Datei konnte nicht geschrieben werden: {0}'
+    '  CSV for scripts and Excel: {0}' = '  CSV für Skripte und Excel: {0}'
+    'Show all findings again' = 'Wieder alle Befunde zeigen'
+    'Show only these findings' = 'Nur diese Befunde zeigen'
+    'Filter active. Press Enter to show all findings again.' = 'Filter aktiv. Mit Enter wieder alle Befunde zeigen.'
+    'Press Enter to show only these findings.' = 'Mit Enter nur diese Befunde zeigen.'
+    'Showing only: {0} ({1} of {2})' = 'Nur: {0} ({1} von {2})'
+    'CSV file (*.csv)|*.csv' = 'CSV-Datei (*.csv)|*.csv'
+    "Saved: {0}`n`nOpen the folder?" = "Gespeichert: {0}`n`nOrdner öffnen?"
+    'The CSV file could not be saved: {0}' = 'Die CSV-Datei konnte nicht gespeichert werden: {0}'
+    'Export CSV ...' = 'Als CSV exportieren ...'
+    'All findings as a CSV file (separator ;) for Excel or for scripts that clean up the GPOs' = 'Alle Befunde als CSV-Datei (Trennzeichen ;) für Excel oder für Skripte, die die GPOs aufräumen'
+    'Show all' = 'Alle zeigen'
 }

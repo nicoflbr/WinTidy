@@ -83,7 +83,7 @@ if ($AddExclusion) { $AddExclusion = @($AddExclusion | ForEach-Object { $_ -spli
 if ($RemoveExclusion) { $RemoveExclusion = @($RemoveExclusion | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.13.0'
+$Script:Version = '1.14.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)
@@ -5593,12 +5593,45 @@ function New-PolicyReport($A) {
     return $out
 }
 
-# GUI API: runs the analysis and builds the report. Never throws; Fehler holds a readable text.
+# CSV export of the findings (WinTidy-Richtlinien.csv in the data folder, since 1.14) for scripts and Excel: one row per
+# finding, separator ';', UTF-8 with BOM, every field quoted. Header names are English and stable; Kind, Severity, Source
+# and Key carry the internal, language-independent values (Konflikt|Doppelt|Startzeit|Ladezeit|Bremse, krit|warn|'',
+# GPO|Intune|GPO+Intune) so a script can match on them. Check = key prefix (dup, conflict, multilink, noeffect, cse ...),
+# GpoIds = GPO GUIDs from the key (only for the checks that name GPOs; winner first). Title, Text and Details are
+# translated. Cells starting with = + @ get a leading apostrophe (no formulas in Excel). Only add columns, never rename.
+function Get-PolCsvColumns { @('Computer', 'Time', 'Kind', 'Severity', 'Source', 'Check', 'Key', 'GpoIds', 'Gpos', 'Title', 'Text', 'Details') }
+function ConvertTo-PolCsvCell($Value) { $s = [string]$Value; if ($s -match '^[=+@\t\r]') { $s = "'" + $s }; return $s }
+function Get-PolicyCsvRows($A) {
+    foreach ($b in @($A.Befunde)) {
+        if (-not $b) { continue }
+        $key = [string]$b.Schluessel
+        $check = $(if ($key) { ($key -split ':')[0] } else { '' })
+        $ids = @()
+        if ($check -in 'dup', 'conflict', 'multilink', 'noeffect') { $ids = @([regex]::Matches($key, '\{[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}') | ForEach-Object { $_.Value }) }
+        $row = [ordered]@{
+            Computer = [string]$A.Computer; Time = [string]$A.Zeit; Kind = [string]$b.Art; Severity = [string]$b.Stufe; Source = [string]$b.Quelle
+            Check = $check; Key = $key; GpoIds = ($ids -join '; '); Gpos = (@($b.Gpos) -join '; '); Title = [string]$b.Titel; Text = [string]$b.Text
+            Details = (@($b.Details | Where-Object { $_ }) -join "`r`n")
+        }
+        $o = [ordered]@{}; foreach ($c in (Get-PolCsvColumns)) { $o[$c] = ConvertTo-PolCsvCell $row[$c] }
+        [pscustomobject]$o
+    }
+}
+function New-PolicyCsv($A) {
+    $rows = @(Get-PolicyCsvRows $A)
+    $lines = $(if ($rows.Count) { @($rows | ConvertTo-Csv -NoTypeInformation -Delimiter ';') } else { @(((Get-PolCsvColumns) | ForEach-Object { '"{0}"' -f $_ }) -join ';') })
+    $out = Join-Path $Script:DataDir 'WinTidy-Richtlinien.csv'
+    [IO.File]::WriteAllText($out, (($lines -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding $true))
+    return $out
+}
+
+# GUI API: runs the analysis and builds the report and the CSV. Never throws; Fehler holds a readable text.
 function Invoke-GuiPolicyScan([scriptblock]$OnProgress = $null) {
-    $a = $null; $rep = $null; $err = $null
+    $a = $null; $rep = $null; $csv = $null; $err = $null
     try { $a = Get-PolicyAnalysis $OnProgress } catch { $err = $_.Exception.Message }
     if ($a) { try { $rep = New-PolicyReport $a } catch { $err = (T 'The report could not be written: {0}' $_.Exception.Message) } }
-    [pscustomobject]@{ Analyse = $a; Report = $rep; Fehler = $err }
+    if ($a) { try { $csv = New-PolicyCsv $a } catch { $err = (T 'The CSV file could not be written: {0}' $_.Exception.Message) } }
+    [pscustomobject]@{ Analyse = $a; Report = $rep; Csv = $csv; Fehler = $err }
 }
 # CLI: -Mode Policies
 function Invoke-PolicyMode {
@@ -5609,7 +5642,8 @@ function Invoke-PolicyMode {
     if (-not $r.Analyse) { W ('  ' + $r.Fehler) 'Red'; return }
     Show-PolicyAnalysis $r.Analyse
     if ($r.Report) { W ''; W ((T '  Report: {0}') -f $r.Report) 'Green'; if ($OpenReport) { Open-Report $r.Report } }
-    elseif ($r.Fehler) { W ('  ' + $r.Fehler) 'DarkYellow' }
+    if ($r.Csv) { W ((T '  CSV for scripts and Excel: {0}') -f $r.Csv) 'Green' }
+    if ($r.Fehler) { W ('  ' + $r.Fehler) 'DarkYellow' }
 }
 
 # =============================================================================

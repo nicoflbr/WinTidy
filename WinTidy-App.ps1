@@ -504,11 +504,17 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
             <Button x:Name="BtnPolScan" Style="{StaticResource LinkBtn}" Content="Analyze again"/>
             <TextBlock Text="  ·  " Foreground="{DynamicResource Muted}"/>
             <Button x:Name="BtnPolReport" Style="{StaticResource LinkBtn}" Content="Open report" IsEnabled="False"/>
+            <TextBlock Text="  ·  " Foreground="{DynamicResource Muted}"/>
+            <Button x:Name="BtnPolCsv" Style="{StaticResource LinkBtn}" Content="Export CSV ..." IsEnabled="False" ToolTip="All findings as a CSV file (separator ;) for Excel or for scripts that clean up the GPOs"/>
           </StackPanel>
         </StackPanel>
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
           <StackPanel Margin="36,6,36,20" MaxWidth="980" HorizontalAlignment="Left">
             <WrapPanel x:Name="PolTiles" Margin="0,0,0,6"/>
+            <DockPanel x:Name="PolFilterBar" Visibility="Collapsed" Margin="2,0,0,10">
+              <Button x:Name="BtnPolFilterClear" DockPanel.Dock="Right" Style="{StaticResource LinkBtn}" Content="Show all" HorizontalAlignment="Right"/>
+              <TextBlock x:Name="PolFilterText" Foreground="{DynamicResource Text2}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap"/>
+            </DockPanel>
             <StackPanel x:Name="PolPanel"/>
           </StackPanel>
         </ScrollViewer>
@@ -1656,7 +1662,9 @@ $UI.BtnDebloatNone.Add_Click({ foreach ($f in @($State.DebloatFindings)) { forea
 #  Policies page (since 1.13): GPO and Intune analysis for IT admins. Read-only - own operation, own report.
 #  Shown in the navigation on managed PCs (domain/Intune/Entra/ConfigMgr) or in expert mode.
 # =============================================================================
-$State.Policy = $null; $State.PolicyReport = $null; $State.PolicyTime = $null; $State.PolicyAsked = $false
+$State.Policy = $null; $State.PolicyReport = $null; $State.PolicyCsv = $null; $State.PolicyTime = $null; $State.PolicyAsked = $false
+# Tile filter (since 1.14): $null = all findings, otherwise a kind from $PolKinds or 'Intune' (findings with Intune involved)
+$State.PolFilter = $null
 $PolKinds = 'Konflikt', 'Doppelt', 'Startzeit', 'Ladezeit', 'Bremse'
 function Get-PolKindText([string]$Art) {
     switch ($Art) { 'Konflikt' { return (T 'Conflicts') } 'Doppelt' { return (T 'Duplicates') } 'Startzeit' { return (T 'Startup and sign-in') } 'Ladezeit' { return (T 'Processing time') } 'Bremse' { return (T 'Slowdown patterns') } }
@@ -1666,14 +1674,35 @@ function Update-PolicyNav {
     $show = [bool](($State.Context -and $State.Context.Verwaltet) -or $UI.OptExpert.IsChecked -or $State.Policy)
     $UI.NavPolicies.Visibility = $(if ($show) { 'Visible' } else { 'Collapsed' })
 }
-function New-PolTile([string]$label, [int]$n, [string]$fg) {
-    $b = New-Object System.Windows.Controls.Border; $b.CornerRadius = 10; $b.BorderThickness = 1; $b.Padding = '14,8'; $b.Margin = '0,0,10,10'; $b.MinWidth = 130
-    Set-Brush $b 'BorderBrush' 'Line'; Set-Brush $b 'Background' 'CardBg'
+# A tile with findings is a toggle: click, Enter or Space shows only these findings, again shows all. Tiles with 0 are not clickable.
+function New-PolTile([string]$label, [int]$n, [string]$fg, [string]$filter) {
+    $sel = ($n -and $State.PolFilter -eq $filter)
+    $b = New-Object System.Windows.Controls.Border; $b.CornerRadius = 10; $b.Padding = '14,8'; $b.Margin = '0,0,10,10'; $b.MinWidth = 130; $b.Tag = $filter
+    $b.BorderThickness = $(if ($sel) { 2 } else { 1 })
+    Set-Brush $b 'BorderBrush' $(if ($sel) { 'Accent' } else { 'Line' }); Set-Brush $b 'Background' $(if ($sel) { 'Hover' } else { 'CardBg' })
     $sp = New-Object System.Windows.Controls.StackPanel
     [void]$sp.Children.Add((New-Tb "$n" $(if ($n) { $fg } else { 'Muted' }) 22 'SemiBold'))
     [void]$sp.Children.Add((New-Tb $label 'Muted' 12))
-    $b.Child = $sp; Set-A11y $b ('{0}: {1}' -f $label, $n)
+    $b.Child = $sp
+    if ($n) {
+        $b.Cursor = [System.Windows.Input.Cursors]::Hand; $b.Focusable = $true; $b.FocusVisualStyle = $null
+        $b.ToolTip = $(if ($sel) { T 'Show all findings again' } else { T 'Show only these findings' })
+        $b.Add_MouseEnter({ if ($this.Tag -ne $State.PolFilter) { Set-Brush $this 'Background' 'Hover' } })
+        $b.Add_MouseLeave({ if ($this.Tag -ne $State.PolFilter) { Set-Brush $this 'Background' 'CardBg' } })
+        $b.Add_GotKeyboardFocus({ Set-Brush $this 'BorderBrush' 'Ink'; $this.BorderThickness = 2 })
+        $b.Add_LostKeyboardFocus({ $s = ($this.Tag -eq $State.PolFilter); Set-Brush $this 'BorderBrush' $(if ($s) { 'Accent' } else { 'Line' }); $this.BorderThickness = $(if ($s) { 2 } else { 1 }) })
+        $b.Add_MouseLeftButtonUp({ Set-PolFilter ([string]$this.Tag) $false })
+        $b.Add_KeyDown({ param($s, $e) if ($e.Key -eq 'Enter' -or $e.Key -eq 'Space') { $e.Handled = $true; Set-PolFilter ([string]$this.Tag) $true } })
+        Set-A11y $b ('{0}: {1}' -f $label, $n) $(if ($sel) { T 'Filter active. Press Enter to show all findings again.' } else { T 'Press Enter to show only these findings.' })
+    } else { Set-A11y $b ('{0}: {1}' -f $label, $n) }
     return $b
+}
+function Get-PolFilterText([string]$f) { if ($f -eq 'Intune') { return (T 'Intune involved') }; return (Get-PolKindText $f) }
+# Toggle the tile filter; $focus = give the keyboard focus back to the tile after rebuilding the page
+function Set-PolFilter([string]$f, [bool]$focus = $false) {
+    $State.PolFilter = $(if (-not $f -or $State.PolFilter -eq $f) { $null } else { $f })
+    Build-Policies
+    if ($focus) { foreach ($t in $UI.PolTiles.Children) { if ([string]$t.Tag -eq $f) { [void]$t.Focus() } } }
 }
 function New-PolCard($f) {
     $card = New-Object System.Windows.Controls.Border; $card.Style = $Win.Resources['Card']
@@ -1702,16 +1731,27 @@ function Build-Policies {
     $UI.PolTiles.Children.Clear(); $UI.PolPanel.Children.Clear()
     $a = $State.Policy
     $UI.BtnPolReport.IsEnabled = [bool]($State.PolicyReport -and (Test-Path -LiteralPath $State.PolicyReport))
+    $UI.BtnPolCsv.IsEnabled = [bool]($State.PolicyCsv -and (Test-Path -LiteralPath $State.PolicyCsv))
+    $UI.PolFilterBar.Visibility = 'Collapsed'
     if (-not $a) { $UI.PolSub.Text = (T 'For IT admins: GPOs and Intune policies that act twice, conflict or slow down startup and sign-in on this PC. Nothing is changed.'); return }
     $bef = @($a.Befunde)
+    # a filter whose tile has no findings (e.g. after "Analyze again") is dropped
+    $flt = $State.PolFilter
+    if ($flt -and -not [int]$a.Zaehler.$flt) { $flt = $null; $State.PolFilter = $null }
     $when = $(if ($State.PolicyTime) { $State.PolicyTime.ToString((T 'yyyy-MM-dd HH:mm')) } else { '' })
     $UI.PolSub.Text = if ($bef.Count) { (T 'Analysis from {0}: {1}. Nothing was changed - clean up in the GPO or in Intune, then run gpupdate (or wait for the next sync) and analyze again.') -f $when, (Plural $bef.Count (T 'policy finding') (T 'policy findings')) } else { (T 'Analysis from {0}: no duplicates, conflicts or slow processing found.') -f $when }
     foreach ($h in @($a.Hinweise)) {
         $hb = New-Object System.Windows.Controls.Border; $hb.CornerRadius = 10; $hb.BorderThickness = 1; $hb.Padding = '14,10'; $hb.Margin = '0,0,0,10'
         Set-Brush $hb 'Background' 'TipBg'; Set-Brush $hb 'BorderBrush' 'TipLine'; $hb.Child = (New-Tb ([string]$h) 'Text' 13); [void]$UI.PolPanel.Children.Add($hb)
     }
-    foreach ($k in $PolKinds) { [void]$UI.PolTiles.Children.Add((New-PolTile (Get-PolKindText $k) ([int]$a.Zaehler.$k) $(if ($k -eq 'Konflikt') { 'Bad' } else { 'Warn' }))) }
-    [void]$UI.PolTiles.Children.Add((New-PolTile (T 'Intune involved') ([int]$a.Zaehler.Intune) 'Accent'))
+    foreach ($k in $PolKinds) { [void]$UI.PolTiles.Children.Add((New-PolTile (Get-PolKindText $k) ([int]$a.Zaehler.$k) $(if ($k -eq 'Konflikt') { 'Bad' } else { 'Warn' }) $k)) }
+    [void]$UI.PolTiles.Children.Add((New-PolTile (T 'Intune involved') ([int]$a.Zaehler.Intune) 'Accent' 'Intune'))
+    $shown = $bef
+    if ($flt) {
+        $shown = @($bef | Where-Object { if ($flt -eq 'Intune') { [string]$_.Quelle -like '*Intune*' } else { $_.Art -eq $flt } })
+        $UI.PolFilterText.Text = ((T 'Showing only: {0} ({1} of {2})') -f (Get-PolFilterText $flt), $shown.Count, $bef.Count)
+        $UI.PolFilterBar.Visibility = 'Visible'
+    }
     # processing times
     $z = $a.Zeiten; $lines = @()
     foreach ($ph in @(@('Start', (T 'Computer policy at startup')), @('Anmeldung', (T 'User policy at sign-in')), @('Hintergrund', (T 'Background refresh')))) {
@@ -1725,12 +1765,13 @@ function Build-Policies {
     $sub = New-Tb ((T '{0} applied GPOs, {1} Intune/MDM settings. Source: {2}.') -f $gpoN, $a.MdmAnzahl, $(if ($z.Quelle -eq 'RSoP') { T 'last run (gpresult)' } else { T 'Group Policy event log' })) 'Muted' 12.5; $sub.Margin = '0,2,0,8'; [void]$ts.Children.Add($sub)
     if (-not $lines.Count) { [void]$ts.Children.Add((New-Tb (T 'No processing times available.') 'Text' 13)) }
     foreach ($l in $lines) { $lt = New-Tb $l 'Text' 13; $lt.Margin = '0,1'; [void]$ts.Children.Add($lt) }
-    $tc.Child = $ts; [void]$UI.PolPanel.Children.Add($tc)
+    $tc.Child = $ts
+    if (-not $flt -or $flt -in 'Startzeit', 'Ladezeit') { [void]$UI.PolPanel.Children.Add($tc) }
     if (-not $bef.Count) {
         $ok = New-Object System.Windows.Controls.Border; $ok.Style = $Win.Resources['Card']; $ok.Child = (New-Tb (T 'No duplicates, conflicts or slow processing found.') 'Good' 15 'SemiBold'); [void]$UI.PolPanel.Children.Add($ok)
     }
     foreach ($k in $PolKinds) {
-        $grp = @($bef | Where-Object { $_.Art -eq $k })
+        $grp = @($shown | Where-Object { $_.Art -eq $k })
         if (-not $grp.Count) { continue }
         $h = New-Tb ('{0} ({1})' -f (Get-PolKindText $k), $grp.Count) 'Muted' 13 'SemiBold'; $h.Margin = '2,10,0,8'; [void]$UI.PolPanel.Children.Add($h)
         foreach ($f in $grp) { [void]$UI.PolPanel.Children.Add((New-PolCard $f)) }
@@ -1750,12 +1791,27 @@ $r
             Show-ErrorPage (T 'The policy analysis could not be completed') (T 'Nothing was changed on this PC. Please try again.') $msg { Start-PolicyScan }
             return
         }
-        $State.Policy = $r.Analyse; $State.PolicyReport = $r.Report; $State.PolicyTime = Get-Date
+        $State.Policy = $r.Analyse; $State.PolicyReport = $r.Report; $State.PolicyCsv = $r.Csv; $State.PolicyTime = Get-Date
         Update-PolicyNav; Build-Policies; Go 'NavPolicies'
     } (T 'Analyzing Group Policy and Intune ...') (T 'Nothing is changed. On domain PCs gpresult can take up to a minute.'))
 }
 $UI.BtnPolScan.Add_Click({ Start-PolicyScan })
 $UI.BtnPolReport.Add_Click({ if ($State.PolicyReport -and (Test-Path -LiteralPath $State.PolicyReport)) { Open-AsUser $State.PolicyReport } })
+$UI.BtnPolFilterClear.Add_Click({ Set-PolFilter '' })
+# CSV export: the engine writes WinTidy-Richtlinien.csv with every scan (all findings, independent of the tile filter);
+# here it is only copied to a place the admin chooses.
+$UI.BtnPolCsv.Add_Click({
+    if (-not ($State.PolicyCsv -and (Test-Path -LiteralPath $State.PolicyCsv))) { return }
+    $dlg = New-Object Microsoft.Win32.SaveFileDialog
+    $dlg.Filter = (T 'CSV file (*.csv)|*.csv'); $dlg.DefaultExt = '.csv'; $dlg.AddExtension = $true; $dlg.OverwritePrompt = $true
+    $dlg.FileName = ('WinTidy-Policies-{0}-{1}.csv' -f $env:COMPUTERNAME, $(if ($State.PolicyTime) { $State.PolicyTime.ToString('yyyyMMdd-HHmm') } else { (Get-Date).ToString('yyyyMMdd-HHmm') }))
+    try { $dlg.InitialDirectory = [Environment]::GetFolderPath('Desktop') } catch { }
+    if (-not $dlg.ShowDialog($Win)) { return }
+    try {
+        Copy-Item -LiteralPath $State.PolicyCsv -Destination $dlg.FileName -Force -ErrorAction Stop
+        if ((Show-Msg ((T "Saved: {0}`n`nOpen the folder?") -f $dlg.FileName) 'YesNo' 'Information') -eq 'Yes') { try { Start-Process -FilePath (Join-Path $env:windir 'explorer.exe') -ArgumentList ('/select,"{0}"' -f $dlg.FileName) } catch { } }
+    } catch { Write-ErrLog "Policies CSV: $($_.Exception.Message)"; [void](Show-Msg ((T 'The CSV file could not be saved: {0}') -f $_.Exception.Message) 'OK' 'Warning') }
+})
 
 # =============================================================================
 #  Error page (friendly, with "Try again" and "Copy error report")

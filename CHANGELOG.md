@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.14.0 – 2026-11-01
+**Policies page: filter by tile, CSV export**
+- App: the tiles on the *Policies* page are now filters. A click (or Enter/Space) on a tile with findings shows only that kind - or, for *Intune involved*, only the findings in which Intune takes part; a second click or "Show all" shows everything again. The selected tile is outlined, a line above the cards says "Showing only: ... (n of m)". The processing-time card stays visible for *Startup and sign-in* and *Processing time*. Tiles with 0 are not clickable.
+- New: every policy analysis also writes `WinTidy-Richtlinien.csv` to the data folder - one row per finding, so findings can be cleaned up by script (e.g. with the GroupPolicy module) or sorted in Excel. Separator `;`, UTF-8 with BOM, every field quoted. Columns: `Computer`, `Time`, `Kind`, `Severity`, `Source`, `Check`, `Key`, `GpoIds`, `Gpos`, `Title`, `Text`, `Details`. `Kind`, `Severity`, `Source` and `Key` are the internal, language-independent values (as in the JSON); `Check` is the key prefix (`dup`, `conflict`, `multilink`, `noeffect`, `cse`, ...); `GpoIds` holds the GPO GUIDs for the checks that name GPOs (winner first). Details are one cell with one line per entry. Cells starting with `=`, `+` or `@` get a leading apostrophe so Excel never runs them as formulas.
+- App: link "Export CSV ..." on the *Policies* page saves a copy wherever you want (always all findings, independent of the filter). Command line: `-Mode Policies` prints the path of the CSV.
+- `Invoke-GuiPolicyScan` returns the additional field `Csv`.
+- Tests: `Test-Policies.ps1` checks the CSV (header, BOM, one row per finding, GPO ids, multi-line details, formula protection, empty analysis).
+
 ## 1.13.0 – 2026-11-01
 **Policy analysis for IT admins: GPOs and Intune**
 - New: WinTidy analyzes the Group Policy and Intune/MDM policies of a company device and shows what acts twice, what conflicts and what slows down startup, sign-in and processing - for admins who want to tidy up their GPOs or Intune policies. Read-only: no policy is changed, no `gpupdate`.

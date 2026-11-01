@@ -46,7 +46,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 
 In the app the tiles filter the findings by kind. It writes its own report (`WinTidy-Richtlinien.html`) plus a CSV for scripts and Excel (`WinTidy-Richtlinien.csv`, separator `;`, one row per finding with stable keys and GPO GUIDs) and never changes a policy - the cleanup happens in the GPO or in Intune. Intune-side duplicates between profiles are only visible in the Intune admin center.
 
-**Exclusions.** If a finding is how you want it (a startup program, a firewall profile, a Defender exclusion), exclude it: WinTidy stops showing it, never changes it and does not count it in the health score. You can include it again at any time (app: card "Excluded points"; command line: `-Mode Exclusions`).
+**Exclusions.** If a finding is how you want it (a startup program, a firewall profile, a Defender exclusion), exclude it: WinTidy stops showing it, never changes it and does not count it in the health score. You can include it again at any time (app: page "Exclusions"; command line: `-Mode Exclusions`).
 
 ### What WinTidy deliberately does *not* do
 

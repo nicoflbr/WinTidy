@@ -83,7 +83,7 @@ if ($AddExclusion) { $AddExclusion = @($AddExclusion | ForEach-Object { $_ -spli
 if ($RemoveExclusion) { $RemoveExclusion = @($RemoveExclusion | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.14.0'
+$Script:Version = '1.15.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)

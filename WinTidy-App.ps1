@@ -331,6 +331,7 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           <RadioButton x:Name="NavRecs" AutomationProperties.Name="Recommendations" Style="{StaticResource Nav}" ToolTip="Recommendations"><DockPanel LastChildFill="True"><TextBlock DockPanel.Dock="Left" Text="&#xE82F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><Border x:Name="RecsBadge" DockPanel.Dock="Right" Background="{DynamicResource Accent}" CornerRadius="9" Padding="7,0" Margin="6,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"><TextBlock x:Name="RecsBadgeText" Foreground="{DynamicResource OnAccent}" FontSize="12"/></Border><TextBlock x:Name="NavT2" Text="Recommendations" TextTrimming="CharacterEllipsis"/></DockPanel></RadioButton>
           <RadioButton x:Name="NavDebloat" AutomationProperties.Name="Debloat" Style="{StaticResource Nav}" ToolTip="Debloat"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT6" Text="Debloat"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavPolicies" AutomationProperties.Name="Policies" Style="{StaticResource Nav}" ToolTip="Policies (GPO and Intune analysis for IT admins)" Visibility="Collapsed"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT7" Text="Policies"/></StackPanel></RadioButton>
+          <RadioButton x:Name="NavExcl" AutomationProperties.Name="Exclusions" Style="{StaticResource Nav}" ToolTip="Exclusions (points you accept as they are)"><DockPanel LastChildFill="True"><TextBlock DockPanel.Dock="Left" Text="&#xE8FD;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><Border x:Name="ExclBadge" DockPanel.Dock="Right" Background="{DynamicResource Track}" CornerRadius="9" Padding="7,0" Margin="6,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"><TextBlock x:Name="ExclBadgeText" Foreground="{DynamicResource Ink}" FontSize="12"/></Border><TextBlock x:Name="NavT8" Text="Exclusions" TextTrimming="CharacterEllipsis"/></DockPanel></RadioButton>
           <RadioButton x:Name="NavHistory" AutomationProperties.Name="History" Style="{StaticResource Nav}" ToolTip="History"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT3" Text="History"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavSettings" AutomationProperties.Name="Settings" Style="{StaticResource Nav}" ToolTip="Settings"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT4" Text="Settings"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavHelp" AutomationProperties.Name="Help" Style="{StaticResource Nav}" ToolTip="Help"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE897;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT5" Text="Help"/></StackPanel></RadioButton>
@@ -440,17 +441,7 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           </StackPanel>
         </StackPanel>
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-          <StackPanel>
-            <StackPanel x:Name="RecsPanel" Margin="36,6,36,8" MaxWidth="980"/>
-            <Border x:Name="ExclCard" Style="{StaticResource Card}" Margin="36,0,36,20" MaxWidth="980" Visibility="Collapsed">
-              <StackPanel>
-                <TextBlock Text="Excluded points" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource Ink}"/>
-                <TextBlock Style="{StaticResource Sub}" FontSize="13" Margin="0,4,0,10" TextWrapping="Wrap" Text="These points are accepted as they are: WinTidy does not show them, does not change them and does not count them in the score. Points you include again appear after the next check."/>
-                <StackPanel x:Name="ExclPanel"/>
-                <Button x:Name="BtnExclAll" Style="{StaticResource LinkBtn}" Content="Include all again" HorizontalAlignment="Left" Margin="0,8,0,0"/>
-              </StackPanel>
-            </Border>
-          </StackPanel>
+          <StackPanel x:Name="RecsPanel" Margin="36,6,36,20" MaxWidth="980"/>
         </ScrollViewer>
         <Border Grid.Row="2" Background="{DynamicResource CardBg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="36,14">
           <DockPanel>
@@ -519,6 +510,26 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           </StackPanel>
         </ScrollViewer>
       </Grid>
+
+      <!-- Exclusions: points the user accepts as they are (own tab since 1.15) -->
+      <ScrollViewer x:Name="PageExcl" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="36,22,36,30" MaxWidth="980" HorizontalAlignment="Left">
+          <TextBlock Text="Exclusions" Style="{StaticResource H1}"/>
+          <TextBlock Style="{StaticResource Sub}" Margin="0,4,0,18" TextWrapping="Wrap" Text="These points are accepted as they are: WinTidy does not show them, does not change them and does not count them in the score. Points you include again appear after the next check."/>
+          <Border x:Name="ExclEmpty" Style="{StaticResource Card}">
+            <StackPanel>
+              <TextBlock Text="Nothing excluded" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource Ink}"/>
+              <TextBlock Style="{StaticResource Sub}" FontSize="13" Margin="0,4,0,0" TextWrapping="Wrap" Text="If a point is how you want it, click Exclude next to it on the recommendations or Debloat page, or Accept next to a deduction under Why not 100? on the overview."/>
+            </StackPanel>
+          </Border>
+          <Border x:Name="ExclCard" Style="{StaticResource Card}" Visibility="Collapsed">
+            <StackPanel>
+              <StackPanel x:Name="ExclPanel"/>
+              <Button x:Name="BtnExclAll" Style="{StaticResource LinkBtn}" Content="Include all again" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
 
       <!-- Work in progress -->
       <ScrollViewer x:Name="PageBusy" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
@@ -1026,8 +1037,8 @@ function Complete-Op($op) {
 # =============================================================================
 #  Navigation, pages, layout
 # =============================================================================
-$Pages = 'PageHome', 'PageRecs', 'PageDebloat', 'PagePolicies', 'PageBusy', 'PageResult', 'PageError', 'PageHistory', 'PageSettings', 'PageHelp'
-$NavItems = 'NavHome', 'NavRecs', 'NavDebloat', 'NavPolicies', 'NavHistory', 'NavSettings', 'NavHelp'
+$Pages = 'PageHome', 'PageRecs', 'PageDebloat', 'PagePolicies', 'PageExcl', 'PageBusy', 'PageResult', 'PageError', 'PageHistory', 'PageSettings', 'PageHelp'
+$NavItems = 'NavHome', 'NavRecs', 'NavDebloat', 'NavPolicies', 'NavExcl', 'NavHistory', 'NavSettings', 'NavHelp'
 # Is something running right now (also invisible, e.g. loading)? Then say so instead of silently doing nothing.
 # Open files (report) via Explorer so that the browser does not start with admin rights
 function Open-AsUser([string]$Path) { try { Start-Process -FilePath (Join-Path $env:windir 'explorer.exe') -ArgumentList ('"{0}"' -f $Path) } catch { try { Start-Process -FilePath $Path } catch { } } }
@@ -1104,7 +1115,7 @@ function Complete-ExclOp($r, $err) {
 function Start-Exclude($Entry) {
     if (-not $Entry) { return }
     if ([string]$Entry.Art -eq 'Regel') {
-        if ((Show-Msg ((T 'Exclude "{0}" completely? WinTidy will no longer show this check, will not change anything for it and will not count it in the score. You can include it again under Excluded points.') -f $Entry.Titel) 'YesNo' 'Question') -ne 'Yes') { return }
+        if ((Show-Msg ((T 'Exclude "{0}" completely? WinTidy will no longer show this check, will not change anything for it and will not count it in the score. You can include it again on the page Exclusions.') -f $Entry.Titel) 'YesNo' 'Question') -ne 'Yes') { return }
     }
     Start-ExclOp 'add' (@{ Art = [string]$Entry.Art; Regel = [string]$Entry.Regel; Schluessel = [string]$Entry.Schluessel; Anzeige = [string]$Entry.Anzeige; Titel = [string]$Entry.Titel })
 }
@@ -1119,6 +1130,9 @@ function Update-Excluded {
     Set-A11y $UI.ScoreExclLink ((T '{0} excluded – not counted' $ex.Count)) (T 'Shows the excluded points')
     $UI.ExclPanel.Children.Clear()
     $UI.ExclCard.Visibility = $(if ($ex.Count) { 'Visible' } else { 'Collapsed' })
+    $UI.ExclEmpty.Visibility = $(if ($ex.Count) { 'Collapsed' } else { 'Visible' })
+    if ($ex.Count) { $UI.ExclBadge.Visibility = 'Visible'; $UI.ExclBadgeText.Text = "$($ex.Count)" } else { $UI.ExclBadge.Visibility = 'Collapsed' }
+    Set-A11y $UI.NavExcl $(if ($ex.Count) { (T 'Exclusions: {0}' $ex.Count) } else { (T 'Exclusions') })
     foreach ($xe in $ex) {
         $art = [string]$xe.Art
         $row = New-Object System.Windows.Controls.DockPanel; $row.Margin = '0,0,0,10'
@@ -1145,7 +1159,7 @@ function Update-Excluded {
         [void]$UI.ExclPanel.Children.Add($row)
     }
 }
-$UI.ScoreExclLink.Add_Click({ Go 'NavRecs'; try { $UI.ExclCard.UpdateLayout(); $UI.ExclCard.BringIntoView() } catch { } })
+$UI.ScoreExclLink.Add_Click({ Go 'NavExcl' })
 $UI.BtnExclAll.Add_Click({
     if ((Show-Msg (T 'Include all excluded points again? They are shown and counted again after the next check.') 'YesNo' 'Question') -ne 'Yes') { return }
     Start-ExclOp 'all' $null
@@ -1156,6 +1170,7 @@ function Clear-NavSelection { foreach ($n in $NavItems) { $UI[$n].IsChecked = $f
 $UI.NavHome.Add_Checked({ Show-Page 'PageHome' })
 $UI.NavRecs.Add_Checked({ Show-Page 'PageRecs' })
 $UI.NavDebloat.Add_Checked({ Show-Page 'PageDebloat'; if ((-not $State.DebloatScanned) -and -not $State.Busy) { Start-DebloatScan } })
+$UI.NavExcl.Add_Checked({ Show-Page 'PageExcl' })
 $UI.NavPolicies.Add_Checked({ Show-Page 'PagePolicies'; if ((-not $State.Policy) -and (-not $State.PolicyAsked) -and -not $State.Busy) { $State.PolicyAsked = $true; Start-PolicyScan } })
 $UI.NavHistory.Add_Checked({ Show-Page 'PageHistory'; Load-History })
 $UI.NavSettings.Add_Checked({ Show-Page 'PageSettings' })
@@ -1168,7 +1183,7 @@ function Set-Narrow([bool]$narrow) {
     $vis = $(if ($narrow) { 'Collapsed' } else { 'Visible' })
     $UI.NavCol.Width = New-Object System.Windows.GridLength ($(if ($narrow) { 84 } else { 252 }))
     $UI.NavDock.Margin = $(if ($narrow) { '10,22,10,16' } else { '16,22,16,16' })
-    foreach ($n in 'BrandText', 'NavT1', 'NavT2', 'NavT3', 'NavT4', 'NavT5', 'NavT6', 'NavT7', 'VersionText') { $UI[$n].Visibility = $vis }
+    foreach ($n in 'BrandText', 'NavT1', 'NavT2', 'NavT3', 'NavT4', 'NavT5', 'NavT6', 'NavT7', 'NavT8', 'VersionText') { $UI[$n].Visibility = $vis }
 }
 # Window never larger than the work area (laptops with scaling)
 $Win.Add_SourceInitialized({

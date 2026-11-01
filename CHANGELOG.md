@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.15.0 – 2026-11-01
+**Exclusions on their own page**
+- App: the excluded points moved from the bottom of the *Recommendations* page to their own page **Exclusions** in the navigation (between *Policies* and *History*), so the recommendations only show what can be done. The navigation entry shows the number of exclusions as a badge; without exclusions the page explains how to exclude a point. The link "N excluded - not counted" on the overview opens the new page. "Include again" / "Include all again" work as before.
+- No change to the engine, the stored exclusions (`ausnahmen.json`) or the command line.
+
 ## 1.14.0 – 2026-11-01
 **Policies page: filter by tile, CSV export**
 - App: the tiles on the *Policies* page are now filters. A click (or Enter/Space) on a tile with findings shows only that kind - or, for *Intune involved*, only the findings in which Intune takes part; a second click or "Show all" shows everything again. The selected tile is outlined, a line above the cards says "Showing only: ... (n of m)". The processing-time card stays visible for *Startup and sign-in* and *Processing time*. Tiles with 0 are not clickable.

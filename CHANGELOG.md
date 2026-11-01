@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.13.0 – 2026-11-01
+**Policy analysis for IT admins: GPOs and Intune**
+- New: WinTidy analyzes the Group Policy and Intune/MDM policies of a company device and shows what acts twice, what conflicts and what slows down startup, sign-in and processing - for admins who want to tidy up their GPOs or Intune policies. Read-only: no policy is changed, no `gpupdate`.
+- Sources: `gpresult /x` (settings with GPO and precedence), the Group Policy operational log (startup, sign-in, background refresh and every client-side extension, last `PolicyEventDays` days) and the PolicyManager (Intune/MDM).
+- **Duplicates:** the same value in several GPOs (per GPO pair), GPOs linked more than once in the device's path, GPOs without own effect, GPO values blocked by `MDMWinsOverGP` / `IgnoreWindowsUpdateGroupPolicies`, MDM settings from several management sources.
+- **Conflicts:** different values for the same setting (who wins with which value), GPO and Intune for the same Policy CSP setting, Windows Update / Microsoft Defender / Windows Hello configured from both sides.
+- **Startup, sign-in and processing time:** computer policy at startup and user policy at sign-in (median, longest), background refresh and slow client-side extensions - each with the GPOs that use them. Limits: `PolicyStartWarnSec`/`PolicyStartCritSec` (15/45 s), `PolicyCseWarnMs`/`PolicyCseCritMs` (3/15 s).
+- **Slowdown patterns:** "Always wait for the network", synchronous startup and logon scripts, unlimited script wait time, Folder Redirection and Software Installation (force synchronous processing), drive maps, loopback in merge mode, refresh interval below 30 minutes, "process even if the GPOs have not changed", long startup network wait, many GPOs or WMI filters, slow link.
+- App: new page **Policies** (visible on domain/Intune/Entra/ConfigMgr devices and in expert mode) with tiles per kind, processing times and one card per finding (details can be copied). Command line: `-Mode Policies [-OpenReport]`, menu entry [P]. Own report `WinTidy-Richtlinien.html`; the raw gpresult data stays as `richtlinien-rsop.xml` in the data folder.
+- The HTML reports share one style sheet (`Get-ReportCss`).
+- New configuration keys `PolicyStartWarnSec`, `PolicyStartCritSec`, `PolicyCseWarnMs`, `PolicyCseCritMs`, `PolicyEventDays` (with minimum values; critical never below warning).
+- New test `tests/Test-Policies.ps1` (also in the GitHub workflows).
+
 ## 1.12.0 – 2026-10-29
 **Exclusions: accept points as they are**
 - New: points WinTidy reports can be excluded - a single point, a whole check, or one deduction in the health score ("Why not 100?"). Excluded points are not shown, not changed (also not by `-Yes`) and not counted in the score. Typical use: a startup entry or a Defender exclusion you want, a firewall profile you switched off on purpose.

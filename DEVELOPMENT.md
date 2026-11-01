@@ -2,7 +2,7 @@
 
 This document is the basis for further development. It describes the goal and principles, the architecture, the rule contract, the data formats, the tests, the lessons learned from the first deployment and open ideas.
 
-As of version 1.12.0, 2026-10-29.
+As of version 1.13.0, 2026-11-01.
 
 ---
 
@@ -52,6 +52,7 @@ WinTidy\
     Test-Features.ps1    # SEC-HEALTH, SYS-STORAGESENSE, SYS-AI, profiles (export/import), shareable report
     Test-Rules.ps1       # rule review 1.10: unattended mode, quarantine, blue screen dumps, ghost devices, new checks, score
     Test-Exclusions.ps1  # exclusions 1.12: storage, item keys, filtered findings, fix defense, score with exclusions, history/report, GUI API, CLI
+    Test-Policies.ps1    # policy analysis 1.13: RSoP parser, duplicates/conflicts, times, slowdown patterns, Intune overlaps, report, GUI API, read-only
     Probe-Hardware.ps1   # diagnosis on real PCs: which sensor sources deliver what (writes probe-hardware.json)
     Probe-Display.ps1    # diagnosis: refresh rates according to driver and EDID
   WinTidy-Daten\         # runtime data up to 1.2 (in .gitignore); since 1.3 see below
@@ -67,7 +68,7 @@ A single script file is intentional: copy and run, no module path, no signature 
 
 ```
 Show-Header
-  └─ Invoke-Mode <Scan|Preview|Apply|Compare|Report|Restore|Rules|Hardware|Exclusions>
+  └─ Invoke-Mode <Scan|Preview|Apply|Compare|Report|Restore|Rules|Hardware|Exclusions|Policies>
         Scan    : Start-RunLog → Invoke-Rules($false) → New-Snapshot('scan', findings) → score → Show-Compare(previous) → New-Report
         Preview : Start-RunLog → Invoke-Rules($false)
         Apply   : Start-RunLog → New-Snapshot('vorher') → New-RestorePoint → Invoke-Rules($true)
@@ -76,6 +77,7 @@ Show-Header
         Report  : New-Report (from all snapshots + all actions.jsonl)
         Restore : single-value undo from actions.jsonl, register tasks from XML, service start types from undo info
         Exclusions : list / add / remove the points the user accepts (section 3h)
+        Policies : GPO/Intune analysis for IT admins, read-only, own report (section 3i)
 ```
 
 ### Central building blocks
@@ -216,6 +218,17 @@ Users can accept points as they are. An exclusion only ever **reduces** what Win
 - **A whole-rule exclusion only covers its own deduction:** `Regel` covers the deduction with the same Id or the one in `Get-ScoreRuleLinks` (`SCORE-AUTOSTART` = `STA-HEAVY`, `SCORE-HWWARN` = `HW-COOLING`). `Get-ScoreItemLinks` (`SEC-CHECKS|uac-off` = `SCORE-UAC` ...) only counts `Objekt` exclusions. So hiding the `SEC-CHECKS` hints ("Security basics") leaves every security deduction in the score.
 - **Stable keys for hardware and warning signs:** every point of `Get-HardwarePoints` has a `Schluessel` that names the cause without measured values or text (`cpu-temp-high`, `gpu-fan-zero:<GPU name>`, `drive-temp-warm:<drive name>`, `pump-stopped`, `fan-tools-board` ...; set with `P ... -Key`), every entry of `Get-WarningSignals` has an Id per check (`power-loss`, `bluescreen`, `hardware-errors`, `drive-errors`, `gpu-driver-crash`, `tpm-errors`, `restore-points-lost`). They are the item keys of `HW-COOLING` / `EVT-HEALTH`, are stored in the snapshot (`Hardware.Punkte[].Schluessel`, `Stabilitaet.Warnsignale[].Schluessel`) and used by `Get-HealthScoreCore`; snapshots without the field fall back to the text. New points need a key, and keys are never renamed.
 - **Tests:** `tests/Test-Exclusions.ps1`.
+
+### 3i. Policy analysis for IT admins (since 1.13)
+Read-only analysis of the Group Policy and Intune/MDM state of **this** device: what acts twice, what conflicts, what slows down startup, sign-in and processing. It is not a rule (no `Detect`/`Fix`, no score, no exclusions) but its own pipeline with its own report, CLI mode and app page. Code: section "Policy analysis for IT admins" in `WinTidy.ps1` (before the modes).
+- **Data sources** (each replaceable in tests): `Get-GpRsopXml` (`gpresult /x` by full path, 3 min limit, with admin rights computer + user, otherwise `/scope user`; the file stays as `richtlinien-rsop.xml` in the data folder - the only file the section writes besides the report), `Get-GpEvents` (GroupPolicy/Operational 8000/8001/8006/8007/5016/7016, `PolicyEventDays`; `$null` = log not readable, empty array = no events), `Get-PolicyRegValues` / `Get-PolicyRegSubKeys` (HKLM, 64-bit view, read-only `OpenSubKey($p, $false)`), `Get-MdmPolicies` (PolicyManager `providers\<id>\default\Device\<Area>` + effective value from `current\device`, provider name from `Enrollments\<id>\ProviderID`, `MS DM Server` = Intune).
+- **RSoP parser** `ConvertFrom-GpRsop`: namespace-independent (`local-name()`), DTDs not resolved (`XmlResolver = $null`). Per part (`Computer`/`Benutzer`): GPOs (`Wirksam` = filter allowed, not denied, valid, enabled and at least one applied link; `Orte` = applied SOM paths; `WmiFilter`), `ExtensionStatus` (duration of the last run) and every element below `ExtensionData/Extension` that has a direct `GPO` and `Precedence` child = one setting. `Get-GpSettingInfo` splits a setting into identity (element name + descriptive children `Name`, `KeyName`, `KeyPath`, `Category`, `Value/Name`, `Type`, `Command` ... + attributes `name`/`path`/`clsid`) and value (everything else, normalized, without `Explain`/`Supported`, prefixes, `uid`/`changed`). GUIDs are normalized with `Format-GpGuid` (gpresult, events and registry write them differently).
+- **Evaluation:** `Find-GpOverlaps` (per setting the entries of all GPOs sorted by precedence; same value = `Doppelt`, different = `Konflikt`, grouped per GPO pair; GPO linked more than once; GPO with settings but no winning one = "no effect of its own"; counters `Einstellungen`/`Gewinnt`/`Doppelt`/`Ueberstimmt` per GPO), `Measure-GpTimes` (phases via the event `ActivityId`: CSE events with the activity of an 8000 event count as startup; fallback: last run from the RSoP data), `Find-GpTimeIssues` (`PolicyStartWarnSec`/`PolicyStartCritSec`, `PolicyCseWarnMs`/`PolicyCseCritMs`), `Find-GpBrakes` (registry policy values + RSoP structure, catalog `Get-GpCseCatalog`: `sync` = Folder Redirection / Software Installation, `drive` = drive maps), `Find-MdmOverlaps` (Policy CSP via `PolicyManager\default\<Area>\<Policy>` `GPBlockingRegKeyPath`/`GPBlockingRegValueName`, `MDMWinsOverGP`; Windows Update, Defender and Windows Hello separately because `MDMWinsOverGP` does not apply to them).
+- **Result** `Get-PolicyAnalysis` -> `{ Format = 'WinTidy-Richtlinien', Version, Zeit, Computer, Admin, Verwaltung, Quellen {Rsop, Ereignisse, Mdm}, Hinweise[], Gpos[], MdmAnzahl, Zeiten {Quelle, Start, Anmeldung, Hintergrund, Erweiterungen[]}, Befunde[], Zaehler }`. A finding: `{ Art (Konflikt|Doppelt|Startzeit|Ladezeit|Bremse), Stufe (krit|warn|''), Quelle (GPO|Intune|GPO+Intune), Titel, Text, Gpos[], Details[max 50], Schluessel }`. Internal values stay German; `Schluessel` is stable and language-independent (`dup:<winner>:<loser>`, `conflict:...`, `cse:<guid>`, `sync-foreground` ...). Every data source and every evaluation step is wrapped: a failure becomes a translated text in `Hinweise`, never an exception.
+- **Output:** `Show-PolicyAnalysis` (CLI), `New-PolicyReport` (`WinTidy-Richtlinien.html`, shares `Get-ReportCss` with the main report), `Invoke-GuiPolicyScan` (GUI API, never throws, `{ Analyse, Report, Fehler }`), `Invoke-PolicyMode` (`-Mode Policies`, menu `[P]`).
+- **App:** nav item `NavPolicies` / page `PagePolicies`, visible on managed PCs (`Context.Verwaltet`), in expert mode or once an analysis exists (`Update-PolicyNav`). Opening it analyzes once (`Start-PolicyScan`, kind `scan`); tiles per kind, a card with the processing times, one card per finding (details in a read-only text box so admins can copy GPO names). The kind names are translated in the app itself (`Get-PolKindText`), because the UI thread does not load the engine.
+- **Never:** write policies, run `gpupdate`, query the domain (RSAT) or Microsoft Graph. `Test-Policies.ps1` checks the section for registry writes and `gpupdate`.
+- **Tests:** `tests/Test-Policies.ps1` (synthetic gpresult XML, events and registry).
 
 ## 4. Rule contract
 
@@ -372,6 +385,7 @@ pwsh ./tests/Test-Perf.ps1      # performance key figures: idle median/calm, ver
 pwsh ./tests/Test-Features.ps1  # security health check, Storage Sense, AI inventory, profiles round trip and errors, anonymized report, PDF fallback
 pwsh ./tests/Test-Rules.ps1     # rule review 1.10: -Yes fails closed, quarantine, dumps kept, ghost devices by age, new checks, score
 pwsh ./tests/Test-Exclusions.ps1 # exclusions 1.12: storage, item keys, filtered findings, fix defense, score, history/report, GUI API, CLI
+pwsh ./tests/Test-Policies.ps1  # policy analysis 1.13: RSoP parser, duplicates/conflicts, times, slowdown patterns, Intune overlaps, report, read-only
 ```
 
 All of them also run on Linux/macOS with PowerShell 7. Functions are loaded via the AST so that Windows-specific startup code is not executed. `Test-Hardware.ps1` replaces the data sources (`Get-HwMonitorSensors`, `Get-NvidiaGpus`, `Get-ThermalZones`, `Get-DiskHealth`, `Get-CpuPerfSample` …) with functions returning synthetic values – so always build new hardware data sources as their own `Get-*` function.
@@ -472,6 +486,13 @@ Origin of the tool: assessment and two optimization rounds on the first test PC 
 ---
 
 ## 10. Roadmap / ideas
+
+**Policy analysis (section 3i)** - not part of 1.13 on purpose, possible next steps
+- [ ] Domain-wide view when the RSAT GroupPolicy module is present (`Get-GPOReport -All`): unlinked, empty and half-disabled GPOs, duplicates across all GPOs, not only those of this device
+- [ ] Failed extensions and filtered/denied GPOs as their own kind ("Errors and ineffective")
+- [ ] Intune via Microsoft Graph (profile assignments, duplicates between profiles) - needs sign-in and app permissions, therefore opt-in only
+- [ ] Policy analysis of several devices merged into one report (JSON export of `Get-PolicyAnalysis`)
+- [ ] Verify the event IDs/fields and `GPBlockingRegKeyPath` on real domain and Intune devices (the tests use synthetic data)
 
 **Still open from the review of 2026-10-23** (details: section 12)
 - [ ] GPU temperature and real fan speed vendor-neutral via `D3DKMTQueryAdapterInfo(KMTQAITYPE_ADAPTERPERFDATA)` (AMD/Intel Arc without additional software) – verify the P/Invoke structure on real hardware

@@ -330,6 +330,7 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
           <RadioButton x:Name="NavHome" AutomationProperties.Name="Overview" Style="{StaticResource Nav}" IsChecked="True" ToolTip="Overview"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT1" Text="Overview"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavRecs" AutomationProperties.Name="Recommendations" Style="{StaticResource Nav}" ToolTip="Recommendations"><DockPanel LastChildFill="True"><TextBlock DockPanel.Dock="Left" Text="&#xE82F;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><Border x:Name="RecsBadge" DockPanel.Dock="Right" Background="{DynamicResource Accent}" CornerRadius="9" Padding="7,0" Margin="6,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"><TextBlock x:Name="RecsBadgeText" Foreground="{DynamicResource OnAccent}" FontSize="12"/></Border><TextBlock x:Name="NavT2" Text="Recommendations" TextTrimming="CharacterEllipsis"/></DockPanel></RadioButton>
           <RadioButton x:Name="NavDebloat" AutomationProperties.Name="Debloat" Style="{StaticResource Nav}" ToolTip="Debloat"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT6" Text="Debloat"/></StackPanel></RadioButton>
+          <RadioButton x:Name="NavPolicies" AutomationProperties.Name="Policies" Style="{StaticResource Nav}" ToolTip="Policies (GPO and Intune analysis for IT admins)" Visibility="Collapsed"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT7" Text="Policies"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavHistory" AutomationProperties.Name="History" Style="{StaticResource Nav}" ToolTip="History"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT3" Text="History"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavSettings" AutomationProperties.Name="Settings" Style="{StaticResource Nav}" ToolTip="Settings"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT4" Text="Settings"/></StackPanel></RadioButton>
           <RadioButton x:Name="NavHelp" AutomationProperties.Name="Help" Style="{StaticResource Nav}" ToolTip="Help"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE897;" FontFamily="Segoe MDL2 Assets" Width="30" VerticalAlignment="Center"/><TextBlock x:Name="NavT5" Text="Help"/></StackPanel></RadioButton>
@@ -491,6 +492,26 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
             </StackPanel>
           </DockPanel>
         </Border>
+      </Grid>
+
+      <!-- Policies: GPO/Intune analysis for IT admins (read-only, since 1.13) -->
+      <Grid x:Name="PagePolicies" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <StackPanel Margin="36,22,36,10">
+          <TextBlock Text="Policies" Style="{StaticResource H1}"/>
+          <TextBlock x:Name="PolSub" Style="{StaticResource Sub}" Margin="0,4,0,10" TextWrapping="Wrap" Text="For IT admins: GPOs and Intune policies that act twice, conflict or slow down startup and sign-in on this PC. Nothing is changed."/>
+          <StackPanel Orientation="Horizontal">
+            <Button x:Name="BtnPolScan" Style="{StaticResource LinkBtn}" Content="Analyze again"/>
+            <TextBlock Text="  ·  " Foreground="{DynamicResource Muted}"/>
+            <Button x:Name="BtnPolReport" Style="{StaticResource LinkBtn}" Content="Open report" IsEnabled="False"/>
+          </StackPanel>
+        </StackPanel>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+          <StackPanel Margin="36,6,36,20" MaxWidth="980" HorizontalAlignment="Left">
+            <WrapPanel x:Name="PolTiles" Margin="0,0,0,6"/>
+            <StackPanel x:Name="PolPanel"/>
+          </StackPanel>
+        </ScrollViewer>
       </Grid>
 
       <!-- Work in progress -->
@@ -706,6 +727,12 @@ if (-not (Test-Path -LiteralPath $EnginePath)) { [System.Windows.MessageBox]::Sh
             <StackPanel>
               <TextBlock Text="What does WinTidy do?" Style="{StaticResource H2}"/>
               <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="WinTidy checks your PC (storage space, startup, leftovers, security, hardware) and suggests improvements. Nothing is changed while checking. Only what you select is applied – it is measured before and after so that you see the difference."/>
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
+              <TextBlock Text="Policies (for IT admins)" Style="{StaticResource H2}"/>
+              <TextBlock Style="{StaticResource Body}" Margin="0,6,0,0" Text="On company PCs (or in expert mode) the page Policies analyzes the Group Policy and Intune settings of this PC: settings set twice, conflicting GPOs, GPOs without effect, slow extensions at startup and sign-in and known slowdowns such as synchronous scripts or loopback in merge mode. WinTidy only reads - the cleanup happens in the GPO or in Intune. The page writes its own report (WinTidy-Richtlinien.html)."/>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">
@@ -993,8 +1020,8 @@ function Complete-Op($op) {
 # =============================================================================
 #  Navigation, pages, layout
 # =============================================================================
-$Pages = 'PageHome', 'PageRecs', 'PageDebloat', 'PageBusy', 'PageResult', 'PageError', 'PageHistory', 'PageSettings', 'PageHelp'
-$NavItems = 'NavHome', 'NavRecs', 'NavDebloat', 'NavHistory', 'NavSettings', 'NavHelp'
+$Pages = 'PageHome', 'PageRecs', 'PageDebloat', 'PagePolicies', 'PageBusy', 'PageResult', 'PageError', 'PageHistory', 'PageSettings', 'PageHelp'
+$NavItems = 'NavHome', 'NavRecs', 'NavDebloat', 'NavPolicies', 'NavHistory', 'NavSettings', 'NavHelp'
 # Is something running right now (also invisible, e.g. loading)? Then say so instead of silently doing nothing.
 # Open files (report) via Explorer so that the browser does not start with admin rights
 function Open-AsUser([string]$Path) { try { Start-Process -FilePath (Join-Path $env:windir 'explorer.exe') -ArgumentList ('"{0}"' -f $Path) } catch { try { Start-Process -FilePath $Path } catch { } } }
@@ -1123,6 +1150,7 @@ function Clear-NavSelection { foreach ($n in $NavItems) { $UI[$n].IsChecked = $f
 $UI.NavHome.Add_Checked({ Show-Page 'PageHome' })
 $UI.NavRecs.Add_Checked({ Show-Page 'PageRecs' })
 $UI.NavDebloat.Add_Checked({ Show-Page 'PageDebloat'; if ((-not $State.DebloatScanned) -and -not $State.Busy) { Start-DebloatScan } })
+$UI.NavPolicies.Add_Checked({ Show-Page 'PagePolicies'; if ((-not $State.Policy) -and (-not $State.PolicyAsked) -and -not $State.Busy) { $State.PolicyAsked = $true; Start-PolicyScan } })
 $UI.NavHistory.Add_Checked({ Show-Page 'PageHistory'; Load-History })
 $UI.NavSettings.Add_Checked({ Show-Page 'PageSettings' })
 $UI.NavHelp.Add_Checked({ Show-Page 'PageHelp' })
@@ -1134,7 +1162,7 @@ function Set-Narrow([bool]$narrow) {
     $vis = $(if ($narrow) { 'Collapsed' } else { 'Visible' })
     $UI.NavCol.Width = New-Object System.Windows.GridLength ($(if ($narrow) { 84 } else { 252 }))
     $UI.NavDock.Margin = $(if ($narrow) { '10,22,10,16' } else { '16,22,16,16' })
-    foreach ($n in 'BrandText', 'NavT1', 'NavT2', 'NavT3', 'NavT4', 'NavT5', 'NavT6', 'VersionText') { $UI[$n].Visibility = $vis }
+    foreach ($n in 'BrandText', 'NavT1', 'NavT2', 'NavT3', 'NavT4', 'NavT5', 'NavT6', 'NavT7', 'VersionText') { $UI[$n].Visibility = $vis }
 }
 # Window never larger than the work area (laptops with scaling)
 $Win.Add_SourceInitialized({
@@ -1214,6 +1242,7 @@ function Update-Banners {
     if ($State.Reminder) { Add-Banner ([string]$State.Reminder) 'info' (T 'Check now') { if (-not (Test-Busy)) { Start-Scan } } }
     if ($State.UpdatedTo) { Add-Banner ((T 'WinTidy was updated to version {0}. The new version is used after the next start.') -f $State.UpdatedTo) 'info' (T 'Restart now') { if (-not (Test-Busy)) { Restart-App } } }
     $UI.BannerPanel.Visibility = $(if ($UI.BannerPanel.Children.Count) { 'Visible' } else { 'Collapsed' })
+    Update-PolicyNav
 }
 $UI.BtnElevate2.Add_Click({ Restart-Elevated })
 
@@ -1622,6 +1651,111 @@ $r
 }
 $UI.BtnDebloatScan.Add_Click({ Start-DebloatScan })
 $UI.BtnDebloatNone.Add_Click({ foreach ($f in @($State.DebloatFindings)) { foreach ($it in @($f.Items)) { $it.Selected = $false } }; Build-Debloat })
+
+# =============================================================================
+#  Policies page (since 1.13): GPO and Intune analysis for IT admins. Read-only - own operation, own report.
+#  Shown in the navigation on managed PCs (domain/Intune/Entra/ConfigMgr) or in expert mode.
+# =============================================================================
+$State.Policy = $null; $State.PolicyReport = $null; $State.PolicyTime = $null; $State.PolicyAsked = $false
+$PolKinds = 'Konflikt', 'Doppelt', 'Startzeit', 'Ladezeit', 'Bremse'
+function Get-PolKindText([string]$Art) {
+    switch ($Art) { 'Konflikt' { return (T 'Conflicts') } 'Doppelt' { return (T 'Duplicates') } 'Startzeit' { return (T 'Startup and sign-in') } 'Ladezeit' { return (T 'Processing time') } 'Bremse' { return (T 'Slowdown patterns') } }
+    return $Art
+}
+function Update-PolicyNav {
+    $show = [bool](($State.Context -and $State.Context.Verwaltet) -or $UI.OptExpert.IsChecked -or $State.Policy)
+    $UI.NavPolicies.Visibility = $(if ($show) { 'Visible' } else { 'Collapsed' })
+}
+function New-PolTile([string]$label, [int]$n, [string]$fg) {
+    $b = New-Object System.Windows.Controls.Border; $b.CornerRadius = 10; $b.BorderThickness = 1; $b.Padding = '14,8'; $b.Margin = '0,0,10,10'; $b.MinWidth = 130
+    Set-Brush $b 'BorderBrush' 'Line'; Set-Brush $b 'Background' 'CardBg'
+    $sp = New-Object System.Windows.Controls.StackPanel
+    [void]$sp.Children.Add((New-Tb "$n" $(if ($n) { $fg } else { 'Muted' }) 22 'SemiBold'))
+    [void]$sp.Children.Add((New-Tb $label 'Muted' 12))
+    $b.Child = $sp; Set-A11y $b ('{0}: {1}' -f $label, $n)
+    return $b
+}
+function New-PolCard($f) {
+    $card = New-Object System.Windows.Controls.Border; $card.Style = $Win.Resources['Card']
+    $dp = New-Object System.Windows.Controls.DockPanel
+    $ic = switch ([string]$f.Stufe) { 'krit' { New-Icon 0xEA39 'Bad' 18 } 'warn' { New-Icon 0xE7BA 'Warn' 18 } default { New-Icon 0xE946 'Accent' 18 } }
+    $ic.Margin = '0,2,14,0'; $ic.VerticalAlignment = 'Top'; [System.Windows.Controls.DockPanel]::SetDock($ic, 'Left'); [void]$dp.Children.Add($ic)
+    $sp = New-Object System.Windows.Controls.StackPanel
+    $lvl = switch ([string]$f.Stufe) { 'krit' { T 'Critical' } 'warn' { T 'Warning' } default { T 'Hint' } }
+    [void]$sp.Children.Add((New-Tb ('{0}  ·  {1}  ·  {2}' -f (Get-PolKindText $f.Art), $lvl, $f.Quelle) 'Muted' 12))
+    $t = New-Tb ([string]$f.Titel) 'Ink' 15 'SemiBold'; $t.Margin = '0,2,0,4'; [void]$sp.Children.Add($t)
+    [void]$sp.Children.Add((New-Tb ([string]$f.Text) 'Text' 13.5))
+    if (@($f.Gpos).Count) { $g = New-Tb ((T 'GPOs: {0}') -f (@($f.Gpos) -join ', ')) 'Text2' 13 'SemiBold'; $g.Margin = '0,6,0,0'; [void]$sp.Children.Add($g) }
+    $det = @($f.Details | Where-Object { $_ })
+    if ($det.Count) {
+        $ex = New-Object System.Windows.Controls.Expander; $ex.Header = ((T 'Details ({0})') -f $det.Count); $ex.Margin = '0,6,0,0'; Set-Brush $ex 'Foreground' 'Link'
+        $tb = New-Object System.Windows.Controls.TextBox; $tb.IsReadOnly = $true; $tb.TextWrapping = 'Wrap'; $tb.BorderThickness = 0; $tb.FontFamily = 'Consolas'; $tb.FontSize = 12; $tb.Margin = '0,6,0,0'; $tb.Padding = '8'
+        Set-Brush $tb 'Background' 'Hover'; Set-Brush $tb 'Foreground' 'Text'
+        $tb.Text = (@($det | ForEach-Object { '- ' + $_ }) -join "`r`n"); Set-A11y $tb ((T 'Details ({0})') -f $det.Count)
+        $ex.Content = $tb; [void]$sp.Children.Add($ex)
+    }
+    [void]$dp.Children.Add($sp); $card.Child = $dp
+    Set-A11y $card ('{0}: {1}' -f $lvl, $f.Titel)
+    return $card
+}
+function Build-Policies {
+    $UI.PolTiles.Children.Clear(); $UI.PolPanel.Children.Clear()
+    $a = $State.Policy
+    $UI.BtnPolReport.IsEnabled = [bool]($State.PolicyReport -and (Test-Path -LiteralPath $State.PolicyReport))
+    if (-not $a) { $UI.PolSub.Text = (T 'For IT admins: GPOs and Intune policies that act twice, conflict or slow down startup and sign-in on this PC. Nothing is changed.'); return }
+    $bef = @($a.Befunde)
+    $when = $(if ($State.PolicyTime) { $State.PolicyTime.ToString((T 'yyyy-MM-dd HH:mm')) } else { '' })
+    $UI.PolSub.Text = if ($bef.Count) { (T 'Analysis from {0}: {1}. Nothing was changed - clean up in the GPO or in Intune, then run gpupdate (or wait for the next sync) and analyze again.') -f $when, (Plural $bef.Count (T 'policy finding') (T 'policy findings')) } else { (T 'Analysis from {0}: no duplicates, conflicts or slow processing found.') -f $when }
+    foreach ($h in @($a.Hinweise)) {
+        $hb = New-Object System.Windows.Controls.Border; $hb.CornerRadius = 10; $hb.BorderThickness = 1; $hb.Padding = '14,10'; $hb.Margin = '0,0,0,10'
+        Set-Brush $hb 'Background' 'TipBg'; Set-Brush $hb 'BorderBrush' 'TipLine'; $hb.Child = (New-Tb ([string]$h) 'Text' 13); [void]$UI.PolPanel.Children.Add($hb)
+    }
+    foreach ($k in $PolKinds) { [void]$UI.PolTiles.Children.Add((New-PolTile (Get-PolKindText $k) ([int]$a.Zaehler.$k) $(if ($k -eq 'Konflikt') { 'Bad' } else { 'Warn' }))) }
+    [void]$UI.PolTiles.Children.Add((New-PolTile (T 'Intune involved') ([int]$a.Zaehler.Intune) 'Accent'))
+    # processing times
+    $z = $a.Zeiten; $lines = @()
+    foreach ($ph in @(@('Start', (T 'Computer policy at startup')), @('Anmeldung', (T 'User policy at sign-in')), @('Hintergrund', (T 'Background refresh')))) {
+        $x = $z.($ph[0]); if ($x -and $x.Anzahl) { $lines += ((T '{0}: median {1} s, longest {2} s ({3} times)') -f $ph[1], $x.MedianSek, $x.MaxSek, $x.Anzahl) }
+    }
+    foreach ($x in @($z.Erweiterungen | Select-Object -First 5)) { $lines += ('{0}: {1} ms{2}' -f $x.Name, $x.MedianMs, $(if (@($x.Gpos).Count) { '  (' + ((@($x.Gpos) | Select-Object -First 3) -join ', ') + ')' } else { '' })) }
+    $gpoN = @($a.Gpos | Where-Object { $_.Wirksam }).Count
+    $tc = New-Object System.Windows.Controls.Border; $tc.Style = $Win.Resources['Card']
+    $ts = New-Object System.Windows.Controls.StackPanel
+    [void]$ts.Children.Add((New-Tb (T 'Processing times') 'Ink' 16 'SemiBold'))
+    $sub = New-Tb ((T '{0} applied GPOs, {1} Intune/MDM settings. Source: {2}.') -f $gpoN, $a.MdmAnzahl, $(if ($z.Quelle -eq 'RSoP') { T 'last run (gpresult)' } else { T 'Group Policy event log' })) 'Muted' 12.5; $sub.Margin = '0,2,0,8'; [void]$ts.Children.Add($sub)
+    if (-not $lines.Count) { [void]$ts.Children.Add((New-Tb (T 'No processing times available.') 'Text' 13)) }
+    foreach ($l in $lines) { $lt = New-Tb $l 'Text' 13; $lt.Margin = '0,1'; [void]$ts.Children.Add($lt) }
+    $tc.Child = $ts; [void]$UI.PolPanel.Children.Add($tc)
+    if (-not $bef.Count) {
+        $ok = New-Object System.Windows.Controls.Border; $ok.Style = $Win.Resources['Card']; $ok.Child = (New-Tb (T 'No duplicates, conflicts or slow processing found.') 'Good' 15 'SemiBold'); [void]$UI.PolPanel.Children.Add($ok)
+    }
+    foreach ($k in $PolKinds) {
+        $grp = @($bef | Where-Object { $_.Art -eq $k })
+        if (-not $grp.Count) { continue }
+        $h = New-Tb ('{0} ({1})' -f (Get-PolKindText $k), $grp.Count) 'Muted' 13 'SemiBold'; $h.Margin = '2,10,0,8'; [void]$UI.PolPanel.Children.Add($h)
+        foreach ($f in $grp) { [void]$UI.PolPanel.Children.Add((New-PolCard $f)) }
+    }
+}
+function Start-PolicyScan {
+    if (Test-Busy) { return }
+    [void](Start-Op 'scan' @'
+$r = Invoke-GuiPolicyScan { param($i, $n, $t) $Sync.Progress = @{ I = $i; N = $n; Text = $t } }
+$r
+'@ {
+        param($r, $err, $cancelled)
+        if ($cancelled) { Go 'NavHome'; return }
+        if (-not $r -or -not $r.Analyse) {
+            $msg = $(if ($r -and $r.Fehler) { [string]$r.Fehler } else { [string]$err })
+            Write-ErrLog "Policies: $msg"
+            Show-ErrorPage (T 'The policy analysis could not be completed') (T 'Nothing was changed on this PC. Please try again.') $msg { Start-PolicyScan }
+            return
+        }
+        $State.Policy = $r.Analyse; $State.PolicyReport = $r.Report; $State.PolicyTime = Get-Date
+        Update-PolicyNav; Build-Policies; Go 'NavPolicies'
+    } (T 'Analyzing Group Policy and Intune ...') (T 'Nothing is changed. On domain PCs gpresult can take up to a minute.'))
+}
+$UI.BtnPolScan.Add_Click({ Start-PolicyScan })
+$UI.BtnPolReport.Add_Click({ if ($State.PolicyReport -and (Test-Path -LiteralPath $State.PolicyReport)) { Open-AsUser $State.PolicyReport } })
 
 # =============================================================================
 #  Error page (friendly, with "Try again" and "Copy error report")
@@ -2191,7 +2325,7 @@ New-ShareableReport ([bool]$Sync.SharePdf)
 })
 $UI.BtnDataFolder.Add_Click({ $d = $State.DataDir; if (-not $d) { $d = Join-Path $AppRoot "WinTidy-Daten\$env:COMPUTERNAME" }; Open-Folder $d })
 $UI.BtnConfig.Add_Click({ $p = Join-Path $AppRoot 'WinTidy.config.json'; Start-Process -FilePath (Join-Path $env:windir 'System32\notepad.exe') -ArgumentList ('"{0}"' -f $p) })
-$UI.OptExpert.Add_Click({ $UI.BtnConfig.Visibility = $(if ($UI.OptExpert.IsChecked) { 'Visible' } else { 'Collapsed' }); if ($State.Findings.Count) { Build-Recs } })
+$UI.OptExpert.Add_Click({ $UI.BtnConfig.Visibility = $(if ($UI.OptExpert.IsChecked) { 'Visible' } else { 'Collapsed' }); if ($State.Findings.Count) { Build-Recs }; Update-PolicyNav })
 $UI.OptRestorePoint.Add_Click({ Update-SelSummary })
 $UI.BtnShortcut.Add_Click({
     try {

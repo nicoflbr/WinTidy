@@ -23,6 +23,7 @@
     Restore  Restores registry/tasks/services of a run
     Rules    Lists all rules
     Update   Checks GitHub for a new WinTidy version and installs it (admin rights, asks first)
+    Policies GPO and Intune analysis for IT admins: duplicates, conflicts, slow startup/sign-in (changes nothing)
 
 .PARAMETER Language
     auto (default: German if Windows is German, otherwise English), en or de
@@ -44,10 +45,11 @@
     .\WinTidy.ps1 -Mode Exclusions               # list the points you excluded (not shown, not changed, not in the score)
     .\WinTidy.ps1 -Mode Exclusions -AddExclusion SEC-EXECPOLICY      # exclude a whole check (SCORE:SCORE-UAC = one score deduction)
     .\WinTidy.ps1 -Mode Exclusions -RemoveExclusion 2               # include point number 2 of the list again (or: all)
+    .\WinTidy.ps1 -Mode Policies -OpenReport     # GPO/Intune analysis of this device for IT admins (changes nothing)
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu', 'Scan', 'Preview', 'Apply', 'Compare', 'Report', 'Restore', 'Rules', 'Hardware', 'Update', 'Exclusions')]
+    [ValidateSet('Menu', 'Scan', 'Preview', 'Apply', 'Compare', 'Report', 'Restore', 'Rules', 'Hardware', 'Update', 'Exclusions', 'Policies')]
     [string]$Mode = 'Menu',
     [string[]]$Rule,
     [string[]]$ExcludeRule,
@@ -81,7 +83,7 @@ if ($AddExclusion) { $AddExclusion = @($AddExclusion | ForEach-Object { $_ -spli
 if ($RemoveExclusion) { $RemoveExclusion = @($RemoveExclusion | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$Script:Version = '1.12.0'
+$Script:Version = '1.13.0'
 
 # =============================================================================
 #  Language (English is the source language, German comes from lang\de.psd1)
@@ -241,6 +243,12 @@ $Script:DefaultConfig = [ordered]@{
     BigFileMinMB            = 1024     # CLN-BIGFILES (only shown, never deleted): minimum size of a file in the personal folders
     DownloadsOldDays        = 90       # CLN-BIGFILES: files in Downloads older than this count as "old"
     CheckReminderDays       = 30       # app/menu: remind to check again after this many days without a check (0 = never)
+    # Policy analysis (GPO/Intune, -Mode Policies): limits for slow processing and days of event log history
+    PolicyStartWarnSec      = 15       # computer policy at startup / user policy at sign-in / background refresh: warning from this median
+    PolicyStartCritSec      = 45
+    PolicyCseWarnMs         = 3000     # a single client-side extension: warning from this median
+    PolicyCseCritMs         = 15000
+    PolicyEventDays         = 30
     # Hardware/cooling (degrees Celsius). Scan = PC is mostly idle (laptop +5 degrees)
     CpuTempIdleWarnC        = 80
     CpuTempIdleCritC        = 90
@@ -285,7 +293,7 @@ function Merge-Config {
 }
 # Check the configuration for dangerous values (e.g. age limit 0 = delete everything)
 function Test-Config($cfg) {
-    $min = @{ TempAgeDays = 1; RecycleBinAgeDays = 7; CrashDumpAgeDays = 1; SystemDumpKeepDays = 7; WinOldMinAgeDays = 10; OrphanDirMinMB = 10; QuarantineDays = 7; GhostDeviceMinDays = 30; DriverInstallerMinMB = 50; GpuDriverMaxAgeDays = 90; CoolingTestSeconds = 20; UpdateIntervalHours = 1; BrowserCacheMinMB = 50; BigFileMinMB = 100; DownloadsOldDays = 14; CheckReminderDays = 0 }
+    $min = @{ TempAgeDays = 1; RecycleBinAgeDays = 7; CrashDumpAgeDays = 1; SystemDumpKeepDays = 7; WinOldMinAgeDays = 10; OrphanDirMinMB = 10; QuarantineDays = 7; GhostDeviceMinDays = 30; DriverInstallerMinMB = 50; GpuDriverMaxAgeDays = 90; CoolingTestSeconds = 20; UpdateIntervalHours = 1; BrowserCacheMinMB = 50; BigFileMinMB = 100; DownloadsOldDays = 14; CheckReminderDays = 0; PolicyStartWarnSec = 1; PolicyStartCritSec = 1; PolicyCseWarnMs = 100; PolicyCseCritMs = 100; PolicyEventDays = 1 }
     foreach ($k in @($min.Keys)) { $v = 0; if (-not [int]::TryParse([string]$cfg[$k], [ref]$v) -or $v -lt $min[$k]) { Write-Warning (T 'Configuration: {0} invalid ({1}) - default value is used' $k ($cfg[$k])); $cfg[$k] = $Script:DefaultConfig[$k] } }
     $never = 'Microsoft.WindowsStore', 'Microsoft.SecHealthUI', 'Microsoft.DesktopAppInstaller', 'Microsoft.Windows.ShellExperienceHost', 'Microsoft.Windows.StartMenuExperienceHost', 'Microsoft.AAD.BrokerPlugin', 'Microsoft.WindowsAppRuntime', 'Microsoft.VCLibs', 'Microsoft.UI.Xaml', 'Microsoft.NET'
     # Driver installer folders: only absolute folders below a drive that are not system or profile folders
@@ -294,6 +302,9 @@ function Test-Config($cfg) {
     if ([string]$cfg.ShadowStorageTarget -notmatch '^(\d{1,2})%$' -or [int]$Matches[1] -lt 3) { $cfg.ShadowStorageTarget = $Script:DefaultConfig.ShadowStorageTarget }
     if ([string]$cfg.UpdateRepo -notmatch '^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$') { Write-Warning (T 'Configuration: {0} invalid ({1}) - default value is used' 'UpdateRepo' ([string]$cfg.UpdateRepo)); $cfg.UpdateRepo = $Script:DefaultConfig.UpdateRepo }
     $cfg.UpdateEnabled = [bool]$cfg.UpdateEnabled
+    # critical limits are never below the warning limits
+    if ([int]$cfg.PolicyStartCritSec -lt [int]$cfg.PolicyStartWarnSec) { $cfg.PolicyStartCritSec = $cfg.PolicyStartWarnSec }
+    if ([int]$cfg.PolicyCseCritMs -lt [int]$cfg.PolicyCseWarnMs) { $cfg.PolicyCseCritMs = $cfg.PolicyCseWarnMs }
     $cfg.ExtraTempPaths = @($cfg.ExtraTempPaths | Where-Object { $_ -and ([string]$_) -match '^[A-Za-z]:\\.+' })
     return $cfg
 }
@@ -3716,32 +3727,9 @@ function New-BarRows($rows, [string]$labelProp, [string]$valueProp, [scriptblock
 function Get-SnapshotLabelText([string]$Label) { switch ($Label) { 'vorher' { return (T 'Before').ToLower() } 'nachher' { return (T 'After').ToLower() } 'scan' { return (T 'scan') } }; return $Label }
 function Get-StatusText([string]$Status) { switch ($Status) { 'OK' { return 'OK' } 'Fehler' { return (T 'Error') } 'Uebersprungen' { return (T 'Skipped') } 'Abgebrochen' { return (T 'Cancelled') } }; return $Status }
 
-function New-Report {
-    $snaps = Get-Snapshots
-    if (-not $snaps.Count) { W (T 'No snapshots yet - run "Scan" first.') 'Yellow'; return $null }
-    function HT([string]$Text) { HtmlEnc (T $Text @args) }
-    $df = T 'yyyy-MM-dd HH:mm'
-    $all = @($snaps | ForEach-Object { Read-Snapshot $_ })
-    $last = $all[-1]
-    # Scores are measured with today's rules and exclusions (an accepted state must not look like an improvement)
-    $exAll = @(Read-WtExclusions)
-    $lastScore = Get-SnapshotScore $last $exAll
-    $before = ($all | Where-Object { $_.Label -eq 'vorher' } | Select-Object -Last 1); if (-not $before) { $before = $all[0] }
-    $actions = @()
-    foreach ($f in (Get-ChildItem $Script:RunsDir -Recurse -Filter 'actions.jsonl' -ErrorAction SilentlyContinue)) { $actions += @(Get-Content $f.FullName -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json }) }
-    $actions = @($actions | Where-Object { $_.Status -ne 'Undo-Info' })
-    $runs = @($all | Where-Object { $_.Label -eq 'vorher' } | ForEach-Object { [pscustomobject]@{ Zeit = $_.Zeit; Name = 'Apply' } })
-    $boots = @(); $seen = @{}
-    foreach ($s in $all) { foreach ($b in @($s.Boot.Verlauf)) { if (-not $seen.ContainsKey($b.Zeit)) { $seen[$b.Zeit] = 1; $boots += $b } } }
-    $cmp = if ($before -and $before.Zeit -ne $last.Zeit) { Get-CompareMetrics $before $last } else { @() }
-    $okActs = @($actions | Where-Object Status -eq 'OK')
-    $freed = ($okActs | Measure-Object Bytes -Sum).Sum
-    $perRule = @($okActs | Group-Object Regel | ForEach-Object { [pscustomobject]@{ Regel = $_.Name; Anzahl = $_.Count; Bytes = ($_.Group | Measure-Object Bytes -Sum).Sum } } | Sort-Object Bytes -Descending)
-    $score = $lastScore.Wert
-    $scoreClass = if ($score -ge 85) { 'good' } elseif ($score -ge 65) { 'mid' } else { 'bad' }
-    $sysLW = $env:SystemDrive.Substring(0, 1); $sysV = $last.Laufwerke | Where-Object { $_.LW -eq $sysLW } | Select-Object -First 1
-
-    $css = @'
+# Style sheet of the HTML reports (main report and policy analysis)
+function Get-ReportCss {
+    @'
 :root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--text:#e6edf3;--muted:#8b949e;--acc:#58a6ff;--good:#3fb950;--mid:#d29922;--bad:#f85149;--main:#a371f7}
 li.bad{color:var(--bad)}li.mid{color:var(--mid)}li.good{color:var(--good)}li.muted{color:var(--muted)}
 @media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#f6f8fa;--panel:#ffffff;--line:#d0d7de;--text:#1f2328;--muted:#59636e;--acc:#0969da;--good:#1a7f37;--mid:#9a6700;--bad:#cf222e;--main:#8250df}}
@@ -3768,6 +3756,33 @@ td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.bess
 details{margin:6px 0}summary{cursor:pointer}ul.items{margin:6px 0 0 18px;padding:0}
 @media (max-width:640px){.bar{grid-template-columns:1fr 70px}.bt{grid-column:1/-1;order:3}.score{flex-direction:column;align-items:flex-start}table{display:block;overflow-x:auto}}
 '@
+}
+function New-Report {
+    $snaps = Get-Snapshots
+    if (-not $snaps.Count) { W (T 'No snapshots yet - run "Scan" first.') 'Yellow'; return $null }
+    function HT([string]$Text) { HtmlEnc (T $Text @args) }
+    $df = T 'yyyy-MM-dd HH:mm'
+    $all = @($snaps | ForEach-Object { Read-Snapshot $_ })
+    $last = $all[-1]
+    # Scores are measured with today's rules and exclusions (an accepted state must not look like an improvement)
+    $exAll = @(Read-WtExclusions)
+    $lastScore = Get-SnapshotScore $last $exAll
+    $before = ($all | Where-Object { $_.Label -eq 'vorher' } | Select-Object -Last 1); if (-not $before) { $before = $all[0] }
+    $actions = @()
+    foreach ($f in (Get-ChildItem $Script:RunsDir -Recurse -Filter 'actions.jsonl' -ErrorAction SilentlyContinue)) { $actions += @(Get-Content $f.FullName -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json }) }
+    $actions = @($actions | Where-Object { $_.Status -ne 'Undo-Info' })
+    $runs = @($all | Where-Object { $_.Label -eq 'vorher' } | ForEach-Object { [pscustomobject]@{ Zeit = $_.Zeit; Name = 'Apply' } })
+    $boots = @(); $seen = @{}
+    foreach ($s in $all) { foreach ($b in @($s.Boot.Verlauf)) { if (-not $seen.ContainsKey($b.Zeit)) { $seen[$b.Zeit] = 1; $boots += $b } } }
+    $cmp = if ($before -and $before.Zeit -ne $last.Zeit) { Get-CompareMetrics $before $last } else { @() }
+    $okActs = @($actions | Where-Object Status -eq 'OK')
+    $freed = ($okActs | Measure-Object Bytes -Sum).Sum
+    $perRule = @($okActs | Group-Object Regel | ForEach-Object { [pscustomobject]@{ Regel = $_.Name; Anzahl = $_.Count; Bytes = ($_.Group | Measure-Object Bytes -Sum).Sum } } | Sort-Object Bytes -Descending)
+    $score = $lastScore.Wert
+    $scoreClass = if ($score -ge 85) { 'good' } elseif ($score -ge 65) { 'mid' } else { 'bad' }
+    $sysLW = $env:SystemDrive.Substring(0, 1); $sysV = $last.Laufwerke | Where-Object { $_.LW -eq $sysLW } | Select-Object -First 1
+
+    $css = Get-ReportCss
     $sb = New-Object Text.StringBuilder
     [void]$sb.Append("<!doctype html><html lang='$Script:Lang'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>$(HT 'WinTidy report')</title><style>$css</style></head><body><div class='wrap'>")
     [void]$sb.Append("<h1>$(HT 'WinTidy report') &middot; $(HtmlEnc $last.Computer)</h1><div class='muted'>$(HtmlEnc $last.System.OS) $(HtmlEnc $last.System.Version) (Build $(HtmlEnc $last.System.Build)) &middot; $(HtmlEnc $last.System.CPU) &middot; $($last.System.RamGB) GB RAM &middot; $(HtmlEnc $last.System.Board) &middot; BIOS $(HtmlEnc $last.System.BIOS)<br>$(HT 'Last snapshot: {0} ({1})' ([datetime]$last.Zeit).ToString($df) (Get-SnapshotLabelText $last.Label)) &middot; $(HT '{0} snapshots' $all.Count) &middot; WinTidy $Script:Version</div>")
@@ -4943,6 +4958,661 @@ function New-ShareableReport([bool]$AsPdf = $false) {
 }
 
 # =============================================================================
+#  Policy analysis for IT admins (since 1.13): Group Policy and Intune/MDM on this device - read-only.
+#  Sources: gpresult /x (RSoP: which GPO sets what, with precedence), the Group Policy operational log (processing
+#  times per extension, at startup, at sign-in, in the background) and the PolicyManager registry (Intune/MDM).
+#  Every source is its own Get-* function so that tests/Test-Policies.ps1 can replace it. Nothing is changed.
+# =============================================================================
+# Registry reads for the policy analysis (HKLM, 64-bit view). $null = key missing.
+function Get-PolicyRegValues([string]$Path) {
+    $k = $null
+    try { $k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey($Path, $false) } catch { return $null }
+    if (-not $k) { return $null }
+    try {
+        $h = [ordered]@{}
+        foreach ($n in $k.GetValueNames()) { $h[$n] = $k.GetValue($n, $null, 'DoNotExpandEnvironmentNames') }
+        return $h
+    } catch { return $null } finally { $k.Close() }
+}
+function Get-PolicyRegSubKeys([string]$Path) {
+    $k = $null
+    try { $k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey($Path, $false) } catch { return @() }
+    if (-not $k) { return @() }
+    try { return @($k.GetSubKeyNames()) } catch { return @() } finally { $k.Close() }
+}
+# Value of the policy analysis settings (falls back to the defaults if the configuration is not loaded, e.g. in tests)
+function Get-PolCfg([string]$Key) {
+    if ($Script:Cfg -and $null -ne $Script:Cfg[$Key]) { return $Script:Cfg[$Key] }
+    return $Script:DefaultConfig[$Key]
+}
+# Client-side extensions WinTidy knows by name. Bremse: sync = forces synchronous processing at startup/sign-in,
+# drive = drive maps (often waits for the network). Names are only used when the RSoP data has none.
+function Get-GpCseCatalog {
+    @{
+        '{35378EAC-683F-11D2-A89A-00C04FBBCFA2}' = @{ Name = 'Registry'; Bremse = '' }
+        '{827D319E-6EAC-11D2-A4EA-00C04F79F83A}' = @{ Name = 'Security'; Bremse = '' }
+        '{42B5FAAE-6536-11D2-AE5A-0000F87571E3}' = @{ Name = 'Scripts'; Bremse = '' }
+        '{25537BA6-77A8-11D2-9B6C-0000F8080861}' = @{ Name = 'Folder Redirection'; Bremse = 'sync' }
+        '{C6DC5466-785A-11D2-84D0-00C04FB169F7}' = @{ Name = 'Software Installation'; Bremse = 'sync' }
+        '{5794DAFD-BE60-433F-88A2-1A31939AC01F}' = @{ Name = 'Group Policy Drive Maps'; Bremse = 'drive' }
+        '{F312195E-3D9D-447A-A3F5-08DFFA24735E}' = @{ Name = 'Virtualization Based Security'; Bremse = '' }
+        '{0ACDD40C-75AC-47AB-BAA0-BF6DE7E7FE63}' = @{ Name = 'Wireless'; Bremse = '' }
+        '{B1BE8D72-6EAC-11D2-A4EA-00C04F79F83A}' = @{ Name = 'EFS Recovery'; Bremse = '' }
+        '{F3CCC681-B74C-4060-9F26-CD84525DCA2A}' = @{ Name = 'Audit Policy Configuration'; Bremse = '' }
+        '{E437BC1C-AA7D-11D2-A382-00C04F991E27}' = @{ Name = 'IP Security'; Bremse = '' }
+        '{4CFB60C1-FAA6-47F1-89AA-0B18730C9FD3}' = @{ Name = 'Internet Explorer Zonemapping'; Bremse = '' }
+        '{AADCED64-746C-4633-A97C-D61349046527}' = @{ Name = 'Group Policy Scheduled Tasks'; Bremse = '' }
+        '{91FBB303-0CD5-4055-BF42-E512A681B325}' = @{ Name = 'Group Policy Services'; Bremse = '' }
+        '{B087BE9D-ED37-454F-AF9C-04291E351182}' = @{ Name = 'Group Policy Registry'; Bremse = '' }
+        '{7150F9BF-48AD-4DA4-A49C-29EF4A8369BA}' = @{ Name = 'Group Policy Files'; Bremse = '' }
+        '{6232C319-91AC-4931-9385-E70C2B099F0E}' = @{ Name = 'Group Policy Folders'; Bremse = '' }
+        '{17D89FEC-5C44-4972-B12D-241CAEF74509}' = @{ Name = 'Group Policy Local Users and Groups'; Bremse = '' }
+        '{C418DD9D-0D14-4EFB-8FBF-CFE535C8FAC7}' = @{ Name = 'Group Policy Shortcuts'; Bremse = '' }
+        '{BC75B1ED-5833-4858-9BB8-CBF0B166DF9D}' = @{ Name = 'Group Policy Printers'; Bremse = '' }
+        '{E47248BA-94CC-49C4-BBB5-9EB7F05183D0}' = @{ Name = 'Group Policy Environment'; Bremse = '' }
+        '{3610EDA5-77EF-11D2-8DC5-00C04FA31A66}' = @{ Name = 'Disk Quota'; Bremse = '' }
+        '{D76B9641-3288-4F75-942D-087DE603E3EA}' = @{ Name = 'AdmPwd (LAPS)'; Bremse = '' }
+    }
+}
+
+# --- small XML helpers (namespace-independent: gpresult uses one namespace per extension) ---
+# GUIDs in one form: {UPPERCASE} (gpresult, the event log and the registry write them differently)
+function Format-GpGuid([string]$Text) {
+    $t = ([string]$Text).Trim().Trim('{', '}').ToUpper()
+    if ($t -match '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$') { return '{' + $t + '}' }
+    return ([string]$Text).Trim().ToUpper()
+}
+function Get-GpXChild($Node, [string]$Name) { if ($Node) { foreach ($c in $Node.ChildNodes) { if ($c.NodeType -eq 'Element' -and $c.LocalName -eq $Name) { return $c } } }; return $null }
+function Get-GpXChildren($Node, [string]$Name) { if (-not $Node) { return @() }; @(foreach ($c in $Node.ChildNodes) { if ($c.NodeType -eq 'Element' -and $c.LocalName -eq $Name) { $c } }) }
+function Get-GpXText($Node, [string]$Name) { $c = Get-GpXChild $Node $Name; if ($c) { return $c.InnerText.Trim() }; return '' }
+# Normalized XML of a node for value comparisons: no namespace prefixes, no xmlns, no item ids/time stamps, no whitespace between tags
+function Get-GpXNorm($Node) {
+    $s = [string]$Node.OuterXml
+    $s = $s -replace '\s+xmlns(:\w+)?="[^"]*"', '' -replace '(</?)\w+:', '$1' -replace '\s(uid|changed|image)="[^"]*"', '' -replace '>\s+<', '><'
+    return $s.Trim()
+}
+# One RSoP setting: identity (what is set), value (how it is set) and a readable label.
+# The identity uses the descriptive children (Name, KeyName, KeyPath, Category ...), everything else is the value.
+function Get-GpSettingInfo($Node) {
+    $keyNames = 'Name', 'KeyName', 'KeyPath', 'ValueName', 'Category', 'SystemAccessPolicyName', 'Path', 'SettingName', 'ServiceName', 'Command', 'Type', 'Class'
+    $skip = 'GPO', 'Precedence', 'Explain', 'Supported', 'Filters', 'GPOSettingOrder'
+    $key = New-Object System.Collections.Generic.List[string]; $val = New-Object System.Collections.Generic.List[string]
+    $key.Add($Node.LocalName)
+    $label = ''; $cat = ''
+    foreach ($a in @($Node.Attributes)) {
+        if (-not $a -or $a.Name -like 'xmlns*') { continue }
+        if ($a.LocalName -in 'name', 'path', 'clsid') { $key.Add('@' + $a.LocalName + '=' + $a.Value); if ($a.LocalName -eq 'name' -and -not $label) { $label = [string]$a.Value } }
+        elseif ($a.LocalName -notin 'uid', 'changed', 'image', 'bypassErrors', 'status', 'desc', 'userContext', 'removePolicy') { $val.Add('@' + $a.LocalName + '=' + $a.Value) }
+    }
+    foreach ($c in $Node.ChildNodes) {
+        if ($c.NodeType -ne 'Element' -or $c.LocalName -in $skip) { continue }
+        if ($c.LocalName -in $keyNames -and -not (@($c.ChildNodes | Where-Object { $_.NodeType -eq 'Element' }).Count)) {
+            $t = $c.InnerText.Trim(); $key.Add($c.LocalName + '=' + $t)
+            if ($c.LocalName -eq 'Category') { $cat = $t } elseif (-not $label -and $c.LocalName -in 'Name', 'KeyName', 'KeyPath', 'SettingName', 'Command', 'ServiceName', 'SystemAccessPolicyName') { $label = $t }
+            continue
+        }
+        # registry values (RegistrySetting/Value/Name) belong to the identity, their data to the value
+        $vn = Get-GpXText $c 'Name'
+        if ($c.LocalName -eq 'Value' -and $vn) { $key.Add('Value/Name=' + $vn); if ($label) { $label = $label + '\' + $vn } }
+        $val.Add((Get-GpXNorm $c))
+    }
+    if (-not $label) { $label = $Node.LocalName }
+    if ($cat) { $label = $cat + ' / ' + $label }
+    [pscustomobject]@{ Schluessel = ($key -join '|'); Wert = ($val -join '|'); Anzeige = $label }
+}
+# A value from the RSoP data in a short readable form (for "GPO A sets X, GPO B sets Y")
+function Get-GpValueText([string]$Wert) {
+    $t = $Wert -replace '<[^>]+>', ' ' -replace '@\w+=', ' ' -replace '\|', ' ' -replace '\s+', ' '
+    $t = $t.Trim(); if ($t.Length -gt 80) { $t = $t.Substring(0, 77) + '...' }
+    if (-not $t) { $t = '-' }
+    return $t
+}
+
+# Runs gpresult and returns the RSoP XML as text. With admin rights computer + user part, without only the user part.
+# The file stays in the data folder (richtlinien-rsop.xml) for the admin's own evaluation.
+function Get-GpRsopXml {
+    $out = Join-Path $Script:DataDir 'richtlinien-rsop.xml'
+    $exe = Join-Path $env:windir 'System32\gpresult.exe'
+    if (-not (Test-Path -LiteralPath $exe)) { return [pscustomobject]@{ Xml = $null; Fehler = (T 'gpresult.exe was not found.') } }
+    $tries = if ($Script:IsAdmin) { @('/x "{0}" /f', '/scope computer /x "{0}" /f') } else { @('/scope user /x "{0}" /f') }
+    $msg = ''
+    foreach ($t in $tries) {
+        Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo $exe, ($t -f $out)
+            $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+            $p = [System.Diagnostics.Process]::Start($psi)
+            $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+            if (-not $p.WaitForExit(180000)) { try { $p.Kill() } catch { }; $msg = (T 'gpresult did not finish within 3 minutes.'); continue }
+            if (Test-Path -LiteralPath $out) { return [pscustomobject]@{ Xml = [IO.File]::ReadAllText($out); Fehler = $null } }
+            $msg = (T 'gpresult returned no data (exit code {0}): {1}' $p.ExitCode ((([string]$e.Result) + ' ' + ([string]$o.Result)).Trim()))
+        } catch { $msg = $_.Exception.Message }
+    }
+    return [pscustomobject]@{ Xml = $null; Fehler = $msg }
+}
+# Group Policy operational log: processing times. 8000 = startup, 8001 = sign-in, 8006/8007 = background (computer/user),
+# 5016/7016 = one client-side extension finished (7016 = with error). $null = log not readable.
+function Get-GpEvents([int]$Days = 30) {
+    $r = New-Object System.Collections.Generic.List[object]
+    try {
+        $ev = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-GroupPolicy/Operational'; Id = 5016, 7016, 8000, 8001, 8006, 8007; StartTime = (Get-Date).AddDays(-$Days) } -MaxEvents 5000 -ErrorAction Stop
+        foreach ($e in $ev) {
+            $x = [xml]$e.ToXml(); $d = @{}
+            foreach ($n in @($x.Event.EventData.Data)) { if ($n -and $n.Name) { $d[[string]$n.Name] = [string]$n.'#text' } }
+            $r.Add([pscustomobject]@{ Id = [int]$e.Id; Zeit = $e.TimeCreated.ToString('o'); Aktivitaet = [string]$e.ActivityId; Daten = $d })
+        }
+    } catch {
+        if ([string]$_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { return $null }
+    }
+    return , $r.ToArray()
+}
+# Intune/MDM policies of the device from the PolicyManager: area, name, effective value and the management sources that set it
+function Get-MdmPolicies {
+    $prov = 'SOFTWARE\Microsoft\PolicyManager\providers'
+    $list = [ordered]@{}
+    foreach ($g in @(Get-PolicyRegSubKeys $prov)) {
+        $pn = $g
+        $en = Get-PolicyRegValues "SOFTWARE\Microsoft\Enrollments\$g"
+        if ($en -and $en.Contains('ProviderID') -and $en['ProviderID']) { $pn = [string]$en['ProviderID'] }
+        if ($pn -eq 'MS DM Server') { $pn = 'Intune' }
+        $base = "$prov\$g\default\Device"
+        foreach ($area in @(Get-PolicyRegSubKeys $base)) {
+            $vals = Get-PolicyRegValues "$base\$area"
+            if (-not $vals) { continue }
+            foreach ($n in @($vals.Keys)) {
+                if (-not $n -or $n -match '_(ProviderSet|WinningProvider|LastWrite|ADMXInstanceData)$') { continue }
+                $k = "$area\$n"
+                if (-not $list.Contains($k)) { $list[$k] = [pscustomobject]@{ Bereich = $area; Name = [string]$n; Wert = $vals[$n]; Anbieter = @() } }
+                $list[$k].Anbieter += $pn
+            }
+        }
+    }
+    $cur = @{}
+    foreach ($p in @($list.Values)) {
+        if (-not $cur.ContainsKey($p.Bereich)) { $cur[$p.Bereich] = Get-PolicyRegValues "SOFTWARE\Microsoft\PolicyManager\current\device\$($p.Bereich)" }
+        $c = $cur[$p.Bereich]; if ($c -and $c.Contains($p.Name)) { $p.Wert = $c[$p.Name] }
+    }
+    return @($list.Values)
+}
+function Format-PolValue($v) {
+    if ($null -eq $v) { return '-' }
+    if ($v -is [byte[]]) { return ('0x' + (($v | Select-Object -First 16 | ForEach-Object { $_.ToString('X2') }) -join '')) }
+    if ($v -is [array]) { $v = ($v -join '; ') }
+    $s = [string]$v; if ($s.Length -gt 80) { $s = $s.Substring(0, 77) + '...' }
+    return $s
+}
+
+# --- RSoP parser ---
+# Returns one entry per part (Computer/Benutzer): GPOs, extension status, settings with GPO and precedence, slow link
+function ConvertFrom-GpRsop([string]$XmlText) {
+    $doc = New-Object System.Xml.XmlDocument
+    $doc.XmlResolver = $null
+    $doc.LoadXml($XmlText)
+    $cat = Get-GpCseCatalog
+    $res = @()
+    foreach ($pair in @(@('ComputerResults', 'Computer'), @('UserResults', 'Benutzer'))) {
+        $root = $doc.SelectSingleNode("//*[local-name()='$($pair[0])']")
+        if (-not $root) { continue }
+        $gpos = [ordered]@{}
+        foreach ($g in (Get-GpXChildren $root 'GPO')) {
+            $id = Format-GpGuid (Get-GpXText (Get-GpXChild $g 'Path') 'Identifier')
+            $name = Get-GpXText $g 'Name'
+            if (-not $id) { $id = 'NAME:' + $name }
+            $links = @(Get-GpXChildren $g 'Link')
+            $applied = @($links | Where-Object { (Get-GpXText $_ 'AppliedOrder') -notin '', '0' })
+            $ok = ((Get-GpXText $g 'FilterAllowed') -ne 'false') -and ((Get-GpXText $g 'AccessDenied') -ne 'true') -and ((Get-GpXText $g 'IsValid') -ne 'false') -and ((Get-GpXText $g 'Enabled') -ne 'false') -and ($links.Count -eq 0 -or $applied.Count -gt 0)
+            $wmi = Get-GpXText $g 'FilterName'; if (-not $wmi) { $wmi = Get-GpXText $g 'FilterId' }
+            if (-not $gpos.Contains($id)) {
+                $gpos[$id] = [pscustomobject]@{ Id = $id; Name = $name; Bereich = $pair[1]; Wirksam = $ok; Orte = @(); WmiFilter = $wmi; Erweiterungen = @(); Einstellungen = 0; Gewinnt = 0; Doppelt = 0; Ueberstimmt = 0 }
+            } elseif ($ok) { $gpos[$id].Wirksam = $true }
+            if ($ok) { foreach ($l in $applied) { $sp = Get-GpXText $l 'SOMPath'; if (-not $sp) { $sp = '?' }; $gpos[$id].Orte += $sp } }
+        }
+        $ext = @()
+        foreach ($s in (Get-GpXChildren $root 'ExtensionStatus')) {
+            $eid = Format-GpGuid (Get-GpXText $s 'Identifier'); $en = Get-GpXText $s 'Name'
+            if (-not $en -and $cat.ContainsKey($eid)) { $en = $cat[$eid].Name }
+            $ms = $null
+            try { $b = [datetime](Get-GpXText $s 'BeginTime'); $e = [datetime](Get-GpXText $s 'EndTime'); $ms = [int][math]::Max(0, ($e - $b).TotalMilliseconds) } catch { }
+            $ext += [pscustomobject]@{ Id = $eid; Name = $en; Ms = $ms; Fehler = (Get-GpXText $s 'Error') }
+        }
+        $settings = New-Object System.Collections.Generic.List[object]
+        foreach ($ed in (Get-GpXChildren $root 'ExtensionData')) {
+            $en = Get-GpXText $ed 'Name'
+            $x = Get-GpXChild $ed 'Extension'
+            if (-not $x) { continue }
+            $eid = ''; $m = $ext | Where-Object { $_.Name -eq $en } | Select-Object -First 1; if ($m) { $eid = $m.Id }
+            foreach ($n in @($x.SelectNodes(".//*[*[local-name()='GPO'] and *[local-name()='Precedence']]"))) {
+                $gid = Format-GpGuid (Get-GpXText (Get-GpXChild $n 'GPO') 'Identifier')
+                $pr = 0; [void][int]::TryParse((Get-GpXText $n 'Precedence'), [ref]$pr)
+                $i = Get-GpSettingInfo $n
+                $settings.Add([pscustomobject]@{ Erweiterung = $en; ErweiterungId = $eid; Art = $n.LocalName; Schluessel = $en + '|' + $i.Schluessel; Wert = $i.Wert; Anzeige = $i.Anzeige; GpoId = $gid; Rang = $pr; Typ = (Get-GpXText $n 'Type') })
+                if ($gid -and $gpos.Contains($gid) -and $gpos[$gid].Erweiterungen -notcontains $en) { $gpos[$gid].Erweiterungen += $en }
+            }
+        }
+        $slow = (Get-GpXText $root 'SlowLink') -eq 'true'
+        $res += [pscustomobject]@{ Bereich = $pair[1]; Gpos = @($gpos.Values); Erweiterungen = $ext; Einstellungen = $settings.ToArray(); SlowLink = $slow }
+    }
+    return $res
+}
+
+function New-PolFinding([string]$Art, [string]$Stufe, [string]$Titel, [string]$Text, $Gpos = @(), $Details = @(), [string]$Schluessel = '', [string]$Quelle = 'GPO') {
+    $d = @($Details | Where-Object { $_ })
+    if ($d.Count -gt 50) { $more = $d.Count - 50; $d = @($d | Select-Object -First 50) + @((T '... and {0} more' $more)) }
+    [pscustomobject]@{ Art = $Art; Stufe = $Stufe; Quelle = $Quelle; Titel = $Titel; Text = $Text; Gpos = @($Gpos | Where-Object { $_ } | Select-Object -Unique); Details = $d; Schluessel = $Schluessel }
+}
+function Get-GpoName($Parts, [string]$Id) {
+    foreach ($p in @($Parts)) { foreach ($g in @($p.Gpos)) { if ($g.Id -eq $Id) { return $g.Name } } }
+    if ($Id -like 'NAME:*') { return $Id.Substring(5) }
+    return $Id
+}
+
+# Settings set by more than one GPO: same value = duplicate (the lower GPO does nothing), different value = conflict
+# (the lower GPO is overridden). Grouped per GPO pair so that a cleanup can start with the pair. Also counts per GPO.
+function Find-GpOverlaps($Parts) {
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($p in @($Parts)) {
+        $byId = @{}; foreach ($g in @($p.Gpos)) { $byId[$g.Id] = $g }
+        $pairs = [ordered]@{}
+        foreach ($grp in @($p.Einstellungen | Where-Object { $_.GpoId } | Group-Object Schluessel)) {
+            # one entry per GPO (a GPO linked twice appears twice) - the lowest precedence counts
+            $ents = @($grp.Group | Sort-Object Rang | Group-Object GpoId | ForEach-Object { $_.Group | Sort-Object Rang | Select-Object -First 1 } | Sort-Object Rang)
+            foreach ($e in $ents) { if ($byId.ContainsKey($e.GpoId)) { $byId[$e.GpoId].Einstellungen++ } }
+            if (-not $ents.Count) { continue }
+            $win = $ents[0]
+            if ($byId.ContainsKey($win.GpoId)) { $byId[$win.GpoId].Gewinnt++ }
+            foreach ($l in @($ents | Select-Object -Skip 1)) {
+                $same = ($l.Wert -eq $win.Wert)
+                if ($byId.ContainsKey($l.GpoId)) { if ($same) { $byId[$l.GpoId].Doppelt++ } else { $byId[$l.GpoId].Ueberstimmt++ } }
+                $k = $(if ($same) { 'D' } else { 'K' }) + '|' + $win.GpoId + '|' + $l.GpoId
+                if (-not $pairs.Contains($k)) { $pairs[$k] = [pscustomobject]@{ Gleich = $same; Gewinner = $win.GpoId; Verlierer = $l.GpoId; Liste = New-Object System.Collections.Generic.List[string] } }
+                if ($same) { $pairs[$k].Liste.Add(('{0} ({1})' -f $win.Anzeige, $win.Erweiterung)) }
+                else { $pairs[$k].Liste.Add((T '{0} ({1}): {2} wins with "{3}", {4} sets "{5}"' $win.Anzeige $win.Erweiterung (Get-GpoName $Parts $win.GpoId) (Get-GpValueText $win.Wert) (Get-GpoName $Parts $l.GpoId) (Get-GpValueText $l.Wert))) }
+            }
+        }
+        $pt = if ($p.Bereich -eq 'Computer') { T 'computer part' } else { T 'user part' }
+        foreach ($pp in $pairs.Values) {
+            $wn = Get-GpoName $Parts $pp.Gewinner; $ln = Get-GpoName $Parts $pp.Verlierer; $n = $pp.Liste.Count
+            if ($pp.Gleich) {
+                $out.Add((New-PolFinding 'Doppelt' $(if ($n -ge 5) { 'warn' } else { '' }) (T '{0} setting(s) set twice with the same value: "{1}" and "{2}"' $n $wn $ln) (T 'In the {0}, "{1}" sets the same value as "{2}", which already wins. The entries in "{1}" have no effect on this device - remove them there (or in "{2}") so that the setting is maintained in one place only.' $pt $ln $wn) @($wn, $ln) $pp.Liste.ToArray() ('dup:' + $pp.Gewinner + ':' + $pp.Verlierer)))
+            } else {
+                $out.Add((New-PolFinding 'Konflikt' 'warn' (T '{0} conflicting setting(s): "{1}" overrides "{2}"' $n $wn $ln) (T 'In the {0}, "{1}" and "{2}" set different values. "{1}" has the higher precedence and wins, so the values in "{2}" never take effect here. Decide which value is wanted and remove the other one - otherwise a changed link order silently changes the result.' $pt $wn $ln) @($wn, $ln) $pp.Liste.ToArray() ('conflict:' + $pp.Gewinner + ':' + $pp.Verlierer)))
+            }
+        }
+        foreach ($g in @($p.Gpos | Where-Object { $_.Wirksam })) {
+            $orte = @($g.Orte | Select-Object -Unique)
+            if ($orte.Count -gt 1) {
+                $out.Add((New-PolFinding 'Doppelt' 'warn' (T 'GPO "{0}" is linked {1} times in the path of this device' $g.Name $orte.Count) (T 'The GPO applies to this device through several links ({0}). One link is enough - extra links make the precedence hard to follow and are easily forgotten when cleaning up.' ($orte -join '; ')) @($g.Name) $orte ('multilink:' + $g.Id)))
+            }
+            if ($g.Einstellungen -gt 0 -and $g.Gewinnt -eq 0) {
+                $out.Add((New-PolFinding 'Doppelt' 'warn' (T 'GPO "{0}" has no effect of its own on this device' $g.Name) (T 'All {0} settings of this GPO in the {1} are already set by other GPOs with higher precedence ({2} with the same value, {3} overridden). As far as the RSoP data shows, the GPO only costs processing time here. Check whether it is still needed for other devices or users.' $g.Einstellungen $pt $g.Doppelt $g.Ueberstimmt) @($g.Name) @() ('noeffect:' + $g.Id)))
+            }
+        }
+    }
+    return $out.ToArray()
+}
+
+# Processing times from the operational log (fallback: last run from the RSoP data)
+function Measure-GpTimes($Parts, $Events) {
+    $cat = Get-GpCseCatalog
+    $el = { param($d) foreach ($k in @($d.Keys)) { if ($k -match '(?i)Ela[a-z]*edTime') { $v = 0.0; if ([double]::TryParse([string]$d[$k], [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$v)) { return $v } } }; return $null }
+    $act = @{}
+    $phase = @{ 8000 = 'Start'; 8001 = 'Anmeldung'; 8006 = 'Hintergrund'; 8007 = 'Hintergrund' }
+    $runs = @{ Start = @(); Anmeldung = @(); Hintergrund = @() }
+    foreach ($e in @($Events | Where-Object { $_.Id -in 8000, 8001, 8006, 8007 })) {
+        $ph = $phase[[int]$e.Id]; if ($e.Aktivitaet) { $act[$e.Aktivitaet] = $ph }
+        $s = & $el $e.Daten; if ($null -ne $s) { $runs[$ph] += [pscustomobject]@{ Zeit = $e.Zeit; Sek = [double]$s } }
+    }
+    $sum = {
+        param($list)
+        $l = @($list | Sort-Object { [datetime]$_.Zeit } -Descending)
+        if (-not $l.Count) { return [pscustomobject]@{ Anzahl = 0; MedianSek = $null; MaxSek = $null; Letzte = @() } }
+        [pscustomobject]@{ Anzahl = $l.Count; MedianSek = [math]::Round((Get-Median @($l | ForEach-Object { $_.Sek })), 1); MaxSek = [math]::Round((($l | Measure-Object Sek -Maximum).Maximum), 1); Letzte = @($l | Select-Object -First 10) }
+    }
+    # GPOs per extension (from the RSoP settings)
+    $gpoByExt = @{}
+    foreach ($p in @($Parts)) {
+        foreach ($x in @($p.Erweiterungen)) {
+            $ns = @($p.Einstellungen | Where-Object { $_.Erweiterung -eq $x.Name -and $_.GpoId } | ForEach-Object { Get-GpoName $Parts $_.GpoId } | Select-Object -Unique)
+            if (-not $gpoByExt.ContainsKey($x.Id)) { $gpoByExt[$x.Id] = @() }
+            $gpoByExt[$x.Id] = @(@($gpoByExt[$x.Id]) + $ns | Select-Object -Unique)
+        }
+    }
+    $cse = @{}
+    foreach ($e in @($Events | Where-Object { $_.Id -in 5016, 7016 })) {
+        $ms = & $el $e.Daten; if ($null -eq $ms) { continue }
+        $id = Format-GpGuid ([string]$e.Daten['CSEExtensionId']); $nm = [string]$e.Daten['CSEExtensionName']
+        if (-not $id) { $id = 'NAME:' + $nm }
+        if (-not $cse.ContainsKey($id)) { $cse[$id] = [pscustomobject]@{ Id = $id; Name = $nm; Werte = @(); Start = @(); Anmeldung = @(); Fehler = 0 } }
+        $c = $cse[$id]; if (-not $c.Name) { $c.Name = $nm }
+        $c.Werte += [double]$ms
+        if ($e.Id -eq 7016) { $c.Fehler++ }
+        $ph = if ($e.Aktivitaet -and $act.ContainsKey($e.Aktivitaet)) { $act[$e.Aktivitaet] } else { '' }
+        if ($ph -eq 'Start') { $c.Start += [double]$ms } elseif ($ph -eq 'Anmeldung') { $c.Anmeldung += [double]$ms }
+    }
+    $quelle = 'Ereignisse'
+    if (-not $cse.Count) {
+        # no events: the last run of every extension from the RSoP data
+        $quelle = 'RSoP'
+        foreach ($p in @($Parts)) { foreach ($x in @($p.Erweiterungen | Where-Object { $null -ne $_.Ms })) {
+            $id = $(if ($x.Id) { $x.Id } else { 'NAME:' + $x.Name })
+            if (-not $cse.ContainsKey($id)) { $cse[$id] = [pscustomobject]@{ Id = $id; Name = $x.Name; Werte = @(); Start = @(); Anmeldung = @(); Fehler = 0 } }
+            $cse[$id].Werte += [double]$x.Ms
+        } }
+    }
+    $ext = @(foreach ($c in $cse.Values) {
+        $nm = $c.Name; if (-not $nm -and $cat.ContainsKey($c.Id)) { $nm = $cat[$c.Id].Name }; if (-not $nm) { $nm = $c.Id }
+        $g = @(); if ($gpoByExt.ContainsKey($c.Id)) { $g = @($gpoByExt[$c.Id]) }
+        [pscustomobject]@{ Id = $c.Id; Name = $nm; Anzahl = @($c.Werte).Count; MedianMs = [int](Get-Median $c.Werte); MaxMs = [int](($c.Werte | Measure-Object -Maximum).Maximum)
+            StartMedianMs = $(if (@($c.Start).Count) { [int](Get-Median $c.Start) } else { $null }); AnmeldungMedianMs = $(if (@($c.Anmeldung).Count) { [int](Get-Median $c.Anmeldung) } else { $null }); Fehler = $c.Fehler; Gpos = $g }
+    })
+    [pscustomobject]@{ Quelle = $quelle; Start = (& $sum $runs.Start); Anmeldung = (& $sum $runs.Anmeldung); Hintergrund = (& $sum $runs.Hintergrund); Erweiterungen = @($ext | Sort-Object MedianMs -Descending) }
+}
+# Findings for slow processing: startup, sign-in, background refresh and single extensions
+function Find-GpTimeIssues($Zeiten) {
+    $out = New-Object System.Collections.Generic.List[object]
+    $sw = [double](Get-PolCfg 'PolicyStartWarnSec'); $sc = [double](Get-PolCfg 'PolicyStartCritSec')
+    $cw = [double](Get-PolCfg 'PolicyCseWarnMs'); $cc = [double](Get-PolCfg 'PolicyCseCritMs')
+    $fmt = { param($ms) if ($ms -ge 1000) { (T '{0} s' ([math]::Round($ms / 1000, 1))) } else { (T '{0} ms' ([int]$ms)) } }
+    foreach ($ph in 'Start', 'Anmeldung', 'Hintergrund') {
+        $z = $Zeiten.$ph
+        if (-not $z -or -not $z.Anzahl -or $z.MedianSek -lt $sw) { continue }
+        $prop = $(if ($ph -eq 'Start') { 'StartMedianMs' } elseif ($ph -eq 'Anmeldung') { 'AnmeldungMedianMs' } else { 'MedianMs' })
+        $top = @($Zeiten.Erweiterungen | Where-Object { $null -ne $_.$prop -and $_.$prop -ge 500 } | Sort-Object $prop -Descending | Select-Object -First 3)
+        $det = @($top | ForEach-Object { T '{0}: {1} (GPOs: {2})' $_.Name (& $fmt $_.$prop) $(if (@($_.Gpos).Count) { @($_.Gpos) -join ', ' } else { '-' }) })
+        $gp = @($top | ForEach-Object { @($_.Gpos) })
+        $st = $(if ($z.MedianSek -ge $sc) { 'krit' } else { 'warn' })
+        if ($ph -eq 'Start') {
+            $out.Add((New-PolFinding 'Startzeit' $st (T 'Computer policy at startup takes {0} s' $z.MedianSek) (T 'Median of the last {0} startups, longest {1} s. During this time Windows applies the computer policies, synchronous processing delays the sign-in screen. The slowest extensions at startup are listed below.' $z.Anzahl $z.MaxSek) $gp $det 'time-startup'))
+        } elseif ($ph -eq 'Anmeldung') {
+            $out.Add((New-PolFinding 'Startzeit' $st (T 'User policy at sign-in takes {0} s' $z.MedianSek) (T 'Median of the last {0} sign-ins, longest {1} s. With synchronous processing the user waits for this before the desktop appears. The slowest extensions at sign-in are listed below.' $z.Anzahl $z.MaxSek) $gp $det 'time-logon'))
+        } else {
+            $out.Add((New-PolFinding 'Ladezeit' $st (T 'Background refresh of the policies takes {0} s' $z.MedianSek) (T 'Median of the last {0} background refreshes (every 90 minutes by default), longest {1} s. The device works in the meantime, but slow refreshes cost CPU, network and sometimes noticeable hangs.' $z.Anzahl $z.MaxSek) $gp $det 'time-background'))
+        }
+    }
+    foreach ($x in @($Zeiten.Erweiterungen | Where-Object { $_.MedianMs -ge $cw })) {
+        $st = $(if ($x.MedianMs -ge $cc) { 'krit' } else { 'warn' })
+        $g = @($x.Gpos)
+        $hint = if ($g.Count -eq 1) { T 'Only the GPO "{0}" uses this extension on this device - start there.' $g[0] } elseif ($g.Count) { T 'GPOs with settings for this extension: {0}.' ($g -join ', ') } else { T 'The RSoP data shows no GPO with settings for this extension.' }
+        $src = if ($Zeiten.Quelle -eq 'RSoP') { T 'last run' } else { T 'median of {0} runs, longest {1}' $x.Anzahl (& $fmt $x.MaxMs) }
+        $det = @()
+        if ($null -ne $x.StartMedianMs) { $det += (T 'At startup: {0}' (& $fmt $x.StartMedianMs)) }
+        if ($null -ne $x.AnmeldungMedianMs) { $det += (T 'At sign-in: {0}' (& $fmt $x.AnmeldungMedianMs)) }
+        if ($x.Fehler) { $det += (T 'Finished with an error {0} times' $x.Fehler) }
+        $out.Add((New-PolFinding 'Ladezeit' $st (T 'Extension "{0}" needs {1}' $x.Name (& $fmt $x.MedianMs)) ((T 'Processing time of this client-side extension ({0}).' $src) + ' ' + $hint) $g $det ('cse:' + $x.Id)))
+    }
+    return $out.ToArray()
+}
+
+# Settings and structures that are known to slow down policy processing
+function Find-GpBrakes($Parts) {
+    $out = New-Object System.Collections.Generic.List[object]
+    $cat = Get-GpCseCatalog
+    $sysPol = Get-PolicyRegValues 'SOFTWARE\Policies\Microsoft\Windows\System'
+    $winlogon = Get-PolicyRegValues 'SOFTWARE\Policies\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $scr = Get-PolicyRegValues 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $get = { param($h, $n) if ($h -and $h.Contains($n)) { $v = 0; if ([int]::TryParse([string]$h[$n], [ref]$v)) { return $v } }; return $null }
+    $scripts = @(foreach ($p in @($Parts)) { foreach ($s in @($p.Einstellungen | Where-Object { $_.Art -eq 'Script' })) { $s } })
+    $su = @($scripts | Where-Object { $_.Typ -eq 'Startup' }); $lo = @($scripts | Where-Object { $_.Typ -eq 'Logon' })
+    $names = { param($l) @($l | ForEach-Object { Get-GpoName $Parts $_.GpoId } | Select-Object -Unique) }
+    $lines = { param($l) @($l | ForEach-Object { '{0} ({1})' -f $_.Anzeige, (Get-GpoName $Parts $_.GpoId) }) }
+
+    if ((& $get $winlogon 'SyncForegroundPolicy') -eq 1) {
+        $out.Add((New-PolFinding 'Bremse' 'warn' (T '"Always wait for the network at computer startup and logon" is on') (T 'Startup and sign-in wait for the network and process all policies synchronously. This is only needed for Folder Redirection, Software Installation or drive letters that must exist at sign-in - otherwise switch it off (Computer Configuration > Administrative Templates > System > Logon).') @() @() 'sync-foreground'))
+    }
+    if ($su.Count -and (& $get $scr 'RunStartupScriptSync') -ne 0) {
+        $out.Add((New-PolFinding 'Bremse' 'warn' (T '{0} startup script(s) run before the sign-in screen' $su.Count) (T 'Startup scripts run synchronously by default: the sign-in screen only appears when they are finished (up to 10 minutes). Replace them with Group Policy Preferences, Intune or scheduled tasks, or allow asynchronous processing ("Run startup scripts asynchronously").') (& $names $su) (& $lines $su) 'startup-scripts'))
+    }
+    if ($lo.Count -and (& $get $scr 'RunLogonScriptSync') -eq 1) {
+        $out.Add((New-PolFinding 'Bremse' 'warn' (T '{0} logon script(s) run synchronously' $lo.Count) (T '"Run logon scripts synchronously" is on: the desktop only appears when all logon scripts are finished.') (& $names $lo) (& $lines $lo) 'logon-scripts-sync'))
+    } elseif ($lo.Count -ge 3) {
+        $out.Add((New-PolFinding 'Bremse' '' (T '{0} logon scripts' $lo.Count) (T 'Logon scripts start a script host per script and often wait for the network. Group Policy Preferences (drive maps, printers, files) or Intune usually do the same job faster.') (& $names $lo) (& $lines $lo) 'logon-scripts'))
+    }
+    $wait = & $get $scr 'MaxGPOScriptWait'
+    if ($null -ne $wait -and ($wait -eq 0 -or $wait -gt 600)) {
+        $out.Add((New-PolFinding 'Bremse' 'warn' $(if ($wait -eq 0) { T 'Scripts may run without a time limit' } else { T 'Scripts may run for {0} minutes' ([math]::Round($wait / 60)) }) (T '"Specify maximum wait time for Group Policy scripts" is set to {0} seconds (0 = unlimited, default 600). A hanging script blocks startup or sign-in for that long.' $wait) @() @() 'script-wait'))
+    }
+    foreach ($p in @($Parts)) {
+        $ids = @(@($p.Erweiterungen | ForEach-Object { $_.Id }) + @($p.Einstellungen | ForEach-Object { $_.ErweiterungId }) | Where-Object { $_ } | Select-Object -Unique)
+        foreach ($id in $ids) {
+            if (-not $cat.ContainsKey($id) -or -not $cat[$id].Bremse) { continue }
+            $x = @($p.Erweiterungen | Where-Object { $_.Id -eq $id } | Select-Object -First 1)
+            $nm = $(if ($x -and $x[0].Name) { $x[0].Name } else { $cat[$id].Name })
+            $en = @($p.Einstellungen | Where-Object { $_.ErweiterungId -eq $id })
+            if ($cat[$id].Bremse -eq 'sync') {
+                $out.Add((New-PolFinding 'Bremse' 'warn' (T '{0} forces synchronous processing ({1})' $nm $(if ($p.Bereich -eq 'Computer') { T 'computer part' } else { T 'user part' })) (T 'This extension only applies changes in the foreground: Windows switches to synchronous processing (waiting for the network) and changes often need a second restart or sign-in. For new devices consider OneDrive Known Folder Move instead of Folder Redirection and Intune/ConfigMgr instead of Software Installation.') (& $names $en) (& $lines $en) ('cse-sync:' + $id)))
+            } elseif ($en.Count) {
+                $out.Add((New-PolFinding 'Bremse' '' (T '{0} drive mapping(s) via Group Policy' $en.Count) (T 'Drive maps wait for the file server. Mappings with "Reconnect" or to servers that are not reachable (VPN, home office) delay the sign-in.') (& $names $en) (& $lines $en) ('cse-drive:' + $id)))
+            }
+        }
+        if ($p.SlowLink) { $out.Add((New-PolFinding 'Bremse' '' (T 'Slow link detected ({0})' $(if ($p.Bereich -eq 'Computer') { T 'computer part' } else { T 'user part' })) (T 'Windows rated the connection to the domain controller as slow. Some extensions (e.g. Software Installation, Folder Redirection) are then skipped, others take longer.') @() @() ('slowlink:' + $p.Bereich))) }
+        $act = @($p.Gpos | Where-Object { $_.Wirksam })
+        if ($act.Count -gt 40) { $out.Add((New-PolFinding 'Bremse' '' (T '{0} GPOs apply to the {1}' $act.Count $(if ($p.Bereich -eq 'Computer') { T 'computer part' } else { T 'user part' })) (T 'Every GPO is read from SYSVOL and checked at each processing. Merging small GPOs reduces the processing time and makes troubleshooting easier.') @() @($act | ForEach-Object { $_.Name }) ('many-gpos:' + $p.Bereich))) }
+        $wmi = @($act | Where-Object { $_.WmiFilter })
+        if ($wmi.Count -ge 5) { $out.Add((New-PolFinding 'Bremse' '' (T '{0} GPOs with a WMI filter ({1})' $wmi.Count $(if ($p.Bereich -eq 'Computer') { T 'computer part' } else { T 'user part' })) (T 'Each WMI filter is evaluated at every processing. Slow queries (e.g. Win32_Product) can take seconds each; item-level targeting or security filtering is usually cheaper.') @($wmi | ForEach-Object { $_.Name }) @($wmi | ForEach-Object { '{0}: {1}' -f $_.Name, $_.WmiFilter }) ('wmi:' + $p.Bereich))) }
+    }
+    $mode = & $get $sysPol 'UserPolicyMode'
+    if ($mode -eq 1) { $out.Add((New-PolFinding 'Bremse' 'warn' (T 'Loopback processing in merge mode') (T 'The user policies are processed twice at every sign-in: once from the user''s OU and once from the computer''s OU. Use replace mode if the user''s own GPOs are not needed on these devices.') @() @() 'loopback-merge')) }
+    elseif ($mode -eq 2) { $out.Add((New-PolFinding 'Bremse' '' (T 'Loopback processing in replace mode') (T 'The user policies come from the computer''s OU. This is fine for kiosk/RDS devices; GPOs linked to the user''s OU have no effect on this device.') @() @() 'loopback-replace')) }
+    $rt = & $get $sysPol 'GroupPolicyRefreshTime'
+    if ($null -ne $rt -and $rt -lt 30) { $out.Add((New-PolFinding 'Ladezeit' 'warn' (T 'Policies are refreshed every {0} minutes' $(if ($rt -eq 0) { '0.1' } else { $rt })) (T 'The background refresh interval is shorter than 30 minutes (default 90). Every refresh processes all GPOs again - this costs CPU and network without benefit.') @() @() 'refresh-short')) }
+    $nw = & $get $sysPol 'GpNetworkStartTimeoutPolicyValue'
+    if ($null -ne $nw -and $nw -ge 60) { $out.Add((New-PolFinding 'Bremse' '' (T 'Startup waits up to {0} s for the network' $nw) (T '"Specify startup policy processing wait time" is set high. Without a network (laptop away from the office) every startup waits that long.') @() @() 'network-wait')) }
+    $gpk = 'SOFTWARE\Policies\Microsoft\Windows\Group Policy'
+    foreach ($sk in @(Get-PolicyRegSubKeys $gpk)) {
+        $v = Get-PolicyRegValues "$gpk\$sk"
+        if ((& $get $v 'NoGPOListChanges') -eq 0) {
+            $id = Format-GpGuid $sk; $nm = $id
+            foreach ($p in @($Parts)) { $x = @($p.Erweiterungen | Where-Object { $_.Id -eq $id }); if ($x.Count -and $x[0].Name) { $nm = $x[0].Name } }
+            if ($nm -eq $id -and $cat.ContainsKey($id)) { $nm = $cat[$id].Name }
+            $out.Add((New-PolFinding 'Ladezeit' 'warn' (T '"{0}" is processed even if nothing changed' $nm) (T '"Process even if the Group Policy objects have not changed" is on for this extension. It runs completely at every refresh, also in the background. Only useful for settings users can change themselves.') @() @() ('always:' + $id)))
+        }
+    }
+    return $out.ToArray()
+}
+
+# Intune/MDM: overlaps with Group Policy and settings from several management sources
+function Find-MdmOverlaps($Mdm) {
+    $out = New-Object System.Collections.Generic.List[object]
+    $mdm = @($Mdm)
+    if (-not $mdm.Count) { return @() }
+    $cpc = Get-PolicyRegValues 'SOFTWARE\Microsoft\PolicyManager\current\device\ControlPolicyConflict'
+    $wins = [bool]($cpc -and $cpc.Contains('MDMWinsOverGP') -and [string]$cpc['MDMWinsOverGP'] -eq '1')
+    # Policy CSP policies with a Group Policy equivalent (PolicyManager\default: GPBlockingRegKeyPath/ValueName)
+    $both = @()
+    foreach ($m in @($mdm | Where-Object { $_.Bereich -ne 'Update' })) {
+        $d = Get-PolicyRegValues "SOFTWARE\Microsoft\PolicyManager\default\$($m.Bereich)\$($m.Name)"
+        if (-not $d -or -not $d.Contains('GPBlockingRegKeyPath') -or -not $d.Contains('GPBlockingRegValueName')) { continue }
+        $kp = ([string]$d['GPBlockingRegKeyPath']).TrimStart('\') -replace '^(?i)(HKLM|HKEY_LOCAL_MACHINE)\\', ''
+        $gv = Get-PolicyRegValues $kp; $vn = [string]$d['GPBlockingRegValueName']
+        if ($gv -and $gv.Contains($vn)) { $both += [pscustomobject]@{ M = $m; Gp = $gv[$vn]; Pfad = "HKLM\$kp\$vn" } }
+    }
+    if ($both.Count) {
+        $det = @($both | ForEach-Object { T '{0}/{1}: Intune "{2}", Group Policy "{3}" ({4})' $_.M.Bereich $_.M.Name (Format-PolValue $_.M.Wert) (Format-PolValue $_.Gp) $_.Pfad })
+        if ($wins) {
+            $out.Add((New-PolFinding 'Doppelt' '' (T '{0} setting(s) set by Intune and Group Policy - Intune wins' $both.Count) (T 'MDMWinsOverGP is on, so Windows blocks these Group Policy values. The GPO settings have no effect on this device - remove them from the GPO once all devices that get it are managed by Intune.') @() $det 'mdm-gp-blocked' 'GPO+Intune'))
+        } else {
+            $out.Add((New-PolFinding 'Konflikt' 'warn' (T '{0} setting(s) set by Intune and Group Policy - Group Policy wins' $both.Count) (T 'Without MDMWinsOverGP the Group Policy value wins and the Intune setting has no effect. Configure each setting in one place only - or set ControlPolicyConflict/MDMWinsOverGP in Intune.') @() $det 'mdm-gp-conflict' 'GPO+Intune'))
+        }
+    }
+    # Windows Update: MDMWinsOverGP does not apply here
+    $wu = @($mdm | Where-Object { $_.Bereich -eq 'Update' })
+    if ($wu.Count) {
+        $gpWu = @(); foreach ($k in 'SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate', 'SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU') { $v = Get-PolicyRegValues $k; if ($v) { foreach ($n in @($v.Keys)) { if ($n) { $gpWu += ('HKLM\{0}\{1} = {2}' -f $k, $n, (Format-PolValue $v[$n])) } } } }
+        if ($gpWu.Count) {
+            $ign = @($wu | Where-Object { $_.Name -eq 'IgnoreWindowsUpdateGroupPolicies' -and [string]$_.Wert -eq '1' })
+            $det = @($gpWu) + @($wu | ForEach-Object { T 'Intune: Update/{0} = {1}' $_.Name (Format-PolValue $_.Wert) })
+            if ($ign.Count) {
+                $out.Add((New-PolFinding 'Doppelt' '' (T 'Windows Update: Group Policy values are ignored') (T 'IgnoreWindowsUpdateGroupPolicies is on, so only the Intune values count. The {0} Windows Update values from Group Policy have no effect - remove them from the GPO.' $gpWu.Count) @() $det 'mdm-wu-ignored' 'GPO+Intune'))
+            } else {
+                $out.Add((New-PolFinding 'Konflikt' 'warn' (T 'Windows Update is configured by Intune and Group Policy') (T 'MDMWinsOverGP does not apply to Windows Update. Mixed settings lead to updates that are not installed or installed at unexpected times. Remove the GPO settings or set IgnoreWindowsUpdateGroupPolicies in Intune.') @() $det 'mdm-wu-conflict' 'GPO+Intune'))
+            }
+        }
+    }
+    # Defender and Windows Hello: separate CSPs, MDMWinsOverGP does not apply - "no guarantee which one wins"
+    $cnt = { param($path, $skip)
+        $n = 0; $v = Get-PolicyRegValues $path; if ($v) { $n += @($v.Keys | Where-Object { $_ }).Count }
+        foreach ($s in @(Get-PolicyRegSubKeys $path)) { if ($s -in $skip) { continue }; $sv = Get-PolicyRegValues "$path\$s"; if ($sv) { $n += @($sv.Keys | Where-Object { $_ }).Count } }
+        return $n }
+    $defGp = & $cnt 'SOFTWARE\Policies\Microsoft\Windows Defender' @('Policy Manager')
+    $defMdm = Get-PolicyRegValues 'SOFTWARE\Policies\Microsoft\Windows Defender\Policy Manager'
+    if ($defGp -gt 0 -and $defMdm -and @($defMdm.Keys | Where-Object { $_ }).Count) {
+        $out.Add((New-PolFinding 'Konflikt' 'warn' (T 'Microsoft Defender is configured by Intune and Group Policy') (T 'Group Policy sets {0} Defender value(s), Intune {1}. MDMWinsOverGP does not apply to the Defender CSP - there is no guarantee which value wins. Remove the Defender GPO settings on Intune-managed devices.' $defGp @($defMdm.Keys | Where-Object { $_ }).Count) @() @() 'mdm-defender' 'GPO+Intune'))
+    }
+    $helloGp = Get-PolicyRegValues 'SOFTWARE\Policies\Microsoft\PassportForWork'
+    if ($helloGp -and @($helloGp.Keys | Where-Object { $_ }).Count -and @(Get-PolicyRegSubKeys 'SOFTWARE\Microsoft\Policies\PassportForWork').Count) {
+        $out.Add((New-PolFinding 'Konflikt' 'warn' (T 'Windows Hello for Business is configured by Intune and Group Policy') (T 'Microsoft advises against mixing both: conflicting Intune settings are only applied once the Group Policy settings are removed.') @() @() 'mdm-hello' 'GPO+Intune'))
+    }
+    # one setting from several management sources (e.g. Intune and ConfigMgr co-management)
+    $multi = @($mdm | Where-Object { @($_.Anbieter | Select-Object -Unique).Count -gt 1 })
+    if ($multi.Count) {
+        $out.Add((New-PolFinding 'Doppelt' '' (T '{0} MDM setting(s) come from several management sources' $multi.Count) (T 'The same policy is set by more than one MDM source; Windows applies the value of the winning source. Keep each setting in one source.') @() @($multi | ForEach-Object { T '{0}/{1} = {2} ({3})' $_.Bereich $_.Name (Format-PolValue $_.Wert) ((@($_.Anbieter | Select-Object -Unique)) -join ', ') }) 'mdm-multi' 'Intune'))
+    }
+    return $out.ToArray()
+}
+
+# Complete analysis. Read-only.
+function Get-PolicyAnalysis([scriptblock]$OnProgress = $null) {
+    $step = { param($i, $t) if ($OnProgress) { try { & $OnProgress $i 4 $t } catch { } } }
+    $ctx = $null; try { $ctx = Get-WtContext } catch { }
+    $hints = @()
+    if (-not $Script:IsAdmin) { $hints += (T 'Without administrator rights only the user part is analyzed; the computer policies and some processing times are missing.') }
+    if ($ctx -and $ctx.AnderesKonto) { $hints += (T 'WinTidy runs as {0}, but {1} is signed in. The user part shows the policies of {0}.' $ctx.ProzessBenutzer $ctx.SitzungsBenutzer) }
+    if ($ctx -and -not $ctx.Domaene -and -not $ctx.Intune) { $hints += (T 'This device is neither in a domain nor managed by Intune. Only local policies can be analyzed.') }
+
+    & $step 1 (T 'Reading the applied Group Policy (gpresult) ...')
+    $parts = @(); $rsopOk = $false
+    $rx = $null; try { $rx = Get-GpRsopXml } catch { $hints += (T 'Group Policy result not available: {0}' $_.Exception.Message) }
+    if ($rx -and $rx.Xml) {
+        try { $parts = @(ConvertFrom-GpRsop $rx.Xml); $rsopOk = $true } catch { $hints += (T 'The gpresult data could not be read: {0}' $_.Exception.Message) }
+    } elseif ($rx -and $rx.Fehler) { $hints += (T 'Group Policy result not available: {0}' $rx.Fehler) }
+
+    & $step 2 (T 'Reading the processing times from the event log ...')
+    $ev = $null; try { $ev = Get-GpEvents ([int](Get-PolCfg 'PolicyEventDays')) } catch { }
+    $evOk = ($null -ne $ev)
+    if (-not $evOk) { $hints += (T 'The Group Policy event log could not be read (administrator rights needed). Processing times only come from the last run.') }
+    $zeiten = Measure-GpTimes $parts @($ev)
+
+    & $step 3 (T 'Reading the Intune/MDM policies ...')
+    $mdm = @(); try { $mdm = @(Get-MdmPolicies) } catch { }
+
+    & $step 4 (T 'Evaluating ...')
+    $bef = @()
+    foreach ($f in @(@('Find-GpOverlaps', $parts), @('Find-GpTimeIssues', $zeiten), @('Find-GpBrakes', $parts), @('Find-MdmOverlaps', $mdm))) {
+        try { $bef += @(& $f[0] $f[1]) } catch { $hints += (T 'Part of the evaluation failed ({0}): {1}' $f[0] $_.Exception.Message) }
+    }
+    $rank = @{ 'krit' = 0; 'warn' = 1; '' = 2 }; $artRank = @{ Konflikt = 0; Doppelt = 1; Startzeit = 2; Ladezeit = 3; Bremse = 4 }
+    $bef = @($bef | Where-Object { $_ } | Sort-Object @{ e = { $rank[[string]$_.Stufe] } }, @{ e = { $artRank[$_.Art] } }, Titel)
+    $cnt = [ordered]@{}; foreach ($a in 'Konflikt', 'Doppelt', 'Startzeit', 'Ladezeit', 'Bremse') { $cnt[$a] = @($bef | Where-Object Art -eq $a).Count }
+    $cnt['Intune'] = @($bef | Where-Object { $_.Quelle -like '*Intune*' }).Count
+    $gpos = @(foreach ($p in $parts) { $p.Gpos })
+    [pscustomobject]@{
+        Format = 'WinTidy-Richtlinien'; Version = 1; WinTidy = $Script:Version; Zeit = (Get-Date).ToString('o'); Computer = $env:COMPUTERNAME; Admin = [bool]$Script:IsAdmin
+        Verwaltung = [pscustomobject]@{ Domaene = [bool]($ctx -and $ctx.Domaene); Intune = [bool]($ctx -and $ctx.Intune); EntraJoin = [bool]($ctx -and $ctx.EntraJoin); ConfigMgr = [bool]($ctx -and $ctx.ConfigMgr) }
+        Quellen = [pscustomobject]@{ Rsop = $rsopOk; Ereignisse = $evOk; Mdm = ($mdm.Count -gt 0) }
+        Hinweise = $hints; Gpos = $gpos; MdmAnzahl = $mdm.Count; Zeiten = $zeiten; Befunde = $bef; Zaehler = [pscustomobject]$cnt
+    }
+}
+
+# Display names for the internal finding kinds
+function Get-PolArtText([string]$Art) {
+    switch ($Art) { 'Konflikt' { return (T 'Conflicts') } 'Doppelt' { return (T 'Duplicates') } 'Startzeit' { return (T 'Startup and sign-in') } 'Ladezeit' { return (T 'Processing time') } 'Bremse' { return (T 'Slowdown patterns') } }
+    return $Art
+}
+function Get-PolPartText([string]$Bereich) { if ($Bereich -eq 'Computer') { return (T 'Computer') }; return (T 'User') }
+
+# CLI output
+function Show-PolicyAnalysis($A) {
+    foreach ($h in @($A.Hinweise)) { W ('  ' + $h) 'DarkYellow' }
+    $v = @(); if ($A.Verwaltung.Domaene) { $v += (T 'domain') }; if ($A.Verwaltung.Intune) { $v += 'Intune' }; if ($A.Verwaltung.EntraJoin) { $v += 'Entra ID' }; if ($A.Verwaltung.ConfigMgr) { $v += 'ConfigMgr' }
+    W ((T '  Managed by: {0}  |  GPOs: {1}  |  Intune/MDM settings: {2}') -f $(if ($v.Count) { $v -join ', ' } else { T 'nothing' }), @($A.Gpos | Where-Object Wirksam).Count, $A.MdmAnzahl) 'Gray'
+    $z = $A.Zeiten
+    foreach ($ph in @(@('Start', (T 'Computer policy at startup')), @('Anmeldung', (T 'User policy at sign-in')), @('Hintergrund', (T 'Background refresh')))) {
+        $x = $z.($ph[0]); if ($x -and $x.Anzahl) { W ((T '  {0}: median {1} s, longest {2} s ({3} times)') -f $ph[1], $x.MedianSek, $x.MaxSek, $x.Anzahl) 'Gray' }
+    }
+    $sum = @(foreach ($k in $A.Zaehler.PSObject.Properties) { if ($k.Value) { '{0} {1}' -f $k.Value, $(if ($k.Name -eq 'Intune') { 'Intune' } else { Get-PolArtText $k.Name }) } })
+    Section ((T 'Findings: {0}') -f $(if ($sum.Count) { $sum -join '  |  ' } else { T 'none' }))
+    if (-not @($A.Befunde).Count) { W (T '  No duplicates, conflicts or slow processing found.') 'Green' }
+    foreach ($b in @($A.Befunde)) {
+        $col = switch ($b.Stufe) { 'krit' { 'Red' } 'warn' { 'Yellow' } default { 'Cyan' } }
+        $sym = switch ($b.Stufe) { 'krit' { '[!!]' } 'warn' { '[! ]' } default { '[i ]' } }
+        W ('  {0} {1}: {2}' -f $sym, (Get-PolArtText $b.Art), $b.Titel) $col
+        W ('       ' + $b.Text) 'DarkGray'
+        if (@($b.Gpos).Count) { W ((T '       GPOs: {0}') -f (@($b.Gpos) -join ', ')) 'Gray' }
+        foreach ($d in @($b.Details | Select-Object -First 8)) { W ('         - ' + $d) 'DarkGray' }
+        if (@($b.Details).Count -gt 8) { W ((T '         ... {0} more in the report') -f (@($b.Details).Count - 8)) 'DarkGray' }
+    }
+    $slow = @($z.Erweiterungen | Select-Object -First 8)
+    if ($slow.Count) {
+        Section (T 'Processing time per extension')
+        foreach ($x in $slow) { W ('  {0,-38} {1,8} ms  max {2,8} ms  {3,4}x  {4}' -f $x.Name, $x.MedianMs, $x.MaxMs, $x.Anzahl, (@($x.Gpos | Select-Object -First 3) -join ', ')) 'Gray' }
+    }
+}
+
+# Separate HTML report for admins (WinTidy-Richtlinien.html in the data folder)
+function New-PolicyReport($A) {
+    function HT([string]$Text) { HtmlEnc (T $Text @args) }
+    $df = T 'yyyy-MM-dd HH:mm'
+    $css = Get-ReportCss
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.Append("<!doctype html><html lang='$Script:Lang'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>$(HT 'WinTidy policy analysis')</title><style>$css .krit{color:var(--bad)}.warn{color:var(--mid)}.hint{color:var(--acc)} td.g{white-space:nowrap}</style></head><body><div class='wrap'>")
+    [void]$sb.Append("<h1>$(HT 'WinTidy policy analysis') &middot; $(HtmlEnc $A.Computer)</h1><div class='muted'>$(HT 'Report created {0}' ([datetime]$A.Zeit).ToString($df)) &middot; WinTidy $(HtmlEnc $A.WinTidy) &middot; $(HT 'read-only, nothing was changed')</div>")
+    foreach ($h in @($A.Hinweise)) { [void]$sb.Append("<p class='warn'>$(HtmlEnc $h)</p>") }
+    [void]$sb.Append("<h2>$(HT 'Overview')</h2><div class='grid4'>")
+    foreach ($k in $A.Zaehler.PSObject.Properties) { [void]$sb.Append("<div class='card'><div class='kl'>$(HtmlEnc $(if ($k.Name -eq 'Intune') { T 'Intune involved' } else { Get-PolArtText $k.Name }))</div><div class='kpi'>$([int]$k.Value)</div></div>") }
+    $z = $A.Zeiten
+    foreach ($ph in @(@('Start', (T 'Startup (median)')), @('Anmeldung', (T 'Sign-in (median)')), @('Hintergrund', (T 'Background (median)')))) {
+        $x = $z.($ph[0]); $t = $(if ($x -and $x.Anzahl) { '{0} s' -f $x.MedianSek } else { 'n/a' })
+        [void]$sb.Append("<div class='card'><div class='kl'>$(HtmlEnc $ph[1])</div><div class='kpi'>$(HtmlEnc $t)</div></div>")
+    }
+    [void]$sb.Append('</div>')
+    [void]$sb.Append("<h2>$(HT 'All findings')</h2>")
+    if (-not @($A.Befunde).Count) { [void]$sb.Append("<p>$(HT 'No duplicates, conflicts or slow processing found.')</p>") }
+    foreach ($b in @($A.Befunde)) {
+        $cls = switch ($b.Stufe) { 'krit' { 'krit' } 'warn' { 'warn' } default { 'hint' } }
+        [void]$sb.Append("<div class='card' style='margin:10px 0'><div class='kl'>$(HtmlEnc (Get-PolArtText $b.Art)) &middot; $(HtmlEnc $b.Quelle)</div><div class='$cls' style='font-weight:600;font-size:15px'>$(HtmlEnc $b.Titel)</div><p style='margin:4px 0'>$(HtmlEnc $b.Text)</p>")
+        if (@($b.Gpos).Count) { [void]$sb.Append("<p class='muted' style='margin:4px 0'>$(HT 'GPOs: {0}' (@($b.Gpos) -join ', '))</p>") }
+        if (@($b.Details).Count) { [void]$sb.Append("<details><summary>$(HT 'Details ({0})' @($b.Details).Count)</summary><ul class='items mono'>"); foreach ($d in @($b.Details)) { [void]$sb.Append("<li>$(HtmlEnc $d)</li>") }; [void]$sb.Append('</ul></details>') }
+        [void]$sb.Append('</div>')
+    }
+    if (@($z.Erweiterungen).Count) {
+        [void]$sb.Append("<h2>$(HT 'Processing time per extension')</h2><p class='muted'>$(HtmlEnc $(if ($z.Quelle -eq 'RSoP') { T 'Source: last run (gpresult).' } else { T 'Source: Group Policy event log, last {0} days.' (Get-PolCfg 'PolicyEventDays') }))</p><table><tr><th>$(HT 'Extension')</th><th>$(HT 'Median')</th><th>$(HT 'Longest')</th><th>$(HT 'At startup')</th><th>$(HT 'At sign-in')</th><th>$(HT 'Runs')</th><th>$(HT 'GPOs')</th></tr>")
+        foreach ($x in @($z.Erweiterungen)) { [void]$sb.Append("<tr><td>$(HtmlEnc $x.Name)</td><td class='n'>$([int]$x.MedianMs) ms</td><td class='n'>$([int]$x.MaxMs) ms</td><td class='n'>$(if ($null -ne $x.StartMedianMs) { "$([int]$x.StartMedianMs) ms" } else { '-' })</td><td class='n'>$(if ($null -ne $x.AnmeldungMedianMs) { "$([int]$x.AnmeldungMedianMs) ms" } else { '-' })</td><td class='n'>$([int]$x.Anzahl)</td><td>$(HtmlEnc (@($x.Gpos) -join ', '))</td></tr>") }
+        [void]$sb.Append('</table>')
+    }
+    if (@($A.Gpos).Count) {
+        [void]$sb.Append("<h2>$(HT 'Applied GPOs')</h2><table><tr><th>$(HT 'GPO')</th><th>$(HT 'Part')</th><th>$(HT 'Settings')</th><th>$(HT 'Wins')</th><th>$(HT 'Same value elsewhere')</th><th>$(HT 'Overridden')</th><th>$(HT 'Linked at')</th><th>$(HT 'WMI filter')</th></tr>")
+        foreach ($g in @($A.Gpos | Sort-Object @{ e = { -not $_.Wirksam } }, Bereich, Name)) {
+            $st = $(if (-not $g.Wirksam) { " class='muted'" } else { '' })
+            [void]$sb.Append("<tr$st><td>$(HtmlEnc $g.Name)$(if (-not $g.Wirksam) { ' (' + (HT 'not applied') + ')' })</td><td class='g'>$(HtmlEnc (Get-PolPartText $g.Bereich))</td><td class='n'>$([int]$g.Einstellungen)</td><td class='n'>$([int]$g.Gewinnt)</td><td class='n'>$([int]$g.Doppelt)</td><td class='n'>$([int]$g.Ueberstimmt)</td><td>$(HtmlEnc (@($g.Orte | Select-Object -Unique) -join '; '))</td><td>$(HtmlEnc $g.WmiFilter)</td></tr>")
+        }
+        [void]$sb.Append('</table>')
+    }
+    [void]$sb.Append("<p class='muted' style='margin-top:24px'>$(HT 'Duplicates between Intune profiles and the assignment of Intune profiles are only visible in the Intune admin center; this report sees the device side. GPO names come from the gpresult data of this device.')</p></div></body></html>")
+    $out = Join-Path $Script:DataDir 'WinTidy-Richtlinien.html'
+    [IO.File]::WriteAllText($out, $sb.ToString(), (New-Object System.Text.UTF8Encoding $false))
+    return $out
+}
+
+# GUI API: runs the analysis and builds the report. Never throws; Fehler holds a readable text.
+function Invoke-GuiPolicyScan([scriptblock]$OnProgress = $null) {
+    $a = $null; $rep = $null; $err = $null
+    try { $a = Get-PolicyAnalysis $OnProgress } catch { $err = $_.Exception.Message }
+    if ($a) { try { $rep = New-PolicyReport $a } catch { $err = (T 'The report could not be written: {0}' $_.Exception.Message) } }
+    [pscustomobject]@{ Analyse = $a; Report = $rep; Fehler = $err }
+}
+# CLI: -Mode Policies
+function Invoke-PolicyMode {
+    Section (T 'Policy analysis: GPOs and Intune (changes nothing)')
+    W (T '  For IT admins: shows GPOs that act twice, conflict or slow down startup, sign-in and processing on this device.') 'DarkGray'
+    $r = Invoke-GuiPolicyScan { param($i, $n, $t) Write-Progress -Activity (T 'Policy analysis') -Status $t -PercentComplete (100 * $i / [math]::Max(1, $n)) }
+    Write-Progress -Activity (T 'Policy analysis') -Completed
+    if (-not $r.Analyse) { W ('  ' + $r.Fehler) 'Red'; return }
+    Show-PolicyAnalysis $r.Analyse
+    if ($r.Report) { W ''; W ((T '  Report: {0}') -f $r.Report) 'Green'; if ($OpenReport) { Open-Report $r.Report } }
+    elseif ($r.Fehler) { W ('  ' + $r.Fehler) 'DarkYellow' }
+}
+
+# =============================================================================
 #  Modes
 # =============================================================================
 function Open-Report([string]$Path) { if (-not $Path) { return }; try { Start-Process -FilePath "$env:windir\explorer.exe" -ArgumentList ('"{0}"' -f $Path) } catch { try { Start-Process $Path } catch { } } }
@@ -5108,6 +5778,7 @@ function Invoke-Mode([string]$m) {
         }
         'Restore' { Start-RunLog 'restore'; $null = Invoke-Restore; Stop-RunLog }
         'Exclusions' { Invoke-ExclusionsMode }
+        'Policies' { Start-RunLog 'policies'; Invoke-PolicyMode; Stop-RunLog }
         'Update' {
             Section (T 'Update')
             W (T '  Installed version: {0}' $Script:Version) 'Gray'
@@ -5164,6 +5835,7 @@ while ($true) {
     W (T '  [8] Deep scan   - incl. file system/integrity check (slow)') 'White'
     W (T '  [9] Hardware    - cooling, fans, temperatures; optional cooling test') 'White'
     W (T '  [E] Exclusions  - show or remove the points you excluded') 'White'
+    W (T '  [P] Policies    - GPO/Intune analysis for IT admins (duplicates, conflicts, slow processing)') 'White'
     W (T '  [U] Update      - check for a new WinTidy version and install it') 'White'
     W (T '  [0] Exit') 'White'
     $c = Read-Host (T '  Choice')
@@ -5174,6 +5846,7 @@ while ($true) {
         '9' { $a = Read-Host (T '  Additionally run the cooling test (about 1 minute full load, fans get loud)? [y/N]'); $CoolingTest = ($a -match '^(j|ja|y|yes)$'); Invoke-Mode 'Hardware'; $CoolingTest = $false }
         'u' { Invoke-Mode 'Update' }
         'e' { Invoke-Mode 'Exclusions' }
+        'p' { Invoke-Mode 'Policies' }
         '0' { return }
     }
 }

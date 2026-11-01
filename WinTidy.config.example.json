@@ -199,6 +199,11 @@
   "BigFileMinMB": 1024,
   "DownloadsOldDays": 90,
   "CheckReminderDays": 30,
+  "PolicyStartWarnSec": 15,
+  "PolicyStartCritSec": 45,
+  "PolicyCseWarnMs": 3000,
+  "PolicyCseCritMs": 15000,
+  "PolicyEventDays": 30,
   "CpuTempIdleWarnC": 80,
   "CpuTempIdleCritC": 90,
   "CpuTjMax": {

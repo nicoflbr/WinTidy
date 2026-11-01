@@ -6,6 +6,7 @@
 - Generic rules only. There are no hard-coded paths, user names or programs, so it works on any PC.
 - Everything is logged and backed up. Settings can be rolled back individually.
 - Includes a friendly desktop app for non-technical users and a scriptable command line for IT pros.
+- **Policy analysis for IT admins:** finds GPOs and Intune settings that act twice, conflict or slow down startup and sign-in on a company device - read-only.
 - **English and German.** It follows the Windows display language; you can switch in the app settings or with `-Language en|de`.
 - **Optional automatic updates** (off by default): official GitHub releases only, verified by checksum, with backup and automatic rollback.
 
@@ -35,6 +36,15 @@
 | **Security & stability** | Windows support status and update age, Secure Boot, antivirus and firewall (including third-party), UAC, BIOS age, risky "tweaks" (pagefile off, SysMain off, Defender disabled by policy), event log warnings |
 
 A built-in **cooling test** loads the CPU for about a minute. It checks whether performance drops because of heat, whether the CPU reaches its TjMax, and whether the fans react. It stops on its own on overheating, heavy throttling, or when a laptop is unplugged.
+
+**Policy analysis (for IT admins).** On company devices (or in expert mode) the app has a page *Policies*; on the command line it is `-Mode Policies`. It reads the applied Group Policy (`gpresult`), the Group Policy operational log and the Intune/MDM PolicyManager of the device and reports:
+
+- **Duplicates** - the same setting with the same value in several GPOs, GPOs linked more than once in the device's path, and GPOs that have no effect of their own because every setting is already set by a GPO with higher precedence;
+- **Conflicts** - different values for the same setting (who wins with which value, who loses), GPO vs. Intune for the same policy (with/without `MDMWinsOverGP`), Windows Update, Defender and Windows Hello configured from both sides;
+- **Slow startup, sign-in and processing** - computer policy at startup, user policy at sign-in and background refresh (median of the last 30 days), the slowest client-side extensions and the GPOs that use them;
+- **Slowdown patterns** - "Always wait for the network", synchronous startup/logon scripts, unlimited script wait time, Folder Redirection / Software Installation (forced synchronous processing), drive maps, loopback in merge mode, very short refresh intervals, "process even if unchanged", many GPOs or WMI filters, slow link.
+
+It writes its own report (`WinTidy-Richtlinien.html`) and never changes a policy - the cleanup happens in the GPO or in Intune. Intune-side duplicates between profiles are only visible in the Intune admin center.
 
 **Exclusions.** If a finding is how you want it (a startup program, a firewall profile, a Defender exclusion), exclude it: WinTidy stops showing it, never changes it and does not count it in the health score. You can include it again at any time (app: card "Excluded points"; command line: `-Mode Exclusions`).
 
@@ -68,6 +78,7 @@ A built-in **cooling test** loads the CPU for about a minute. It checks whether 
 .\WinTidy.ps1 -Mode Hardware -CoolingTest     # cooling test under load
 .\WinTidy.ps1 -Mode Rules                     # list all rules with risk level
 .\WinTidy.ps1 -Mode Exclusions                # list the points you excluded
+.\WinTidy.ps1 -Mode Policies -OpenReport      # GPO/Intune analysis for IT admins (changes nothing)
 .\WinTidy.ps1 -Mode Update                    # check for a new version and install it
 .\WinTidy.ps1 -Mode Scan -Language de         # German output and report
 .\WinTidy.ps1 -Mode Rules -SavePreset mine.json   # save the rule selection as a profile
@@ -103,6 +114,7 @@ pwsh ./tests/Test-Perf.ps1
 pwsh ./tests/Test-Features.ps1
 pwsh ./tests/Test-Rules.ps1
 pwsh ./tests/Test-Exclusions.ps1
+pwsh ./tests/Test-Policies.ps1
 ```
 
 GitHub Actions runs them on Windows PowerShell 5.1 and PowerShell 7 for every push and pull request. Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the rule contract in [DEVELOPMENT.md](DEVELOPMENT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).

@@ -53,6 +53,7 @@ The app uses the same logic and the same data as the command line – you can us
 | `Rules` | lists all rules with their risk | no |
 | `Hardware` | cooling, fans, temperatures, drives, battery; with `-CoolingTest [-Seconds 90]` additionally a cooling test under load | no |
 | `Exclusions` | lists the points you excluded; with `-AddExclusion` / `-RemoveExclusion` changes the list | only the exclusion list |
+| `Policies` | GPO and Intune analysis for IT admins: duplicates, conflicts, slow startup/sign-in/processing, slowdown patterns; own report `WinTidy-Richtlinien.html` (see below) | no |
 | `Update` | checks GitHub for a newer release, shows the release notes and (after confirmation, or with `-Yes`) installs it | yes (WinTidy itself) |
 
 Examples:
@@ -74,6 +75,7 @@ Examples:
 .\WinTidy.ps1 -Mode Exclusions -AddExclusion STA-HEAVY          # exclude a whole rule
 .\WinTidy.ps1 -Mode Exclusions -AddExclusion SCORE:SCORE-UAC     # accept one score deduction
 .\WinTidy.ps1 -Mode Exclusions -RemoveExclusion 2                # include entry no. 2 again (or: all)
+.\WinTidy.ps1 -Mode Policies -OpenReport       # GPO/Intune analysis of this device (changes nothing)
 ```
 
 ## Profiles (save and reuse the rule selection)
@@ -151,6 +153,22 @@ Fan curves are stored in the BIOS or in the motherboard firmware (or in vendor t
 - no drivers are removed with `/force`, no files in Documents/Pictures/Desktop/Downloads are deleted (the large-file overview only reads)
 - nothing on a drive that is currently not connected counts as "orphaned"
 
+## Policy analysis: GPOs and Intune (for IT admins)
+
+For admins who want to tidy up their GPOs or Intune policies. Run it on a typical device of a department or OU - with admin rights, otherwise only the user part is analyzed. App: page **Policies** (visible on domain/Intune/Entra/ConfigMgr devices and in expert mode). Command line: `-Mode Policies [-OpenReport]`, menu entry `[P]`.
+
+**Sources (read-only):** `gpresult /x` (which GPO sets which setting, with precedence - the file stays in the data folder as `richtlinien-rsop.xml`), the event log `Microsoft-Windows-GroupPolicy/Operational` (events 8000 startup, 8001 sign-in, 8006/8007 background, 5016/7016 per client-side extension; last `PolicyEventDays` days) and the PolicyManager in the registry (Intune/MDM). Nothing is changed, no `gpupdate`.
+
+| Kind | What is reported |
+|---|---|
+| **Conflicts** | the same setting with different values in two GPOs (per GPO pair: who wins with which value), GPO and Intune for the same Policy CSP setting (without `MDMWinsOverGP` the GPO wins), Windows Update / Microsoft Defender / Windows Hello configured from both sides |
+| **Duplicates** | the same value in several GPOs (the lower one has no effect), a GPO linked several times in the device's path, GPOs without own effect (every setting is set by a GPO with higher precedence), GPO values blocked by `MDMWinsOverGP` or `IgnoreWindowsUpdateGroupPolicies`, MDM settings from several management sources |
+| **Startup and sign-in** | computer policy at startup / user policy at sign-in slower than `PolicyStartWarnSec` (15 s; critical from `PolicyStartCritSec` 45 s), with the slowest extensions and their GPOs |
+| **Processing time** | single client-side extensions slower than `PolicyCseWarnMs` (3 s; critical from `PolicyCseCritMs` 15 s), slow background refresh, refresh interval below 30 minutes, "process even if the GPOs have not changed" |
+| **Slowdown patterns** | "Always wait for the network", synchronous startup scripts (default!) and synchronous logon scripts, unlimited script wait time, Folder Redirection and Software Installation (force synchronous processing), drive maps, loopback merge, long startup network wait, more than 40 GPOs, 5+ WMI filters, slow link |
+
+Limits: GPO names and settings come from this device's point of view - a GPO that does nothing here may still be needed elsewhere. Settings that gpresult does not report (some third-party extensions) are not compared. Duplicates between Intune profiles and their assignments are only visible in the Intune admin center. The thresholds can be changed in `WinTidy.config.local.json`.
+
 ## Data, logs, report
 
 With admin rights everything is stored protected under `%ProgramData%\WinTidy\<COMPUTERNAME>\` (only administrators and SYSTEM may write there – programs without admin rights cannot change the backups that "Restore" applies). Without admin rights under `%LOCALAPPDATA%\WinTidy\<COMPUTERNAME>\`. Data of older versions (`WinTidy-Daten` next to the script) is taken over once at the first start. Can be changed with `-DataPath`.
@@ -163,6 +181,8 @@ The folder and file names are internal and stay German in both languages:
   snapshots\<time>_<scan|vorher|nachher>.json
   kuehltest\<time>.json             # measurement series of the cooling tests
   ausnahmen.json                    # points you excluded (since 1.12)
+  WinTidy-Richtlinien.html          # policy analysis for IT admins (since 1.13)
+  richtlinien-rsop.xml              # raw gpresult data of the last policy analysis
   runs\<time>_<scan|preview|apply|restore|hardware|kuehltest>\
       konsole.txt                   # complete console log
       actions.jsonl                 # every action as a JSON line (time, rule, object, status, bytes, message)
